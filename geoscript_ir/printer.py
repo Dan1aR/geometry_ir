@@ -4,6 +4,25 @@ from typing import Tuple
 def edge_str(e: Tuple[str,str]) -> str:
     return f'{e[0]}-{e[1]}'
 
+def path_str(path: Tuple[str, object]) -> str:
+    kind, payload = path
+    if kind in {'line', 'ray', 'segment'} and isinstance(payload, (list, tuple)):
+        return f'{kind} {edge_str(payload)}'
+    if kind == 'circle' and isinstance(payload, str):
+        return f'circle center {payload}'
+    if kind == 'angle-bisector' and isinstance(payload, dict):
+        at = payload.get('at', '')
+        r1, r2 = payload.get('rays', (None, None))
+        if isinstance(r1, (list, tuple)) and isinstance(r2, (list, tuple)):
+            return f'angle-bisector at {at} rays {edge_str(r1)} {edge_str(r2)}'
+        return f'angle-bisector at {at}'
+    if kind == 'perpendicular-bisector' and isinstance(payload, dict):
+        of = payload.get('of')
+        if isinstance(of, (list, tuple)):
+            return f'perpendicular-bisector of {edge_str(of)}'
+        return 'perpendicular-bisector'
+    return f'# [unknown path {kind}]'
+
 def print_program(prog: Program) -> str:
     lines = []
     for s in prog.stmts:
@@ -52,8 +71,10 @@ def print_program(prog: Program) -> str:
             lines.append(f'perpendicular at {s.data["at"]} to {edge_str(s.data["to"])}')
         elif s.kind == 'parallel_through':
             lines.append(f'parallel through {s.data["through"]} to {edge_str(s.data["to"])}')
-        elif s.kind == 'bisector_at':
-            lines.append(f'bisector at {s.data["at"]}')
+        elif s.kind == 'angle_bisector_at':
+            r1, r2 = s.data['rays']; lines.append(f'angle-bisector at {s.data["at"]} rays {edge_str(r1)} {edge_str(r2)}{o}'); continue
+        elif s.kind == 'perpendicular_bisector_of':
+            lines.append(f'perpendicular-bisector of {edge_str(s.data["of"])}{o}'); continue
         elif s.kind == 'median_from_to':
             lines.append(f'median from {s.data["frm"]} to {edge_str(s.data["to"])}')
         elif s.kind == 'altitude_from_to':
@@ -73,14 +94,14 @@ def print_program(prog: Program) -> str:
         elif s.kind in ('triangle','quadrilateral','parallelogram','trapezoid','rectangle','square','rhombus'):
             ids = '-'.join(s.data['ids']); lines.append(f'{s.kind} {ids}{o}'); continue
         elif s.kind == 'point_on':
-            kind, val = s.data['path']
-            pstr = f'circle center {val}' if kind=='circle' else f'{kind} {edge_str(val)}'
-            lines.append(f'point {s.data["point"]} on {pstr}{o}'); continue
+            lines.append(f'point {s.data["point"]} on {path_str(s.data["path"])}{o}'); continue
         elif s.kind == 'intersect':
-            def p2s(p):
-                k, v = p; return f'{k} {v if k=="circle" else edge_str(v)}'
             second = f', {s.data["at2"]}' if s.data['at2'] else ''
-            lines.append(f'intersect ({p2s(s.data["path1"])}) with ({p2s(s.data["path2"])}) at {s.data["at"]}{second}{o}'); continue
+            lines.append(
+                f'intersect ({path_str(s.data["path1"])}) with ({path_str(s.data["path2"])}) '
+                f'at {s.data["at"]}{second}{o}'
+            );
+            continue
         elif s.kind == 'label_point':
             lines.append(f'label point {s.data["point"]}{o}'); continue
         elif s.kind == 'sidelabel':

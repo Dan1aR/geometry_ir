@@ -26,7 +26,8 @@ Obj       := 'segment' Pair Opts?
            | 'incircle'    'of' IdChain Opts?
            | 'perpendicular' 'at' ID 'to' Pair Opts?
            | 'parallel' 'through' ID 'to' Pair Opts?
-           | 'bisector' 'at' ID Opts?
+           | 'angle-bisector' 'at' ID 'rays' Pair Pair Opts?
+           | 'perpendicular-bisector' 'of' Pair Opts?
            | 'median'  'from' ID 'to' Pair Opts?
            | 'altitude' 'from' ID 'to' Pair Opts?
            | 'angle' 'at' ID 'rays' Pair Pair Opts?
@@ -51,6 +52,8 @@ Path      := 'line'    Pair
            | 'ray'     Pair
            | 'segment' Pair
            | 'circle' 'center' ID
+           | 'angle-bisector' 'at' ID 'rays' Pair Pair
+           | 'perpendicular-bisector' 'of' Pair
 
 EdgeList  := Pair { ',' Pair }
 IdList    := ID { ',' ID }

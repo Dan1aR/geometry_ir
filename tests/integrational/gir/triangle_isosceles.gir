@@ -10,6 +10,6 @@ angle at C rays C-A C-B [label="50^\\circ"]
 segment B-C
 point D on segment B-C
 line A-D
-bisector at A
+angle-bisector at A rays A-B A-C
 # Цель: угол ADC
 target angle at D rays D-A D-C [label="?ADC"]

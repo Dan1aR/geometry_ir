@@ -141,22 +141,41 @@ def parse_opt_value(cur: Cursor):
 
 
 def parse_path(cur: Cursor):
-    kind_tok = cur.expect('ID')
-    kind = kind_tok[1].lower()
-    if kind == 'line':
+    kw = cur.peek_keyword()
+    t = cur.peek()
+    if not kw or not t:
+        raise SyntaxError(f'[line {t[2] if t else 0}, col {t[3] if t else 0}] expected path keyword')
+    if kw == 'line':
+        cur.consume_keyword('line')
         e, _ = parse_pair(cur)
         return 'line', e
-    if kind == 'ray':
+    if kw == 'ray':
+        cur.consume_keyword('ray')
         r, _ = parse_pair(cur)
         return 'ray', r
-    if kind == 'segment':
+    if kw == 'segment':
+        cur.consume_keyword('segment')
         e, _ = parse_pair(cur)
         return 'segment', e
-    if kind == 'circle':
+    if kw == 'circle':
+        cur.consume_keyword('circle')
         cur.consume_keyword('center')
         center, _ = parse_id(cur)
         return 'circle', center
-    raise SyntaxError(f'[line {kind_tok[2]}, col {kind_tok[3]}] invalid path kind {kind_tok[1]}')
+    if kw == 'angle-bisector':
+        cur.consume_keyword('angle-bisector')
+        cur.consume_keyword('at')
+        at, _ = parse_id(cur)
+        cur.consume_keyword('rays')
+        r1, _ = parse_pair(cur)
+        r2, _ = parse_pair(cur)
+        return 'angle-bisector', {'at': at, 'rays': (r1, r2)}
+    if kw == 'perpendicular-bisector':
+        cur.consume_keyword('perpendicular-bisector')
+        cur.consume_keyword('of')
+        of, _ = parse_pair(cur)
+        return 'perpendicular-bisector', {'of': of}
+    raise SyntaxError(f'[line {t[2]}, col {t[3]}] invalid path kind {t[1]!r}')
 
 def parse_opts(cur: Cursor) -> Dict[str, Any]:
     opts: Dict[str, Any] = {}
@@ -370,12 +389,21 @@ def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
         to, _ = parse_pair(cur)
         opts = parse_opts(cur)
         stmt = Stmt('parallel_through', sp, {'through': through, 'to': to}, opts)
-    elif kw == 'bisector':
-        cur.consume_keyword('bisector')
+    elif kw == 'angle-bisector':
+        cur.consume_keyword('angle-bisector')
         cur.consume_keyword('at')
         at, sp = parse_id(cur)
+        cur.consume_keyword('rays')
+        r1, _ = parse_pair(cur)
+        r2, _ = parse_pair(cur)
         opts = parse_opts(cur)
-        stmt = Stmt('bisector_at', sp, {'at': at}, opts)
+        stmt = Stmt('angle_bisector_at', sp, {'at': at, 'rays': (r1, r2)}, opts)
+    elif kw == 'perpendicular-bisector':
+        cur.consume_keyword('perpendicular-bisector')
+        cur.consume_keyword('of')
+        of, sp = parse_pair(cur)
+        opts = parse_opts(cur)
+        stmt = Stmt('perpendicular_bisector_of', sp, {'of': of}, opts)
     elif kw == 'median':
         cur.consume_keyword('median')
         cur.consume_keyword('from')
