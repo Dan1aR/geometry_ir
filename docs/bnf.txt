@@ -1,0 +1,52 @@
+Program   := { Stmt }
+Stmt      := Scene | Layout | Points | Obj | Placement | Annot | Target | Rules | Comment
+Scene     := 'scene' String
+Layout    := 'layout' 'canonical=' ID 'scale=' NUMBER
+Points    := 'points' ID { ',' ID }
+Annot     := 'label point' ID Opts? | 'sidelabel' Edge String Opts?
+Target    := 'target' ( 'angle' 'at' ID 'rays' Ray Ray
+                    | 'length' Edge
+                    | 'point' ID
+                    | 'circle' '(' Text ')'
+                    | 'area' '(' Text ')'
+                    | 'arc' ID '-' ID 'on' 'circle' 'center' ID Opts? )
+Obj       := 'segment' Edge Opts?
+            | 'ray' Ray Opts?
+            | 'line' Edge Opts?
+            | 'circle' 'center' ID ('radius-through' ID | 'tangent' '(' EdgeList ')') Opts?
+            | 'circle' 'through' '(' IdList ')' Opts?
+            | 'circumcircle' 'of' EdgeChain Opts?
+            | 'incircle' 'of' EdgeChain Opts?
+            | 'perpendicular' 'at' ID 'to' Edge Opts?
+            | 'parallel' 'through' ID 'to' Edge Opts?
+            | 'bisector' 'at' ID Opts?
+            | 'median'  'from' ID 'to' Edge Opts?
+            | 'altitude' 'from' ID 'to' Edge Opts?
+            | 'angle' 'at' ID 'rays' Ray Ray Opts?
+            | 'right-angle' 'at' ID 'rays' Ray Ray Opts?
+            | 'equal-segments' '(' EdgeList ';' EdgeList ')' Opts?
+            | 'tangent' 'at' ID 'to' 'circle' 'center' ID Opts?
+            | 'line' ID '-' ID 'tangent' 'to' 'circle' 'center' ID 'at' ID Opts?
+            | 'polygon' IdChain Opts?
+            | 'triangle' ID '-' ID '-' ID Opts?
+            | 'quadrilateral' ID '-' ID '-' ID '-' ID Opts?
+            | 'parallelogram' ID '-' ID '-' ID '-' ID Opts?
+            | 'trapezoid' ID '-' ID '-' ID '-' ID Opts?
+            | 'rectangle' ID '-' ID '-' ID '-' ID Opts?
+            | 'square' ID '-' ID '-' ID '-' ID Opts?
+            | 'rhombus' ID '-' ID '-' ID '-' ID Opts?
+
+IdChain   := ID { '-' ID }   # 3+ for polygon
+Placement := 'point' ID 'on' Path
+            | 'intersect' '(' Path ')' 'with' '(' Path ')' 'at' ID (',' ID)? Opts?
+Path      := 'line' ID '-' ID
+            | 'ray'  ID '-' ID
+            | 'segment' ID '-' ID
+            | 'circle' 'center' ID
+EdgeList  := Edge { ',' Edge }
+IdList    := ID { ',' ID }                                         # at least 3 IDs recommended
+Edge      := ID '-' ID
+Ray       := ID '-' ID
+EdgeChain := ID '-' ID '-' ID                                      # e.g., A-B-C (triangle vertex cycle)
+Opts      := '[' KeyVal { ' ' KeyVal } ']'
+KeyVal    := KEY '=' (VALUE | String)
