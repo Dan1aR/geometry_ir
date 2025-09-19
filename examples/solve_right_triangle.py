@@ -19,8 +19,10 @@ def main() -> None:
     validate(program)
     desugared = desugar(program)
     print(f"Desugared:\n{print_program(desugared)}")
+
     model = translate(desugared)
     solution = solve(model, SolveOptions(random_seed=123, reseed_attempts=1))
+
     print("\nSolved\nSuccess:", solution.success)
     print("Max residual:", solution.max_residual)
     for name, (x, y) in solution.point_coords.items():

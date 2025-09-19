@@ -82,7 +82,70 @@ def _norm_sq(vec: np.ndarray) -> float:
 def _cross_2d(a: np.ndarray, b: np.ndarray) -> float:
     return float(a[0] * b[1] - a[1] * b[0])
 
+_DENOM_EPS = 1e-12
+_HINGE_EPS = 1e-9
+_TURN_MARGIN = math.sin(math.radians(1.0))
+_TURN_SIGN_MARGIN = 0.5 * (_TURN_MARGIN ** 2)
+_TRAPEZOID_NONPARALLEL = math.sin(math.radians(0.5))
 
+
+def _safe_norm(vec: np.ndarray) -> float:
+    return math.sqrt(max(_norm_sq(vec), _DENOM_EPS))
+
+
+def _normalized_cross(a: np.ndarray, b: np.ndarray) -> float:
+    denom = max(_safe_norm(a) * _safe_norm(b), _DENOM_EPS)
+    return _cross_2d(a, b) / denom
+
+
+def _normalized_dot(a: np.ndarray, b: np.ndarray) -> float:
+    denom = max(_safe_norm(a) * _safe_norm(b), _DENOM_EPS)
+    return float(np.dot(a, b)) / denom
+
+
+def _smooth_hinge(value: float) -> float:
+    return 0.5 * (value + math.sqrt(value * value + _HINGE_EPS * _HINGE_EPS))
+
+
+def _quadrilateral_edges(x: np.ndarray, index: Dict[PointName, int], ids: Sequence[PointName]) -> List[np.ndarray]:
+    points = [_vec(x, index, name) for name in ids]
+    return [points[(i + 1) % 4] - points[i] for i in range(4)]
+
+
+def _quadrilateral_convexity_residuals(edges: Sequence[np.ndarray]) -> np.ndarray:
+    turns: List[float] = []
+    residuals: List[float] = []
+    for i in range(4):
+        turn = _normalized_cross(edges[i], edges[(i + 1) % 4])
+        turns.append(turn)
+        residuals.append(_smooth_hinge(_TURN_MARGIN - abs(turn)))
+    for i in range(4):
+        residuals.append(_smooth_hinge(_TURN_SIGN_MARGIN - turns[i] * turns[(i + 1) % 4]))
+    return np.asarray(residuals, dtype=float)
+
+
+def _select_trapezoid_base_index(ids: Sequence[PointName], opts: Dict[str, object]) -> int:
+    base_hint = opts.get("bases")
+    base_pair: Optional[Tuple[str, str]] = None
+    if isinstance(base_hint, str) and "-" in base_hint:
+        parts = [part.strip() for part in base_hint.split("-", 1)]
+        if len(parts) == 2 and parts[0] and parts[1]:
+            base_pair = (parts[0], parts[1])
+    if base_pair is None:
+        base_pair = (ids[0], ids[3])
+
+    edges = [(ids[i], ids[(i + 1) % 4]) for i in range(4)]
+    for idx, edge in enumerate(edges):
+        if edge == base_pair or edge == (base_pair[1], base_pair[0]):
+            return idx
+
+    fallback = (ids[3], ids[0])
+    for idx, edge in enumerate(edges):
+        if edge == fallback or edge == (fallback[1], fallback[0]):
+            return idx
+    return 3
+
+ 
 def _build_segment_length(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
     length = stmt.opts.get("length") or stmt.opts.get("distance") or stmt.opts.get("value")
     if length is None:
@@ -292,6 +355,118 @@ def _build_distance(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpe
     return [ResidualSpec(key=key, func=func, size=1, kind="distance", source=stmt)]
 
 
+def _build_quadrilateral_family(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
+    ids: Sequence[PointName] = stmt.data.get("ids", [])
+    if len(ids) != 4:
+        return []
+
+    key_base = f"{stmt.kind}({"-".join(ids)})"
+    specs: List[ResidualSpec] = []
+
+    def convex_func(x: np.ndarray) -> np.ndarray:
+        edges = _quadrilateral_edges(x, index, ids)
+        return _quadrilateral_convexity_residuals(edges)
+
+    specs.append(
+        ResidualSpec(
+            key=f"{key_base}:convexity",
+            func=convex_func,
+            size=8,
+            kind="convexity",
+            source=stmt,
+        )
+    )
+
+    def add_parallel_spec() -> None:
+        def parallel_func(x: np.ndarray) -> np.ndarray:
+            edges = _quadrilateral_edges(x, index, ids)
+            return np.array(
+                [
+                    _normalized_cross(edges[0], edges[2]),
+                    _normalized_cross(edges[1], edges[3]),
+                ],
+                dtype=float,
+            )
+
+        specs.append(
+            ResidualSpec(
+                key=f"{key_base}:opposite-parallel",
+                func=parallel_func,
+                size=2,
+                kind="parallel_opposites",
+                source=stmt,
+            )
+        )
+
+    if stmt.kind in {"parallelogram", "rectangle", "square", "rhombus"}:
+        add_parallel_spec()
+
+    if stmt.kind == "trapezoid":
+        base_index = _select_trapezoid_base_index(ids, stmt.opts)
+
+        def trapezoid_func(x: np.ndarray) -> np.ndarray:
+            edges = _quadrilateral_edges(x, index, ids)
+            base = edges[base_index]
+            opposite = edges[(base_index + 2) % 4]
+            leg1 = edges[(base_index + 1) % 4]
+            leg2 = edges[(base_index + 3) % 4]
+            return np.array(
+                [
+                    _normalized_cross(base, opposite),
+                    _smooth_hinge(_TRAPEZOID_NONPARALLEL - abs(_normalized_cross(leg1, leg2))),
+                ],
+                dtype=float,
+            )
+
+        specs.append(
+            ResidualSpec(
+                key=f"{key_base}:bases",
+                func=trapezoid_func,
+                size=2,
+                kind="trapezoid",
+                source=stmt,
+            )
+        )
+
+    if stmt.kind in {"rectangle", "square"}:
+
+        def right_angle_func(x: np.ndarray) -> np.ndarray:
+            edges = _quadrilateral_edges(x, index, ids)
+            return np.array([
+                _normalized_dot(edges[0], edges[1])
+            ], dtype=float)
+
+        specs.append(
+            ResidualSpec(
+                key=f"{key_base}:right-angle",
+                func=right_angle_func,
+                size=1,
+                kind="right_angle",
+                source=stmt,
+            )
+        )
+
+    if stmt.kind in {"rhombus", "square"}:
+
+        def equal_sides_func(x: np.ndarray) -> np.ndarray:
+            edges = _quadrilateral_edges(x, index, ids)
+            return np.array([
+                _norm_sq(edges[0]) - _norm_sq(edges[1])
+            ], dtype=float)
+
+        specs.append(
+            ResidualSpec(
+                key=f"{key_base}:equal-sides",
+                func=equal_sides_func,
+                size=1,
+                kind="equal_sides",
+                source=stmt,
+            )
+        )
+
+    return specs
+
+
 _RESIDUAL_BUILDERS: Dict[str, Callable[[Stmt, Dict[PointName, int]], List[ResidualSpec]]] = {
     "segment": _build_segment_length,
     "equal_segments": _build_equal_segments,
@@ -303,6 +478,13 @@ _RESIDUAL_BUILDERS: Dict[str, Callable[[Stmt, Dict[PointName, int]], List[Residu
     "midpoint": _build_midpoint,
     "foot": _build_foot,
     "distance": _build_distance,
+
+    "quadrilateral": _build_quadrilateral_family,
+    "parallelogram": _build_quadrilateral_family,
+    "trapezoid": _build_quadrilateral_family,
+    "rectangle": _build_quadrilateral_family,
+    "square": _build_quadrilateral_family,
+    "rhombus": _build_quadrilateral_family,
 }
 
 
