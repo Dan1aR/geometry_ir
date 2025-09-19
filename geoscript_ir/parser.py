@@ -8,8 +8,34 @@ class Cursor:
         self.toks = tokens
         self.i = 0
 
-    def peek(self): 
+    def peek(self):
         return self.toks[self.i] if self.i < len(self.toks) else None
+
+    def peek_keyword(self):
+        t = self.peek()
+        if not t or t[0] != 'ID':
+            return None
+        kw = t[1].lower()
+        j = self.i
+        while j + 2 < len(self.toks):
+            dash = self.toks[j + 1]
+            nxt = self.toks[j + 2]
+            if dash[0] != 'DASH' or nxt[0] != 'ID' or not nxt[1].islower():
+                break
+            kw = f"{kw}-{nxt[1].lower()}"
+            j += 2
+        return kw
+
+    def consume_keyword(self, keyword: str):
+        parts = keyword.split('-') if keyword else []
+        for idx, part in enumerate(parts):
+            tok = self.expect('ID')
+            if tok[1].lower() != part:
+                raise SyntaxError(
+                    f"[line {tok[2]}, col {tok[3]}] expected keyword '{part}', got '{tok[1]}'"
+                )
+            if idx < len(parts) - 1:
+                self.expect('DASH')
 
     def match(self, *types: str):
         if self.i < len(self.toks) and self.toks[self.i][0] in types:
@@ -70,10 +96,12 @@ def parse_idlist_paren(cur: Cursor):
     cur.expect('RPAREN')
     return ids, first_span
 
-def parse_edgelist_paren(cur: Cursor):
-    lp = cur.expect('LPAREN')
+def parse_edgelist_paren(cur: Cursor, consume_lparen: bool = True):
     edges = []
-    first_span = Span(lp[2], lp[3])
+    first_span = None
+    if consume_lparen:
+        lp = cur.expect('LPAREN')
+        first_span = Span(lp[2], lp[3])
     while True:
         t = cur.peek()
         if not t or t[0] == 'RPAREN' or t[0] == 'SEMI':
@@ -131,15 +159,15 @@ def parse_stmt(tokens: List[Tuple[str,str,int,int]]):
     if not tokens: return None
     cur = Cursor(tokens)
     t0 = cur.peek()
-    kw = t0[1].lower() if t0[0]=='ID' else None
+    kw = cur.peek_keyword() if t0 and t0[0] == 'ID' else None
     if not kw:
         raise SyntaxError(f'[line {t0[2]}, col {t0[3]}] expected statement keyword')
 
     if kw == 'scene':
-        cur.match('ID'); s = cur.expect('STRING')
+        cur.consume_keyword('scene'); s = cur.expect('STRING')
         return Stmt('scene', Span(s[2], s[3]), {'title': s[1]})
     if kw == 'layout':
-        cur.match('ID')
+        cur.consume_keyword('layout')
         ckey = cur.expect('ID')
         if ckey[1].lower()!='canonical':
             raise SyntaxError(f'[line {ckey[2]}, col {ckey[3]}] expected canonical=')
@@ -153,7 +181,7 @@ def parse_stmt(tokens: List[Tuple[str,str,int,int]]):
         scale = float(sval)
         return Stmt('layout', Span(t0[2], t0[3]), {'canonical': canon, 'scale': scale})
     if kw == 'points':
-        cur.match('ID')
+        cur.consume_keyword('points')
         ids = []
         while True:
             idv, sp = parse_id(cur)
@@ -162,21 +190,21 @@ def parse_stmt(tokens: List[Tuple[str,str,int,int]]):
                 break
         return Stmt('points', Span(t0[2], t0[3]), {'ids': ids})
     if kw == 'segment':
-        cur.match('ID')
+        cur.consume_keyword('segment')
         e, sp = parse_edge(cur)
         opts = parse_opts(cur)
         return Stmt('segment', sp, {'edge': e}, opts)
     if kw == 'ray':
-        cur.match('ID')
+        cur.consume_keyword('ray')
         r, sp = parse_ray(cur)
         opts = parse_opts(cur)
         return Stmt('ray', sp, {'ray': r}, opts)
     if kw == 'line':
-        cur.match('ID')
+        cur.consume_keyword('line')
         e, sp = parse_edge(cur)
         t = cur.peek()
         if t and t[0]=='ID' and t[1].lower()=='tangent':
-            cur.match('ID')
+            cur.consume_keyword('tangent')
             cur.expect('ID'); cur.expect('ID'); cur.expect('ID')  # to circle center
             O, _ = parse_id(cur)
             cur.expect('ID')  # at
@@ -186,16 +214,19 @@ def parse_stmt(tokens: List[Tuple[str,str,int,int]]):
         opts = parse_opts(cur)
         return Stmt('line', sp, {'edge': e}, opts)
     if kw == 'circle':
-        cur.match('ID')
-        t1 = cur.expect('ID')
-        if t1[1].lower()=='center':
+        cur.consume_keyword('circle')
+        t1_kw = cur.peek_keyword()
+        if t1_kw == 'center':
+            cur.consume_keyword('center')
             O, sp = parse_id(cur)
-            t2 = cur.expect('ID')
-            if t2[1].lower()=='radius-through':
+            t2_kw = cur.peek_keyword()
+            if t2_kw == 'radius-through':
+                cur.consume_keyword('radius-through')
                 P, _ = parse_id(cur)
                 opts = parse_opts(cur)
                 return Stmt('circle_center_radius_through', sp, {'center': O, 'through': P}, opts)
-            elif t2[1].lower()=='tangent':
+            elif t2_kw == 'tangent':
+                cur.consume_keyword('tangent')
                 cur.expect('LPAREN')
                 edges = []
                 while True:
@@ -207,78 +238,81 @@ def parse_stmt(tokens: List[Tuple[str,str,int,int]]):
                 opts = parse_opts(cur)
                 return Stmt('circle_center_tangent_sides', sp, {'center': O, 'tangent_edges': edges}, opts)
             else:
-                raise SyntaxError(f'[line {t2[2]}, col {t2[3]}] expected radius-through or tangent')
-        elif t1[1].lower()=='through':
+                t2 = cur.peek()
+                raise SyntaxError(f'[line {t2[2] if t2 else 0}, col {t2[3] if t2 else 0}] expected radius-through or tangent')
+        elif t1_kw == 'through':
+            cur.consume_keyword('through')
             ids, sp = parse_idlist_paren(cur)
             opts = parse_opts(cur)
             return Stmt('circle_through', sp, {'ids': ids}, opts)
         else:
-            raise SyntaxError(f'[line {t1[2]}, col {t1[3]}] expected center|through')
+            t1 = cur.peek()
+            raise SyntaxError(f'[line {t1[2] if t1 else 0}, col {t1[3] if t1 else 0}] expected center|through')
     if kw == 'circumcircle':
-        cur.match('ID'); cur.expect('ID')  # of
+        cur.consume_keyword('circumcircle'); cur.expect('ID')  # of
         a, sp = parse_id(cur); cur.expect('DASH'); b,_ = parse_id(cur); cur.expect('DASH'); c,_ = parse_id(cur)
         opts = parse_opts(cur); return Stmt('circumcircle', sp, {'tri': (a,b,c)}, opts)
     if kw == 'incircle':
-        cur.match('ID'); cur.expect('ID')  # of
+        cur.consume_keyword('incircle'); cur.expect('ID')  # of
         a, sp = parse_id(cur); cur.expect('DASH'); b,_ = parse_id(cur); cur.expect('DASH'); c,_ = parse_id(cur)
         opts = parse_opts(cur); return Stmt('incircle', sp, {'tri': (a,b,c)}, opts)
     if kw == 'perpendicular':
-        cur.match('ID'); cur.expect('ID')  # at
+        cur.consume_keyword('perpendicular'); cur.expect('ID')  # at
         P, sp = parse_id(cur); cur.expect('ID')  # to
         e, _ = parse_edge(cur); opts = parse_opts(cur)
         return Stmt('perpendicular_at', sp, {'at': P, 'to': e}, opts)
     if kw == 'parallel':
-        cur.match('ID'); cur.expect('ID')  # through
+        cur.consume_keyword('parallel'); cur.expect('ID')  # through
         P, sp = parse_id(cur); cur.expect('ID')  # to
         e, _ = parse_edge(cur); opts = parse_opts(cur)
         return Stmt('parallel_through', sp, {'through': P, 'to': e}, opts)
     if kw == 'bisector':
-        cur.match('ID'); cur.expect('ID')  # at
+        cur.consume_keyword('bisector'); cur.expect('ID')  # at
         P, sp = parse_id(cur); opts = parse_opts(cur)
         return Stmt('bisector_at', sp, {'at': P}, opts)
     if kw == 'median':
-        cur.match('ID'); cur.expect('ID')  # from
+        cur.consume_keyword('median'); cur.expect('ID')  # from
         P, sp = parse_id(cur); cur.expect('ID')  # to
         e, _ = parse_edge(cur); opts = parse_opts(cur)
         return Stmt('median_from_to', sp, {'frm': P, 'to': e}, opts)
     if kw == 'altitude':
-        cur.match('ID'); cur.expect('ID')  # from
+        cur.consume_keyword('altitude'); cur.expect('ID')  # from
         P, sp = parse_id(cur); cur.expect('ID')  # to
         e, _ = parse_edge(cur); opts = parse_opts(cur)
         return Stmt('altitude_from_to', sp, {'frm': P, 'to': e}, opts)
     if kw == 'angle':
-        cur.match('ID'); cur.expect('ID')  # at
+        cur.consume_keyword('angle'); cur.expect('ID')  # at
         P, sp = parse_id(cur); cur.expect('ID')  # rays
         r1,_ = parse_ray(cur); r2,_ = parse_ray(cur)
         opts = parse_opts(cur); return Stmt('angle_at', sp, {'at': P, 'rays': (r1, r2)}, opts)
     if kw == 'right-angle':
-        cur.match('ID'); cur.expect('ID')  # at
+        cur.consume_keyword('right-angle'); cur.expect('ID')  # at
         P, sp = parse_id(cur); cur.expect('ID')  # rays
         r1,_ = parse_ray(cur); r2,_ = parse_ray(cur)
         opts = parse_opts(cur); return Stmt('right_angle_at', sp, {'at': P, 'rays': (r1, r2)}, opts)
     if kw == 'equal-segments':
-        cur.match('ID'); cur.expect('LPAREN')
-        lhs, sp = parse_edgelist_paren(cur); cur.expect('SEMI')
-        rhs, _ = parse_edgelist_paren(cur); cur.expect('RPAREN')
+        cur.consume_keyword('equal-segments')
+        lhs, sp = parse_edgelist_paren(cur, consume_lparen=True); cur.expect('SEMI')
+        rhs, _ = parse_edgelist_paren(cur, consume_lparen=False); cur.expect('RPAREN')
         opts = parse_opts(cur); return Stmt('equal_segments', sp, {'lhs': lhs, 'rhs': rhs}, opts)
     if kw == 'tangent':
-        cur.match('ID'); cur.expect('ID')  # at
+        cur.consume_keyword('tangent'); cur.expect('ID')  # at
         P, sp = parse_id(cur); cur.expect('ID')  # to
         cur.expect('ID'); cur.expect('ID')  # circle center
         O, _ = parse_id(cur); opts = parse_opts(cur)
         return Stmt('tangent_at', sp, {'at': P, 'center': O}, opts)
     if kw == 'polygon':
-        cur.match('ID'); ids, sp = parse_idchain(cur)
+        cur.consume_keyword('polygon'); ids, sp = parse_idchain(cur)
         opts = parse_opts(cur); return Stmt('polygon', sp, {'ids': ids}, opts)
     if kw == 'triangle':
-        cur.match('ID'); a, sp = parse_id(cur); cur.expect('DASH'); b,_ = parse_id(cur); cur.expect('DASH'); c,_ = parse_id(cur)
+        cur.consume_keyword('triangle'); a, sp = parse_id(cur); cur.expect('DASH'); b,_ = parse_id(cur); cur.expect('DASH'); c,_ = parse_id(cur)
         opts = parse_opts(cur); return Stmt('triangle', sp, {'ids': [a,b,c]}, opts)
     if kw in ('quadrilateral','parallelogram','trapezoid','rectangle','square','rhombus'):
-        kind = kw; cur.match('ID')
+        kind = kw; cur.consume_keyword(kind)
         a, sp = parse_id(cur); cur.expect('DASH'); b,_ = parse_id(cur); cur.expect('DASH'); c,_ = parse_id(cur); cur.expect('DASH'); d,_ = parse_id(cur)
         opts = parse_opts(cur); return Stmt(kind, sp, {'ids': [a,b,c,d]}, opts)
     if kw == 'point':
-        cur.match('ID'); P, sp = parse_id(cur); cur.expect('ID')  # on
+        cur.consume_keyword('point'); P, sp = parse_id(cur); cur.expect('ID')  # on
         path_kw = cur.expect('ID'); pk = path_kw[1].lower()
         if pk == 'line':
             e,_ = parse_edge(cur); path = ('line', e)
@@ -293,7 +327,7 @@ def parse_stmt(tokens: List[Tuple[str,str,int,int]]):
         opts = parse_opts(cur)
         return Stmt('point_on', sp, {'point': P, 'path': path}, opts)
     if kw == 'intersect':
-        cur.match('ID'); cur.expect('LPAREN')
+        cur.consume_keyword('intersect'); cur.expect('LPAREN')
         pk1 = cur.expect('ID')
         if pk1[1].lower() == 'line':
             e1,_ = parse_edge(cur); path1 = ('line', e1)
@@ -324,17 +358,17 @@ def parse_stmt(tokens: List[Tuple[str,str,int,int]]):
         opts = parse_opts(cur)
         return Stmt('intersect', sp, {'path1': path1, 'path2': path2, 'at': P, 'at2': Q}, opts)
     if kw == 'label':
-        cur.match('ID'); what = cur.expect('ID')
+        cur.consume_keyword('label'); what = cur.expect('ID')
         if what[1].lower() != 'point':
             raise SyntaxError(f'[line {what[2]}, col {what[3]}] expected "point" after label')
         P, sp = parse_id(cur); opts = parse_opts(cur)
         return Stmt('label_point', sp, {'point': P}, opts)
     if kw == 'sidelabel':
-        cur.match('ID'); e, sp = parse_edge(cur)
+        cur.consume_keyword('sidelabel'); e, sp = parse_edge(cur)
         s = cur.expect('STRING'); opts = parse_opts(cur)
         return Stmt('sidelabel', sp, {'edge': e, 'text': s[1]}, opts)
     if kw == 'target':
-        cur.match('ID'); t1 = cur.expect('ID')
+        cur.consume_keyword('target'); t1 = cur.expect('ID')
         if t1[1].lower() == 'angle':
             cur.expect('ID'); P, sp = parse_id(cur); cur.expect('ID')  # rays
             r1,_ = parse_ray(cur); r2,_ = parse_ray(cur); opts = parse_opts(cur)
@@ -378,7 +412,7 @@ def parse_stmt(tokens: List[Tuple[str,str,int,int]]):
             return Stmt('target_arc', sp, {'A': A, 'B': B, 'center': O}, opts)
         raise SyntaxError(f'[line {t1[2]}, col {t1[3]}] invalid target kind {t1[1]}')
     if kw == 'rules':
-        cur.match('ID'); opts = parse_opts(cur)
+        cur.consume_keyword('rules'); opts = parse_opts(cur)
         return Stmt('rules', Span(t0[2], t0[3]), {}, opts)
     raise SyntaxError(f'[line {t0[2]}, col {t0[3]}] unknown statement "{kw}"')
 
