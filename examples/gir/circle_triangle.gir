@@ -1,0 +1,9 @@
+scene "Circle and triangle"
+layout canonical=euclid scale=1
+points A, B, C, O
+circle center O radius-through A
+triangle A-B-C
+segment A-O
+point O on line A-B
+angle at A rays A-O A-C [measure=45]
+rules no_solving=false
