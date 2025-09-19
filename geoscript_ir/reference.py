@@ -1,7 +1,5 @@
 """Reference helpers for the GeoScript intermediate representation."""
 
-from __future__ import annotations
-
 from textwrap import dedent
 
 BNF = dedent(
