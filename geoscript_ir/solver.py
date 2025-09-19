@@ -392,10 +392,29 @@ def _build_point_on(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpe
             base = _vec(x, index, edge[0])
             dir_vec = _edge_vec(x, index, edge)
             pt = _vec(x, index, point)
-            return np.array([_cross_2d(dir_vec, pt - base)], dtype=float)
+            rel = pt - base
+            dir_norm_sq = max(_norm_sq(dir_vec), _DENOM_EPS)
+
+            residuals: List[float] = [_cross_2d(dir_vec, rel)]
+            if path_kind != "line":
+                t = float(np.dot(rel, dir_vec)) / dir_norm_sq
+                residuals.append(_smooth_hinge(-t))
+                if path_kind == "segment":
+                    residuals.append(_smooth_hinge(t - 1.0))
+
+            return np.asarray(residuals, dtype=float)
 
         key = f"point_on_{path_kind}({point},{_format_edge(edge)})"
-        return [ResidualSpec(key=key, func=func, size=1, kind=f"point_on_{path_kind}", source=stmt)]
+        size = 1 if path_kind == "line" else (2 if path_kind == "ray" else 3)
+        return [
+            ResidualSpec(
+                key=key,
+                func=func,
+                size=size,
+                kind=f"point_on_{path_kind}",
+                source=stmt,
+            )
+        ]
 
     if path_kind == "circle":
         radius = stmt.opts.get("radius") or stmt.opts.get("distance")
@@ -669,6 +688,8 @@ def translate(program: Program) -> Model:
                     base_edge = (a.strip(), b.strip())
                 elif isinstance(bases_opt, (list, tuple)) and len(bases_opt) == 2:
                     base_edge = (str(bases_opt[0]), str(bases_opt[1]))
+                elif len(ids) >= 2:
+                    base_edge = (ids[0], ids[1])
                 if base_edge and all(p in ids for p in base_edge):
                     remaining = [p for p in ids if p not in base_edge]
                     if len(remaining) == 2:

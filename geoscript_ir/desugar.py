@@ -138,7 +138,7 @@ def desugar(prog: Program) -> Program:
                 append(Stmt('equal_segments', s.span, {'lhs': [edge(B, C)], 'rhs': [edge(D, A)]}, origin='desugar(parallelogram)'), generated=True)
             if s.kind == 'trapezoid':
                 A, B, C, D = ids
-                bases = s.opts.get('bases', f'{A}-{D}')  # default A-D
+                bases = s.opts.get('bases', f'{A}-{B}')  # default first edge A-B
                 try:
                     bx, by = bases.split('-')
                 except Exception:
