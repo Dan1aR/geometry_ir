@@ -124,7 +124,7 @@ def test_quadrilateral_convexity_residuals():
     assert np.max(vals_bad) > 1e-3
 
 
-def test_trapezoid_parallel_and_margin_residuals():
+def test_trapezoid_reuses_desugared_parallel_residual():
     model = _build_model(
         """
         scene "Trap"
@@ -132,7 +132,13 @@ def test_trapezoid_parallel_and_margin_residuals():
         trapezoid A-B-C-D [bases=A-D]
         """
     )
-    trap_spec = next(spec for spec in model.residuals if spec.key == "trapezoid(A-B-C-D):bases")
+
+    keys = {spec.key for spec in model.residuals}
+    assert "trapezoid(A-B-C-D):bases" not in keys
+
+    convex_spec = next(
+        spec for spec in model.residuals if spec.key == "trapezoid(A-B-C-D):convexity"
+    )
 
     good_coords = {
         "A": (0.0, 0.0),
@@ -140,22 +146,19 @@ def test_trapezoid_parallel_and_margin_residuals():
         "C": (2.0, 1.5),
         "D": (0.0, 1.0),
     }
-    vals_good = trap_spec.func(_coords_array(model, good_coords))
-    assert vals_good.shape == (2,)
-    assert np.max(vals_good) < 1e-8
+    vals_good = convex_spec.func(_coords_array(model, good_coords))
+    assert vals_good.shape == (8,)
+    assert np.max(np.abs(vals_good)) < 1e-8
 
-    parallel_legs = {
-        "A": (0.0, 0.0),
-        "B": (2.0, 0.0),
-        "C": (2.0, 1.5),
-        "D": (0.0, 1.5),
-    }
-    vals_bad = trap_spec.func(_coords_array(model, parallel_legs))
-    assert vals_bad.shape == (2,)
-    assert vals_bad[1] > 1e-4
+    base_parallel = next(
+        spec for spec in model.residuals if spec.key == "parallel_edges(D-A,B-C)"
+    )
+    base_vals = base_parallel.func(_coords_array(model, good_coords))
+    assert base_vals.shape == (1,)
+    assert np.max(np.abs(base_vals)) < 1e-8
 
 
-def test_square_shape_residuals_are_zero_for_unit_square():
+def test_square_residuals_rely_on_desugared_statements():
     model = _build_model(
         """
         scene "Square"
@@ -172,15 +175,30 @@ def test_square_shape_residuals_are_zero_for_unit_square():
     }
     x = _coords_array(model, coords)
 
-    keys = {
-        "square(A-B-C-D):convexity": 8,
-        "square(A-B-C-D):opposite-parallel": 2,
-        "square(A-B-C-D):right-angle": 1,
-        "square(A-B-C-D):equal-sides": 1,
-    }
+    square_specs = [spec for spec in model.residuals if spec.key.startswith("square(")]
+    assert {spec.key for spec in square_specs} == {"square(A-B-C-D):convexity"}
 
-    for key, expected_size in keys.items():
-        spec = next(spec for spec in model.residuals if spec.key == key)
+    convex_spec = square_specs[0]
+    vals = convex_spec.func(x)
+    assert vals.shape == (8,)
+    assert np.max(np.abs(vals)) < 1e-8
+
+    right_angles = [spec for spec in model.residuals if spec.kind == "right_angle"]
+    assert {spec.key for spec in right_angles} == {
+        "right_angle(A)",
+        "right_angle(B)",
+        "right_angle(C)",
+        "right_angle(D)",
+    }
+    for spec in right_angles:
         vals = spec.func(x)
-        assert vals.shape == (expected_size,)
+        assert vals.shape == (1,)
+        assert np.max(np.abs(vals)) < 1e-8
+
+    equal_segments = [spec for spec in model.residuals if spec.kind == "equal_segments"]
+    assert any(
+        spec.key == "equal_segments(A-B,B-C,C-D,D-A)" for spec in equal_segments
+    )
+    for spec in equal_segments:
+        vals = spec.func(x)
         assert np.max(np.abs(vals)) < 1e-8

@@ -87,6 +87,8 @@ def desugar(prog: Program) -> Program:
                 A, B, C, D = ids
                 append(Stmt('parallel_edges', s.span, {'edges': [edge(A, B), edge(C, D)]}, origin='desugar(parallelogram)'), generated=True)
                 append(Stmt('parallel_edges', s.span, {'edges': [edge(B, C), edge(D, A)]}, origin='desugar(parallelogram)'), generated=True)
+                append(Stmt('equal_segments', s.span, {'lhs': [edge(A, B)], 'rhs': [edge(C, D)]}, origin='desugar(parallelogram)'), generated=True)
+                append(Stmt('equal_segments', s.span, {'lhs': [edge(B, C)], 'rhs': [edge(D, A)]}, origin='desugar(parallelogram)'), generated=True)
             if s.kind == 'trapezoid':
                 A, B, C, D = ids
                 bases = s.opts.get('bases', f'{A}-{D}')  # default A-D
@@ -113,6 +115,8 @@ def desugar(prog: Program) -> Program:
                 append(Stmt('right_angle_at', s.span, {'at': B, 'rays': ((B, C), (B, A))}, {'mark': 'square'}, origin='desugar(rectangle)'), generated=True)
                 append(Stmt('right_angle_at', s.span, {'at': C, 'rays': ((C, D), (C, B))}, {'mark': 'square'}, origin='desugar(rectangle)'), generated=True)
                 append(Stmt('right_angle_at', s.span, {'at': D, 'rays': ((D, A), (D, C))}, {'mark': 'square'}, origin='desugar(rectangle)'), generated=True)
+                append(Stmt('equal_segments', s.span, {'lhs': [edge(A, B)], 'rhs': [edge(C, D)]}, origin='desugar(rectangle)'), generated=True)
+                append(Stmt('equal_segments', s.span, {'lhs': [edge(B, C)], 'rhs': [edge(D, A)]}, origin='desugar(rectangle)'), generated=True)
             if s.kind == 'square':
                 A, B, C, D = ids
                 append(Stmt('right_angle_at', s.span, {'at': A, 'rays': ((A, B), (A, D))}, {'mark': 'square'}, origin='desugar(square)'), generated=True)

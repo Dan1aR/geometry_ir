@@ -73,7 +73,7 @@ def test_trapezoid_bases_and_isosceles():
     assert equal_segments[0].data == {'lhs': [('A', 'D')], 'rhs': [('B', 'C')]}
 
 
-def test_rectangle_right_angles_added():
+def test_rectangle_right_angles_and_equal_sides_added():
     rect = stmt('rectangle', {'ids': ['A', 'B', 'C', 'D']})
     out = desugar(Program([rect]))
 
@@ -82,6 +82,32 @@ def test_rectangle_right_angles_added():
     for data in (('A', ('A', 'B'), ('A', 'D')), ('B', ('B', 'C'), ('B', 'A')), ('C', ('C', 'D'), ('C', 'B')), ('D', ('D', 'A'), ('D', 'C'))):
         at, r1, r2 = data
         assert any(s.data == {'at': at, 'rays': (r1, r2)} for s in angles)
+
+    equal_segments = [s for s in out.stmts if s.kind == 'equal_segments' and s.origin == 'desugar(rectangle)']
+    assert len(equal_segments) == 2
+    assert {tuple(sorted(seg.data['lhs'] + seg.data['rhs'])) for seg in equal_segments} == {
+        (('A', 'B'), ('C', 'D')),
+        (('B', 'C'), ('D', 'A')),
+    }
+
+
+def test_parallelogram_parallel_and_equal_opposite_sides():
+    para = stmt('parallelogram', {'ids': ['A', 'B', 'C', 'D']})
+    out = desugar(Program([para]))
+
+    parallels = [s for s in out.stmts if s.kind == 'parallel_edges' and s.origin == 'desugar(parallelogram)']
+    assert len(parallels) == 2
+    assert {tuple(s.data['edges']) for s in parallels} == {
+        (('A', 'B'), ('C', 'D')),
+        (('B', 'C'), ('D', 'A')),
+    }
+
+    equal_segments = [s for s in out.stmts if s.kind == 'equal_segments' and s.origin == 'desugar(parallelogram)']
+    assert len(equal_segments) == 2
+    assert {tuple(sorted(seg.data['lhs'] + seg.data['rhs'])) for seg in equal_segments} == {
+        (('A', 'B'), ('C', 'D')),
+        (('B', 'C'), ('D', 'A')),
+    }
 
 
 def test_rhombus_equal_segments_cover_all_sides():
