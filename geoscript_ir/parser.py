@@ -353,6 +353,15 @@ def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
         to, _ = parse_pair(cur)
         opts = parse_opts(cur)
         stmt = Stmt('perpendicular_at', sp, {'at': at, 'to': to}, opts)
+    elif kw == 'parallel-edges':
+        cur.consume_keyword('parallel-edges')
+        cur.expect('LPAREN')
+        edge1, sp = parse_pair(cur)
+        cur.expect('SEMI')
+        edge2, _ = parse_pair(cur)
+        cur.expect('RPAREN')
+        opts = parse_opts(cur)
+        stmt = Stmt('parallel_edges', sp, {'edges': [edge1, edge2]}, opts)
     elif kw == 'parallel':
         cur.consume_keyword('parallel')
         cur.consume_keyword('through')

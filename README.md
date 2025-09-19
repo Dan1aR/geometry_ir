@@ -53,7 +53,7 @@ segment A-B
 segment B-C
 segment C-D
 segment D-A
-# desugared: A-D ∥ B-C
+parallel-edges (A-D ; B-C)
 equal-segments (A-D ; B-C)
 ```
 
