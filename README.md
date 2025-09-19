@@ -90,6 +90,23 @@ dz = desugar(prog)       # expand square to sides + right angles + equal segment
 print(print_program(dz)) # canonical form
 ```
 
+### Grammar & LLM prompt
+
+The canonical GeoScript grammar lives alongside the library so tooling can
+consume it directly:
+
+```python
+from geoscript_ir.reference import BNF, LLM_PROMPT, get_llm_prompt
+
+print(BNF)                       # raw Backus–Naur form
+print(get_llm_prompt())          # default LLM instructions + BNF
+print(get_llm_prompt(include_bnf=False))  # instructions only
+```
+
+`LLM_PROMPT` is a ready-to-use set of guardrails for agents that need to emit
+GeoScript scenes. It repeats the "do" / "don't" guidance and, by default,
+appends the grammar so the model always has the exact syntax available.
+
 ---
 
 ## Development
