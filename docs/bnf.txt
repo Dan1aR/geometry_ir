@@ -32,6 +32,7 @@ Obj       := 'segment' Pair Opts?
            | 'angle' 'at' ID 'rays' Pair Pair Opts?
            | 'right-angle' 'at' ID 'rays' Pair Pair Opts?
            | 'equal-segments' '(' EdgeList ';' EdgeList ')' Opts?
+           | 'parallel-edges' '(' Pair ';' Pair ')' Opts?
            | 'tangent' 'at' ID 'to' 'circle' 'center' ID Opts?
            | 'line' ID '-' ID 'tangent' 'to' 'circle' 'center' ID 'at' ID Opts?
            | 'polygon' IdChain Opts?

@@ -98,7 +98,9 @@ def print_program(prog: Program) -> str:
         elif s.kind == 'target_arc':
             lines.append(f'target arc {s.data["A"]}-{s.data["B"]} on circle center {s.data["center"]}{o}'); continue
         elif s.kind == 'parallel_edges':
-            a,b = s.data['edges']; lines.append(f'# desugared: {edge_str(a)} ∥ {edge_str(b)}'); continue
+            a, b = s.data['edges']
+            lines.append(f'parallel-edges ({edge_str(a)} ; {edge_str(b)}){o}')
+            continue
         elif s.kind == 'rules':
             parts = [f'{k}={"true" if s.opts[k] else "false"}' for k in sorted(s.opts.keys())]
             lines.append('rules ' + ' '.join(parts)); continue
