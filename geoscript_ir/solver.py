@@ -1,7 +1,7 @@
 """Numeric solver pipeline for GeometryIR scenes."""
 
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 import math
 
 import numpy as np
@@ -33,6 +33,7 @@ class Model:
     index: Dict[PointName, int]
     residuals: List[ResidualSpec]
     gauges: List[str] = field(default_factory=list)
+    scale: float = 1.0
 
 
 @dataclass
@@ -84,6 +85,8 @@ _DENOM_EPS = 1e-12
 _HINGE_EPS = 1e-9
 _TURN_MARGIN = math.sin(math.radians(1.0))
 _TURN_SIGN_MARGIN = 0.5 * (_TURN_MARGIN ** 2)
+_MIN_SEP_SCALE = 1e-3
+_AREA_MIN_SCALE = 1e-3
 
 
 def _safe_norm(vec: np.ndarray) -> float:
@@ -114,6 +117,69 @@ def _quadrilateral_convexity_residuals(edges: Sequence[np.ndarray]) -> np.ndarra
     for i in range(4):
         residuals.append(_smooth_hinge(_TURN_SIGN_MARGIN - turns[i] * turns[(i + 1) % 4]))
     return np.asarray(residuals, dtype=float)
+
+
+def _build_turn_margin(ids: Sequence[PointName], index: Dict[PointName, int]) -> ResidualSpec:
+    unique = [pid for pid in ids]
+    if len(unique) < 3:
+        raise ValueError("turn margin requires at least three points")
+
+    def func(x: np.ndarray) -> np.ndarray:
+        pts = [_vec(x, index, name) for name in unique]
+        res: List[float] = []
+        n = len(pts)
+        for i in range(n):
+            prev_pt = pts[(i - 1) % n]
+            cur_pt = pts[i]
+            next_pt = pts[(i + 1) % n]
+            u = cur_pt - prev_pt
+            v = next_pt - cur_pt
+            turn = _normalized_cross(u, v)
+            res.append(_smooth_hinge(_TURN_MARGIN - abs(turn)))
+        return np.asarray(res, dtype=float)
+
+    key = "turn_margin(" + "-".join(unique) + ")"
+    return ResidualSpec(key=key, func=func, size=len(unique), kind="turn_margin", source=None)
+
+
+def _polygon_area(pts: Sequence[np.ndarray]) -> float:
+    area = 0.0
+    n = len(pts)
+    for i in range(n):
+        x1, y1 = pts[i]
+        x2, y2 = pts[(i + 1) % n]
+        area += x1 * y2 - x2 * y1
+    return 0.5 * area
+
+
+def _build_area_floor(ids: Sequence[PointName], index: Dict[PointName, int], min_area: float) -> ResidualSpec:
+    unique = [pid for pid in ids]
+    if len(unique) < 3:
+        raise ValueError("area floor requires at least three points")
+
+    abs_min_area = abs(min_area)
+
+    def func(x: np.ndarray) -> np.ndarray:
+        pts = [_vec(x, index, name) for name in unique]
+        area = abs(_polygon_area(pts))
+        return np.array([_smooth_hinge(abs_min_area - area)], dtype=float)
+
+    key = "area_floor(" + "-".join(unique) + ")"
+    return ResidualSpec(key=key, func=func, size=1, kind="area_floor", source=None)
+
+
+def _build_min_separation(pair: Edge, index: Dict[PointName, int], min_distance: float) -> ResidualSpec:
+    if pair[0] == pair[1]:
+        raise ValueError("min separation requires two distinct points")
+    min_sq = float(min_distance * min_distance)
+
+    def func(x: np.ndarray) -> np.ndarray:
+        diff = _vec(x, index, pair[1]) - _vec(x, index, pair[0])
+        dist_sq = _norm_sq(diff)
+        return np.array([_smooth_hinge(min_sq - dist_sq)], dtype=float)
+
+    key = f"min_separation({_format_edge(pair)})"
+    return ResidualSpec(key=key, func=func, size=1, kind="min_separation", source=None)
 
 
 def _build_segment_length(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
@@ -376,7 +442,26 @@ def translate(program: Program) -> Model:
 
     order: List[PointName] = []
     seen: Dict[PointName, int] = {}
+    distinct_pairs: Set[Edge] = set()
+    polygon_sequences: Dict[Tuple[PointName, ...], str] = {}
+    scale_samples: List[float] = []
     orientation_edge: Optional[Edge] = None
+
+    def register_scale(value: object) -> None:
+        try:
+            if value is None:
+                return
+            val = float(value)
+            if math.isfinite(val) and val > 0:
+                scale_samples.append(val)
+        except (TypeError, ValueError):
+            return
+
+    def mark_distinct(a: PointName, b: PointName) -> None:
+        if a == b:
+            return
+        pair = (a, b) if a <= b else (b, a)
+        distinct_pairs.add(pair)
 
     def handle_edge(edge: Sequence[str]) -> None:
         nonlocal orientation_edge
@@ -385,6 +470,7 @@ def translate(program: Program) -> Model:
         _register_point(order, seen, b)
         if orientation_edge is None and a != b:
             orientation_edge = (a, b)
+        mark_distinct(a, b)
 
     def handle_path(path_value: object) -> None:
         if not isinstance(path_value, (list, tuple)) or len(path_value) != 2:
@@ -402,6 +488,18 @@ def translate(program: Program) -> Model:
                 _register_point(order, seen, name)
             continue
         data = stmt.data
+        opts = stmt.opts
+        for key in ("length", "distance", "value", "radius"):
+            if key in opts:
+                register_scale(opts.get(key))
+        if stmt.kind == "distance":
+            register_scale(data.get("value"))
+        if stmt.kind == "segment":
+            register_scale(opts.get("length") or opts.get("distance") or opts.get("value"))
+        if stmt.kind in {"polygon", "triangle", "quadrilateral", "parallelogram", "trapezoid", "rectangle", "square", "rhombus"}:
+            ids = tuple(data.get("ids", []))
+            if len(ids) >= 3 and ids not in polygon_sequences:
+                polygon_sequences[ids] = stmt.kind
         if "point" in data and isinstance(data["point"], str):
             _register_point(order, seen, data["point"])
         if "points" in data:
@@ -462,6 +560,20 @@ def translate(program: Program) -> Model:
         built = builder(stmt, index)
         residuals.extend(built)
 
+    scene_scale = max(scale_samples) if scale_samples else 1.0
+    min_sep = _MIN_SEP_SCALE * scene_scale
+    if min_sep > 0:
+        for pair in sorted(distinct_pairs):
+            residuals.append(_build_min_separation(pair, index, min_sep))
+
+    if polygon_sequences:
+        area_floor = _AREA_MIN_SCALE * scene_scale * scene_scale
+        for ids in polygon_sequences:
+            if len(ids) < 3:
+                continue
+            residuals.append(_build_turn_margin(ids, index))
+            residuals.append(_build_area_floor(ids, index, area_floor))
+
     gauges: List[str] = []
 
     anchor_point = order[0]
@@ -500,11 +612,46 @@ def translate(program: Program) -> Model:
         )
         gauges.append(f"orientation={_format_edge(orientation_edge)}")
 
-    return Model(points=order, index=index, residuals=residuals, gauges=gauges)
+    return Model(points=order, index=index, residuals=residuals, gauges=gauges, scale=scene_scale)
 
 
-def _initial_guess(model: Model, rng: np.random.Generator) -> np.ndarray:
-    guess = rng.uniform(-5, 5, size=2 * len(model.points))
+def _initial_guess(model: Model, rng: np.random.Generator, attempt: int) -> np.ndarray:
+    n = len(model.points)
+    guess = np.zeros(2 * n)
+    if n == 0:
+        return guess
+
+    base = max(model.scale, 1e-3)
+    # Place first three points in a stable, non-degenerate pattern.
+    guess[0] = 0.0
+    guess[1] = 0.0
+    if n >= 2:
+        guess[2] = base
+        guess[3] = 0.0
+    if n >= 3:
+        guess[4] = 0.5 * base
+        guess[5] = math.sqrt(3.0) * 0.5 * base
+    for i in range(3, n):
+        angle = (2 * math.pi * i) / max(4, n)
+        radius = 0.5 * base
+        guess[2 * i] = radius * math.cos(angle)
+        guess[2 * i + 1] = radius * math.sin(angle)
+
+    # Apply a random rotation to avoid consistent alignments across attempts.
+    if n >= 2:
+        theta = rng.uniform(0.0, 2 * math.pi)
+        cos_t = math.cos(theta)
+        sin_t = math.sin(theta)
+        for i in range(n):
+            x = guess[2 * i]
+            y = guess[2 * i + 1]
+            guess[2 * i] = cos_t * x - sin_t * y
+            guess[2 * i + 1] = sin_t * x + cos_t * y
+
+    jitter_scale = 0.1 * base * (1 + attempt)
+    jitter = rng.normal(loc=0.0, scale=jitter_scale, size=guess.shape)
+    jitter[0:2] = 0.0  # keep anchor stable at the origin
+    guess += jitter
     return guess
 
 
@@ -529,7 +676,7 @@ def solve(model: Model, options: SolveOptions = SolveOptions()) -> Solution:
     best_result: Optional[Tuple[float, np.ndarray, List[Tuple[ResidualSpec, np.ndarray]], bool]] = None
 
     for attempt in range(max(1, options.reseed_attempts)):
-        x0 = _initial_guess(model, rng)
+        x0 = _initial_guess(model, rng, attempt)
 
         def fun(x: np.ndarray) -> np.ndarray:
             vals, _ = _evaluate(model, x)

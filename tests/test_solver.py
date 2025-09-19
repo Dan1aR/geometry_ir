@@ -227,3 +227,72 @@ def test_translate_registers_tangent_touchpoints():
     )
 
     assert "T_AB" in model.points
+
+
+def test_translate_adds_min_separation_residual_for_segments():
+    model = _build_model(
+        """
+        scene "Segment"
+        points A, B
+        segment A-B [length=5]
+        """
+    )
+
+    spec = next(spec for spec in model.residuals if spec.key == "min_separation(A-B)")
+
+    collapsed = {"A": (0.0, 0.0), "B": (0.0, 0.0)}
+    vals_collapsed = spec.func(_coords_array(model, collapsed))
+    assert vals_collapsed.shape == (1,)
+    assert vals_collapsed[0] > 1e-6
+
+    separated = {"A": (0.0, 0.0), "B": (model.scale, 0.0)}
+    vals_separated = spec.func(_coords_array(model, separated))
+    assert vals_separated.shape == (1,)
+    assert vals_separated[0] < 1e-9
+
+
+def test_turn_margin_penalizes_collinear_triangle():
+    model = _build_model(
+        """
+        scene "Triangle"
+        triangle A-B-C
+        """
+    )
+
+    spec = next(spec for spec in model.residuals if spec.key == "turn_margin(A-B-C)")
+
+    collinear = {"A": (0.0, 0.0), "B": (1.0, 0.0), "C": (2.0, 0.0)}
+    vals_collinear = spec.func(_coords_array(model, collinear))
+    assert vals_collinear.shape == (3,)
+    assert np.max(vals_collinear) > 1e-3
+
+    proper = {"A": (0.0, 0.0), "B": (1.0, 0.0), "C": (0.0, 1.0)}
+    vals_proper = spec.func(_coords_array(model, proper))
+    assert vals_proper.shape == (3,)
+    assert np.max(np.abs(vals_proper)) < 1e-8
+
+
+def test_area_floor_discourages_polygon_collapse():
+    model = _build_model(
+        """
+        scene "Polygon"
+        polygon A-B-C-D
+        """
+    )
+
+    area_spec = next(spec for spec in model.residuals if spec.key == "area_floor(A-B-C-D)")
+
+    collapsed = {"A": (0.0, 0.0), "B": (0.0, 0.0), "C": (0.0, 0.0), "D": (0.0, 0.0)}
+    vals_collapsed = area_spec.func(_coords_array(model, collapsed))
+    assert vals_collapsed.shape == (1,)
+    assert vals_collapsed[0] > 1e-6
+
+    spaced = {
+        "A": (0.0, 0.0),
+        "B": (model.scale, 0.0),
+        "C": (model.scale, model.scale),
+        "D": (0.0, model.scale),
+    }
+    vals_spaced = area_spec.func(_coords_array(model, spaced))
+    assert vals_spaced.shape == (1,)
+    assert vals_spaced[0] < 1e-8
