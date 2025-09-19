@@ -121,7 +121,7 @@ _PROMPT_CORE = dedent(
     - bisector at A
     - median from A to B-C
     - altitude from A to B-C
-    - angle at A rays A-B A-C [label="60^\\circ"]
+    - angle at A rays A-B A-C [degrees=60]
     - right-angle at A rays A-B A-C [mark=square]
     - equal-segments (A-B, C-D ; E-F[, ...]) [label="given"]
     - parallel-edges (A-B ; C-D)
