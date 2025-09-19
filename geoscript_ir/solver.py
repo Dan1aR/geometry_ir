@@ -95,8 +95,21 @@ _TURN_SIGN_MARGIN = 0.5 * (_TURN_MARGIN ** 2)
 _MIN_SEP_SCALE = 1e-1         # was 1e-3 → much stronger
 _EDGE_FLOOR_SCALE = 1e-1      # per-edge floor on polygon edges
 _CARRIER_EDGE_FLOOR = 2e-2    # light floor for non-polygon carrier edges
-_AREA_MIN_SCALE = 1e-1        # slightly stronger
-_TAU_NONPAR = math.sin(math.radians(0.5))  # small non-parallel margin
+# Area guards should be strong enough to avoid near-degenerate solutions but
+# still be compatible with the minimum edge floors we enforce below.  The
+# tightest configuration allowed by the edge floors is roughly a base/height of
+# ``_EDGE_FLOOR_SCALE * scene_scale`` which yields an area on the order of
+# ``0.5 * _EDGE_FLOOR_SCALE ** 2``.  A moderately sized floor keeps polygons from
+# collapsing without overwhelming legitimate configurations (e.g. the circle and
+# trapezoid examples in the repository).
+_AREA_MIN_SCALE = 2e-2
+# Likewise the non-parallel margin for trapezoid legs needs to be permissive
+# enough for nearly-parallel but valid configurations while still preventing
+# truly degenerate layouts.  Using a tiny angular margin keeps the guard
+# effective (it still rejects perfectly parallel legs) without overwhelming the
+# actual geometric constraints.  The previous margin of half a degree was large
+# enough to conflict with legitimate isosceles trapezoids.
+_TAU_NONPAR = math.sin(math.radians(5e-4))
 
 
 def _safe_norm(vec: np.ndarray) -> float:
@@ -763,7 +776,12 @@ def _initial_guess(model: Model, rng: np.random.Generator, attempt: int) -> np.n
         guess[2 * i + 1] = radius * math.sin(angle)
 
     # random rotation
-    if n >= 2:
+    # Random rotation can help explore the search space when we reseed, but it
+    # also increases the chance that the very first attempt starts from an
+    # unfortunate configuration (e.g. nearly collapsing a trapezoid).  Keep the
+    # initial orientation deterministic for the first attempt and only rotate on
+    # subsequent retries.
+    if n >= 2 and attempt > 0:
         theta = rng.uniform(0.0, 2 * math.pi)
         cos_t = math.cos(theta)
         sin_t = math.sin(theta)
@@ -773,9 +791,12 @@ def _initial_guess(model: Model, rng: np.random.Generator, attempt: int) -> np.n
             guess[2 * i] = cos_t * x - sin_t * y
             guess[2 * i + 1] = sin_t * x + cos_t * y
 
-    jitter_scale = 0.1 * base * (1 + attempt)
-    jitter = rng.normal(loc=0.0, scale=jitter_scale, size=guess.shape)
-    jitter[0:2] = 0.0  # keep anchor stable at the origin
+    jitter_scale = 0.05 * base * (1 + attempt)
+    if attempt == 0:
+        jitter = np.zeros_like(guess)
+    else:
+        jitter = rng.normal(loc=0.0, scale=jitter_scale, size=guess.shape)
+        jitter[0:2] = 0.0  # keep anchor stable at the origin
     guess += jitter
     return guess
 
@@ -800,7 +821,16 @@ def solve(model: Model, options: SolveOptions = SolveOptions()) -> Solution:
     warnings: List[str] = []
     best_result: Optional[Tuple[float, np.ndarray, List[Tuple[ResidualSpec, np.ndarray]], bool]] = None
 
-    for attempt in range(max(1, options.reseed_attempts)):
+    base_attempts = max(1, options.reseed_attempts)
+    # Allow a couple of extra retries when every run so far is clearly outside
+    # the acceptable residual range.  This keeps the solver robust even when the
+    # caller requests a single attempt (the additional retries only kick in when
+    # the best residual is still large, e.g. >1e-4).
+    fallback_limit = base_attempts + 2
+    attempt = 0
+    while attempt < base_attempts or (
+        attempt < fallback_limit and (best_result is None or best_result[0] > 1e-4)
+    ):
         x0 = _initial_guess(model, rng, attempt)
 
         def fun(x: np.ndarray) -> np.ndarray:
@@ -827,8 +857,10 @@ def solve(model: Model, options: SolveOptions = SolveOptions()) -> Solution:
         if converged:
             break
 
-        if attempt < options.reseed_attempts - 1:
+        if attempt < base_attempts - 1:
             warnings.append(f"reseed attempt {attempt + 2} after residual max {max_res:.3e}")
+
+        attempt += 1
 
     if best_result is None:
         raise RuntimeError("solver failed to evaluate residuals")
