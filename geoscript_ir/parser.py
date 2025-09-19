@@ -170,11 +170,6 @@ def parse_path(cur: Cursor):
         r1, _ = parse_pair(cur)
         r2, _ = parse_pair(cur)
         return 'angle-bisector', {'at': at, 'rays': (r1, r2)}
-    if kw == 'perpendicular-bisector':
-        cur.consume_keyword('perpendicular-bisector')
-        cur.consume_keyword('of')
-        of, _ = parse_pair(cur)
-        return 'perpendicular-bisector', {'of': of}
     raise SyntaxError(f'[line {t[2]}, col {t[3]}] invalid path kind {t[1]!r}')
 
 def parse_opts(cur: Cursor) -> Dict[str, Any]:
@@ -398,12 +393,6 @@ def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
         r2, _ = parse_pair(cur)
         opts = parse_opts(cur)
         stmt = Stmt('angle_bisector_at', sp, {'at': at, 'rays': (r1, r2)}, opts)
-    elif kw == 'perpendicular-bisector':
-        cur.consume_keyword('perpendicular-bisector')
-        cur.consume_keyword('of')
-        of, sp = parse_pair(cur)
-        opts = parse_opts(cur)
-        stmt = Stmt('perpendicular_bisector_of', sp, {'of': of}, opts)
     elif kw == 'median':
         cur.consume_keyword('median')
         cur.consume_keyword('from')

@@ -16,11 +16,6 @@ def path_str(path: Tuple[str, object]) -> str:
         if isinstance(r1, (list, tuple)) and isinstance(r2, (list, tuple)):
             return f'angle-bisector at {at} rays {edge_str(r1)} {edge_str(r2)}'
         return f'angle-bisector at {at}'
-    if kind == 'perpendicular-bisector' and isinstance(payload, dict):
-        of = payload.get('of')
-        if isinstance(of, (list, tuple)):
-            return f'perpendicular-bisector of {edge_str(of)}'
-        return 'perpendicular-bisector'
     return f'# [unknown path {kind}]'
 
 def print_program(prog: Program) -> str:
@@ -73,8 +68,6 @@ def print_program(prog: Program) -> str:
             lines.append(f'parallel through {s.data["through"]} to {edge_str(s.data["to"])}')
         elif s.kind == 'angle_bisector_at':
             r1, r2 = s.data['rays']; lines.append(f'angle-bisector at {s.data["at"]} rays {edge_str(r1)} {edge_str(r2)}{o}'); continue
-        elif s.kind == 'perpendicular_bisector_of':
-            lines.append(f'perpendicular-bisector of {edge_str(s.data["of"])}{o}'); continue
         elif s.kind == 'median_from_to':
             lines.append(f'median from {s.data["frm"]} to {edge_str(s.data["to"])}')
         elif s.kind == 'altitude_from_to':
