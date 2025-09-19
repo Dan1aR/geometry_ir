@@ -21,6 +21,12 @@ def main() -> None:
     print(f"Desugared:\n{print_program(desugared)}")
 
     model = translate(desugared)
+    print("Model:")
+    print(f"  Points: {model.points}")
+    print(f"  Gauges: {model.gauges}")
+    print(f"  Residuals ({len(model.residuals)}):")
+    for i, residual in enumerate(model.residuals):
+        print(f"    [{i}] {residual.key} (size={residual.size}, kind={residual.kind})")
     solution = solve(model, SolveOptions(random_seed=123, reseed_attempts=1))
 
     print("\nSolved\nSuccess:", solution.success)
