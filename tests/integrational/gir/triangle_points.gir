@@ -4,9 +4,9 @@ points A, B, C, D, E
 rules [no_solving=true allow_auxiliary=false no_unicode_degree=true mark_right_angles_as_square=true no_equations_on_sides=true]
 # Треугольник и заданные углы
 triangle A-B-C
-angle at A rays A-B A-C [label="38^\\circ"]
-angle at B rays B-A B-C [label="110^\\circ"]
-angle at C rays C-A C-B [label="32^\\circ"]
+angle at A rays A-B A-C [degrees=38]
+angle at B rays B-A B-C [degrees=110]
+angle at C rays C-A C-B [degrees=32]
 # Точки D и E на AC, при этом D лежит на отрезке AE
 segment A-C
 point D on segment A-C
