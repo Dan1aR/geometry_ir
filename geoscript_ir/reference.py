@@ -89,6 +89,76 @@ _PROMPT_CORE = dedent(
     - Targets describe "what to find" without solving.
 
     -----------------------------------------
+    SYNTAX QUICK REFERENCE (READ WITH BNF)
+    -----------------------------------------
+    General form:
+    - Program is line-oriented; emit one statement per line.
+    - Declare the scene before constructions:
+        scene "Title"
+        layout canonical=<id> scale=<number>
+        points A, B, C[, ...]      # commas required between IDs
+    - IDs are case-insensitive (stored uppercase) and may include underscores; declare every point in `points`.
+    - Comments are their own statements:   # text here
+
+    Options blocks:
+    - Any statement that ends with `Opts?` in the BNF accepts an optional `[key=value ...]` block.
+    - Separate option pairs with spaces (commas are also accepted). Values may be booleans (`true|false`), numbers,
+      quoted strings, raw identifiers, or edge tokens like `A-B` depending on context.
+    - Common stylistic options include `color=blue`, `mark=square`, `label="text"`, `length=5`, `choose="near A"`, etc.
+
+    Core constructions (Obj):
+    - segment A-B [length=5]           # straight edge; `length` encodes a stated measure without solving
+    - ray A-B [mark=directed]
+    - line A-B [style=dashed]
+    - line A-B tangent to circle center O at T [mark=true]
+    - circle center O radius-through A [label="circumcircle"]
+    - circle center O tangent (A-B, C-D[, ...]) [mark=incircle]
+    - circle through (A, B, C[, D ...])
+    - circumcircle of A-B-C          # triangle or polygon chain, >=3 distinct points
+    - incircle of A-B-C
+    - perpendicular at A to B-C
+    - parallel through A to B-C
+    - bisector at A
+    - median from A to B-C
+    - altitude from A to B-C
+    - angle at A rays A-B A-C [label="60^\\circ"]
+    - right-angle at A rays A-B A-C [mark=square]
+    - equal-segments (A-B, C-D ; E-F[, ...]) [label="given"]
+    - parallel-edges (A-B ; C-D)
+    - tangent at A to circle center O
+    - polygon A-B-C-D-E [filled=true]
+    - triangle A-B-C [isosceles=atA right=atB]
+    - quadrilateral A-B-C-D
+    - parallelogram A-B-C-D
+    - trapezoid A-B-C-D [bases=A-D isosceles=true]
+    - rectangle A-B-C-D
+    - square A-B-C-D
+    - rhombus A-B-C-D
+
+    Placements (point locations and intersections):
+    - point P on line A-B [mark=midpoint]
+    - point Q on ray A-B / segment A-B / circle center O [choose="near A"]
+    - intersect (line A-B) with (circle center O) at X[, Y] [type=external]
+      Paths inside parentheses are one of: `line A-B`, `ray A-B`, `segment A-B`, `circle center O`.
+
+    Annotations:
+    - label point A [text="A"]
+    - sidelabel A-B "text" [pos=left]
+
+    Targets (what the problem asks for):
+    - target angle at A rays A-B A-C [label="?A"]
+    - target length A-B [units="cm"]
+    - target point X [highlight=true]
+    - target circle ("Describe the circle") [label="(O)"]
+    - target area ("Find area of ABCD")
+    - target arc A-B on circle center O [inside_at=C]
+
+    Rules / guardrails:
+    - rules [no_solving=true allow_auxiliary=false no_unicode_degree=true
+             mark_right_angles_as_square=true no_equations_on_sides=true]
+      Only the boolean flags above are recognized by the validator; omit keys not present in that list.
+
+    -----------------------------------------
     CIRCLE / INSCRIBED / CIRCUMSCRIBED LOGIC
     -----------------------------------------
     You MUST add a circle statement whenever the text implies one of the following:
