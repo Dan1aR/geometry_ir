@@ -43,9 +43,11 @@ def print_program(prog: Program) -> str:
             ids = ', '.join(s.data['ids'])
             lines.append(f'circle through ({ids})')
         elif s.kind == 'circumcircle':
-            a,b,c = s.data['tri']; lines.append(f'circumcircle of {a}-{b}-{c}')
+            chain = '-'.join(s.data['ids'])
+            lines.append(f'circumcircle of {chain}')
         elif s.kind == 'incircle':
-            a,b,c = s.data['tri']; lines.append(f'incircle of {a}-{b}-{c}')
+            chain = '-'.join(s.data['ids'])
+            lines.append(f'incircle of {chain}')
         elif s.kind == 'perpendicular_at':
             lines.append(f'perpendicular at {s.data["at"]} to {edge_str(s.data["to"])}')
         elif s.kind == 'parallel_through':

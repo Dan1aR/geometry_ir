@@ -67,6 +67,12 @@ equal-segments (A-D ; B-C)
 pip install -e .
 ```
 
+To include the test tooling, install with the optional `test` extras:
+
+```bash
+pip install -e ".[test]"
+```
+
 ### Python API
 
 ```python
@@ -97,6 +103,7 @@ python -m geoscript_ir.demo
 ### Run tests
 
 ```bash
+pip install -e ".[test]"
 pytest -q
 ```
 
