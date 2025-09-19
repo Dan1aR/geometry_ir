@@ -11,10 +11,11 @@ from .solver import (
     SolveOptions,
     Model,
     Solution,
+    normalize_point_coords,
 )
 
 __all__ = [
     'parse_program', 'validate', 'ValidationError', 'desugar', 'check_consistency', 'print_program',
-    'translate', 'solve', 'SolveOptions', 'Model', 'Solution',
+    'translate', 'solve', 'SolveOptions', 'Model', 'Solution', 'normalize_point_coords',
     'Program', 'Stmt', 'Span', 'BNF', 'LLM_PROMPT', 'get_llm_prompt'
 ]
