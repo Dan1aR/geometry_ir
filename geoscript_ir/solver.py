@@ -386,6 +386,16 @@ def translate(program: Program) -> Model:
         if orientation_edge is None and a != b:
             orientation_edge = (a, b)
 
+    def handle_path(path_value: object) -> None:
+        if not isinstance(path_value, (list, tuple)) or len(path_value) != 2:
+            return
+        kind, payload = path_value
+        if kind in {"line", "segment", "ray"} and isinstance(payload, (list, tuple)):
+            handle_edge(payload)
+            return
+        if kind == "circle" and isinstance(payload, str):
+            _register_point(order, seen, payload)
+
     for stmt in program.stmts:
         if stmt.kind == "points":
             for name in stmt.data.get("ids", []):
@@ -397,24 +407,45 @@ def translate(program: Program) -> Model:
         if "points" in data:
             for name in data["points"]:
                 _register_point(order, seen, name)
+        if "ids" in data:
+            for name in data["ids"]:
+                if isinstance(name, str):
+                    _register_point(order, seen, name)
         if "edge" in data:
             handle_edge(data["edge"])
         if "edges" in data:
             for edge in data["edges"]:
                 handle_edge(edge)
+        if "lhs" in data:
+            for edge in data["lhs"]:
+                handle_edge(edge)
+        if "rhs" in data:
+            for edge in data["rhs"]:
+                handle_edge(edge)
         if "rays" in data:
             for ray in data["rays"]:
                 handle_edge(ray)
+        if "tangent_edges" in data:
+            for edge in data["tangent_edges"]:
+                handle_edge(edge)
         if "path" in data:
-            kind, payload = data["path"]
-            if kind in {"line", "segment", "ray"}:
-                handle_edge(payload)
-            elif kind == "circle" and isinstance(payload, str):
-                _register_point(order, seen, payload)
+            handle_path(data["path"])
+        if "path1" in data:
+            handle_path(data["path1"])
+        if "path2" in data:
+            handle_path(data["path2"])
         if "midpoint" in data:
             _register_point(order, seen, data["midpoint"])
         if "foot" in data:
             _register_point(order, seen, data["foot"])
+        if "center" in data and isinstance(data["center"], str):
+            _register_point(order, seen, data["center"])
+        if "through" in data and isinstance(data["through"], str):
+            _register_point(order, seen, data["through"])
+        if "at" in data and isinstance(data["at"], str):
+            _register_point(order, seen, data["at"])
+        if "at2" in data and isinstance(data["at2"], str):
+            _register_point(order, seen, data["at2"])
         if "from" in data and isinstance(data["from"], str):
             _register_point(order, seen, data["from"])
 

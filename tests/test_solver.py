@@ -202,3 +202,28 @@ def test_square_residuals_rely_on_desugared_statements():
     for spec in equal_segments:
         vals = spec.func(x)
         assert np.max(np.abs(vals)) < 1e-8
+
+
+def test_translate_registers_circle_helper_points():
+    model = _build_model(
+        """
+        scene "Circle helpers"
+        points A, B, C
+        circle through (A, B, C)
+        """
+    )
+
+    assert "O_ABC" in model.points
+
+
+def test_translate_registers_tangent_touchpoints():
+    model = _build_model(
+        """
+        scene "Circle tangency"
+        points A, B, O
+        segment A-B
+        circle center O tangent (A-B)
+        """
+    )
+
+    assert "T_AB" in model.points
