@@ -16,3 +16,13 @@ rules no_solving=true
     out = print_program(dz)
     assert 'segment A-B' in out
     assert 'equal-segments (A-D ; B-C)' in out
+
+
+def test_parse_equal_segments_single_paren():
+    text = "equal-segments (A-B ; C-D)"
+    prog = parse_program(text)
+    assert len(prog.stmts) == 1
+    stmt = prog.stmts[0]
+    assert stmt.kind == 'equal_segments'
+    assert stmt.data['lhs'] == [('A', 'B')]
+    assert stmt.data['rhs'] == [('C', 'D')]
