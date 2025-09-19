@@ -349,16 +349,30 @@ def _build_point_on(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpe
 
     if path_kind == "circle":
         radius = stmt.opts.get("radius") or stmt.opts.get("distance")
-        if radius is None:
-            raise ValueError("point on circle requires numeric radius in options")
+        radius_point = stmt.opts.get("radius_point")
         if not isinstance(payload, str):
             raise ValueError("circle payload must be center point name")
         center = payload
-        r_val = float(radius)
+
+        if radius is not None:
+            r_val = float(radius)
+
+            def func(x: np.ndarray) -> np.ndarray:
+                vec = _vec(x, index, point) - _vec(x, index, center)
+                return np.array([_norm_sq(vec) - r_val**2], dtype=float)
+
+            key = f"point_on_circle({point},{center})"
+            return [ResidualSpec(key=key, func=func, size=1, kind="point_on_circle", source=stmt)]
+
+        if radius_point is None:
+            raise ValueError("point on circle requires numeric radius or radius point in options")
+        if not isinstance(radius_point, str):
+            raise ValueError("radius_point option must be a point name")
 
         def func(x: np.ndarray) -> np.ndarray:
             vec = _vec(x, index, point) - _vec(x, index, center)
-            return np.array([_norm_sq(vec) - r_val**2], dtype=float)
+            ref = _vec(x, index, radius_point) - _vec(x, index, center)
+            return np.array([_norm_sq(vec) - _norm_sq(ref)], dtype=float)
 
         key = f"point_on_circle({point},{center})"
         return [ResidualSpec(key=key, func=func, size=1, kind="point_on_circle", source=stmt)]
@@ -498,6 +512,7 @@ def translate(program: Program) -> Model:
     orientation_edge: Optional[Edge] = None
     preferred_base_edge: Optional[Edge] = None  # NEW
     carrier_edges: Set[Edge] = set()  # NEW: edges used as carriers in constraints
+    circle_radius_refs: Dict[PointName, List[PointName]] = {}
 
     def register_scale(value: object) -> None:
         try:
@@ -630,6 +645,29 @@ def translate(program: Program) -> Model:
             _register_point(order, seen, data["at2"])
         if "from" in data and isinstance(data["from"], str):
             _register_point(order, seen, data["from"])
+
+        if stmt.kind == "circle_center_radius_through":
+            center = data.get("center")
+            through = data.get("through")
+            if isinstance(center, str) and isinstance(through, str):
+                circle_radius_refs.setdefault(center, []).append(through)
+
+    if circle_radius_refs:
+        radius_lookup = {center: refs[0] for center, refs in circle_radius_refs.items() if refs}
+        for stmt in program.stmts:
+            if stmt.kind != "point_on":
+                continue
+            path = stmt.data.get("path")
+            if not isinstance(path, (list, tuple)) or len(path) != 2:
+                continue
+            path_kind, payload = path
+            if path_kind != "circle" or not isinstance(payload, str):
+                continue
+            if any(key in stmt.opts for key in ("radius", "distance")):
+                continue
+            radius_point = radius_lookup.get(payload)
+            if radius_point and "radius_point" not in stmt.opts:
+                stmt.opts["radius_point"] = radius_point
 
     if not order:
         raise ValueError("program contains no points to solve for")
