@@ -1,0 +1,211 @@
+import pytest
+
+from geoscript_ir import parse_program
+
+
+def parse_single(text: str):
+    prog = parse_program(text)
+    assert len(prog.stmts) == 1, f"expected single statement, got {len(prog.stmts)}"
+    return prog.stmts[0]
+
+
+def test_scene_layout_points():
+    scene = parse_single('scene "Demo"')
+    assert scene.kind == 'scene'
+    assert scene.data == {'title': 'Demo'}
+
+    layout = parse_single('layout canonical=generic scale=2')
+    assert layout.kind == 'layout'
+    assert layout.data == {'canonical': 'generic', 'scale': 2.0}
+
+    pts = parse_single('points A, B, C, D')
+    assert pts.kind == 'points'
+    assert pts.data == {'ids': ['A', 'B', 'C', 'D']}
+
+
+@pytest.mark.parametrize(
+    'text, kind, data, opts',
+    [
+        ('label point A', 'label_point', {'point': 'A'}, {}),
+        ('sidelabel A-B "ab"', 'sidelabel', {'edge': ('A', 'B'), 'text': 'ab'}, {}),
+        ('sidelabel A-B "text" [pos=left]', 'sidelabel', {'edge': ('A', 'B'), 'text': 'text'}, {'pos': 'left'}),
+    ],
+)
+def test_annotations(text, kind, data, opts):
+    stmt = parse_single(text)
+    assert stmt.kind == kind
+    assert stmt.data == data
+    assert stmt.opts == opts
+
+
+@pytest.mark.parametrize(
+    'text, kind, data, opts',
+    [
+        ('target angle at A rays A-B A-C', 'target_angle', {'at': 'A', 'rays': (('A', 'B'), ('A', 'C'))}, {}),
+        ('target length A-B', 'target_length', {'edge': ('A', 'B')}, {}),
+        ('target point X', 'target_point', {'point': 'X'}, {}),
+        ('target circle ("Find circle")', 'target_circle', {'text': 'Find circle'}, {}),
+        ('target area ("Compute area")', 'target_area', {'text': 'Compute area'}, {}),
+        (
+            'target arc A-B on circle center O [color=red]',
+            'target_arc',
+            {'A': 'A', 'B': 'B', 'center': 'O'},
+            {'color': 'red'},
+        ),
+    ],
+)
+def test_targets(text, kind, data, opts):
+    stmt = parse_single(text)
+    assert stmt.kind == kind
+    assert stmt.data == data
+    assert stmt.opts == opts
+
+
+@pytest.mark.parametrize(
+    'text, kind, data, opts',
+    [
+        ('segment A-B', 'segment', {'edge': ('A', 'B')}, {}),
+        ('ray A-B [color=green]', 'ray', {'ray': ('A', 'B')}, {'color': 'green'}),
+        ('line A-B', 'line', {'edge': ('A', 'B')}, {}),
+        (
+            'line A-B tangent to circle center O at P',
+            'line_tangent_at',
+            {'edge': ('A', 'B'), 'center': 'O', 'at': 'P'},
+            {},
+        ),
+        (
+            'circle center O radius-through A',
+            'circle_center_radius_through',
+            {'center': 'O', 'through': 'A'},
+            {},
+        ),
+        (
+            'circle center O tangent (A-B, C-D)',
+            'circle_center_tangent_sides',
+            {'center': 'O', 'tangent_edges': [('A', 'B'), ('C', 'D')]},
+            {},
+        ),
+        (
+            'circle through (A, B, C, D)',
+            'circle_through',
+            {'ids': ['A', 'B', 'C', 'D']},
+            {},
+        ),
+        (
+            'circumcircle of A-B-C-D [color=blue]',
+            'circumcircle',
+            {'ids': ['A', 'B', 'C', 'D']},
+            {'color': 'blue'},
+        ),
+        (
+            'incircle of A-B-C',
+            'incircle',
+            {'ids': ['A', 'B', 'C']},
+            {},
+        ),
+        (
+            'perpendicular at A to B-C',
+            'perpendicular_at',
+            {'at': 'A', 'to': ('B', 'C')},
+            {},
+        ),
+        (
+            'parallel through A to B-C [mark=true]',
+            'parallel_through',
+            {'through': 'A', 'to': ('B', 'C')},
+            {'mark': True},
+        ),
+        ('bisector at A', 'bisector_at', {'at': 'A'}, {}),
+        (
+            'median from A to B-C',
+            'median_from_to',
+            {'frm': 'A', 'to': ('B', 'C')},
+            {},
+        ),
+        (
+            'altitude from A to B-C',
+            'altitude_from_to',
+            {'frm': 'A', 'to': ('B', 'C')},
+            {},
+        ),
+        (
+            'angle at A rays A-B A-C',
+            'angle_at',
+            {'at': 'A', 'rays': (('A', 'B'), ('A', 'C'))},
+            {},
+        ),
+        (
+            'right-angle at A rays A-B A-C [mark=square]',
+            'right_angle_at',
+            {'at': 'A', 'rays': (('A', 'B'), ('A', 'C'))},
+            {'mark': 'square'},
+        ),
+        (
+            'equal-segments (A-B, B-C ; C-D, D-E)',
+            'equal_segments',
+            {'lhs': [('A', 'B'), ('B', 'C')], 'rhs': [('C', 'D'), ('D', 'E')]},
+            {},
+        ),
+        (
+            'tangent at A to circle center O',
+            'tangent_at',
+            {'at': 'A', 'center': 'O'},
+            {},
+        ),
+        (
+            'polygon A-B-C-D-E',
+            'polygon',
+            {'ids': ['A', 'B', 'C', 'D', 'E']},
+            {},
+        ),
+        ('triangle A-B-C', 'triangle', {'ids': ['A', 'B', 'C']}, {}),
+        (
+            'quadrilateral A-B-C-D',
+            'quadrilateral',
+            {'ids': ['A', 'B', 'C', 'D']},
+            {},
+        ),
+        (
+            'parallelogram A-B-C-D',
+            'parallelogram',
+            {'ids': ['A', 'B', 'C', 'D']},
+            {},
+        ),
+        ('trapezoid A-B-C-D', 'trapezoid', {'ids': ['A', 'B', 'C', 'D']}, {}),
+        ('rectangle A-B-C-D', 'rectangle', {'ids': ['A', 'B', 'C', 'D']}, {}),
+        ('square A-B-C-D', 'square', {'ids': ['A', 'B', 'C', 'D']}, {}),
+        ('rhombus A-B-C-D', 'rhombus', {'ids': ['A', 'B', 'C', 'D']}, {}),
+    ],
+)
+def test_objects(text, kind, data, opts):
+    stmt = parse_single(text)
+    assert stmt.kind == kind
+    assert stmt.data == data
+    assert stmt.opts == opts
+
+
+def test_placements():
+    pt_on = parse_single('point X on circle center O')
+    assert pt_on.kind == 'point_on'
+    assert pt_on.data == {'point': 'X', 'path': ('circle', 'O')}
+
+    pt_on_line = parse_single('point Y on line A-B [mark=midpoint]')
+    assert pt_on_line.kind == 'point_on'
+    assert pt_on_line.data == {'point': 'Y', 'path': ('line', ('A', 'B'))}
+    assert pt_on_line.opts == {'mark': 'midpoint'}
+
+    inter = parse_single('intersect (line A-B) with (circle center O) at P, Q [type=external]')
+    assert inter.kind == 'intersect'
+    assert inter.data == {
+        'path1': ('line', ('A', 'B')),
+        'path2': ('circle', 'O'),
+        'at': 'P',
+        'at2': 'Q',
+    }
+    assert inter.opts == {'type': 'external'}
+
+
+def test_rules():
+    stmt = parse_single('rules [no_solving=true allow_dashed=false]')
+    assert stmt.kind == 'rules'
+    assert stmt.opts == {'allow_dashed': False, 'no_solving': True}
