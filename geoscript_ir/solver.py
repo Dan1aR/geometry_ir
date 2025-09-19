@@ -60,6 +60,56 @@ class Solution:
     residual_breakdown: List[Dict[str, object]]
     warnings: List[str]
 
+    def normalized_point_coords(self, scale: float = 100.0) -> Dict[PointName, Tuple[float, float]]:
+        """Return normalized point coordinates scaled to ``scale``.
+
+        The normalization maps the solved coordinates into the unit square by
+        subtracting the minimum coordinate along each axis and dividing by the
+        corresponding range (``max - min``).  The result is then scaled by the
+        ``scale`` factor, which defaults to 100.  Degenerate axes (zero range)
+        collapse to zero after normalization.
+        """
+
+        return normalize_point_coords(self.point_coords, scale)
+
+
+def normalize_point_coords(
+    point_coords: Dict[PointName, Tuple[float, float]], scale: float = 100.0
+) -> Dict[PointName, Tuple[float, float]]:
+    """Normalize and scale solved point coordinates.
+
+    Args:
+        point_coords: Mapping of point name to ``(x, y)`` coordinates.
+        scale: Multiplier applied after normalization (defaults to 100).
+
+    Returns:
+        A new dictionary with coordinates translated to start at ``(0, 0)`` and
+        scaled so that each axis spans at most ``scale`` units.  When all points
+        share the same coordinate along an axis, that axis collapses to zero.
+    """
+
+    if not point_coords:
+        return {}
+
+    xs = [coord[0] for coord in point_coords.values()]
+    ys = [coord[1] for coord in point_coords.values()]
+
+    min_x = min(xs)
+    max_x = max(xs)
+    min_y = min(ys)
+    max_y = max(ys)
+
+    span_x = max(max_x - min_x, _DENOM_EPS)
+    span_y = max(max_y - min_y, _DENOM_EPS)
+
+    normalized: Dict[PointName, Tuple[float, float]] = {}
+    for name, (x, y) in point_coords.items():
+        norm_x = ((x - min_x) / span_x) * scale
+        norm_y = ((y - min_y) / span_y) * scale
+        normalized[name] = (norm_x, norm_y)
+
+    return normalized
+
 
 def _register_point(order: List[PointName], seen: Dict[PointName, int], name: PointName) -> None:
     if name not in seen:

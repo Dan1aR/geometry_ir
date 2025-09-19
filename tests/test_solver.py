@@ -2,7 +2,13 @@ import numpy as np
 import pytest
 
 from geoscript_ir import parse_program, validate, desugar
-from geoscript_ir.solver import translate, solve, SolveOptions
+from geoscript_ir.solver import (
+    translate,
+    solve,
+    SolveOptions,
+    Solution,
+    normalize_point_coords,
+)
 
 
 def _build_model(text: str):
@@ -90,6 +96,42 @@ def test_solver_reports_failure_for_inconsistent_constraints():
     assert any("did not converge" in msg for msg in sol.warnings)
     assert len(sol.residual_breakdown) >= 1
 
+
+def test_normalize_point_coords():
+    coords = {
+        "A": (0.0, 0.0),
+        "B": (2.0, 4.0),
+        "C": (1.0, 2.0),
+    }
+
+    normalized = normalize_point_coords(coords)
+    assert normalized == {
+        "A": (0.0, 0.0),
+        "B": (100.0, 100.0),
+        "C": (50.0, 50.0),
+    }
+
+    # Degenerate axis collapses to zero after normalization.
+    flat_coords = {
+        "A": (3.0, 5.0),
+        "B": (3.0, 7.0),
+    }
+
+    normalized_flat = normalize_point_coords(flat_coords, scale=10.0)
+    assert normalized_flat == {
+        "A": (0.0, 0.0),
+        "B": (0.0, 10.0),
+    }
+
+    solution = Solution(
+        point_coords=coords,
+        success=True,
+        max_residual=0.0,
+        residual_breakdown=[],
+        warnings=[],
+    )
+
+    assert solution.normalized_point_coords() == normalized
 
 def test_quadrilateral_convexity_residuals():
     model = _build_model(
