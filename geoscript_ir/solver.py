@@ -82,7 +82,6 @@ def _norm_sq(vec: np.ndarray) -> float:
 def _cross_2d(a: np.ndarray, b: np.ndarray) -> float:
     return float(a[0] * b[1] - a[1] * b[0])
 
-
 _DENOM_EPS = 1e-12
 _HINGE_EPS = 1e-9
 _TURN_MARGIN = math.sin(math.radians(1.0))
@@ -146,7 +145,7 @@ def _select_trapezoid_base_index(ids: Sequence[PointName], opts: Dict[str, objec
             return idx
     return 3
 
-
+ 
 def _build_segment_length(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
     length = stmt.opts.get("length") or stmt.opts.get("distance") or stmt.opts.get("value")
     if length is None:
@@ -479,6 +478,7 @@ _RESIDUAL_BUILDERS: Dict[str, Callable[[Stmt, Dict[PointName, int]], List[Residu
     "midpoint": _build_midpoint,
     "foot": _build_foot,
     "distance": _build_distance,
+
     "quadrilateral": _build_quadrilateral_family,
     "parallelogram": _build_quadrilateral_family,
     "trapezoid": _build_quadrilateral_family,
