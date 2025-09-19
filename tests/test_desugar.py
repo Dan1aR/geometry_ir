@@ -152,6 +152,24 @@ def test_circle_tangent_edges_expand_to_intersections_and_right_angles():
     assert all(s.opts == {} for s in right_angles)
 
 
+def test_intersect_generates_point_on_and_segments():
+    bisector = ('angle-bisector', {'at': 'A', 'rays': (('A', 'B'), ('A', 'C'))})
+    segment = ('segment', ('B', 'C'))
+    inter = stmt('intersect', {'path1': bisector, 'path2': segment, 'at': 'D', 'at2': None})
+
+    out = desugar(Program([inter]))
+
+    generated = [s for s in out.stmts if s.origin == 'desugar(intersect)']
+    point_on = [s for s in generated if s.kind == 'point_on']
+    assert len(point_on) == 2
+    assert all(s.data['point'] == 'D' for s in point_on)
+    assert any(s.data['path'] == bisector for s in point_on)
+    assert any(s.data['path'] == segment for s in point_on)
+
+    segments = [s for s in generated if s.kind == 'segment']
+    assert {s.data['edge'] for s in segments} == {('A', 'D')}
+
+
 def test_circle_through_creates_center_and_equal_radii():
     circle = stmt('circle_through', {'ids': ['A', 'B', 'C', 'D']}, {'label': 'omega'})
 

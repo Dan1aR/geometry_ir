@@ -2,14 +2,16 @@ scene "Isosceles triangle ABC with base AC; AD is angle bisector; find angle ADC
 layout canonical=triangle_ABC scale=1
 points A, B, C, D
 rules [no_solving=true allow_auxiliary=false no_unicode_degree=true mark_right_angles_as_square=true no_equations_on_sides=true]
-# Равнобедренный треугольник с основанием AC (равные стороны AB и BC)
+
+# Isosceles with base AC → equal sides AB and BC
 triangle A-B-C [isosceles=atB]
-# Дано: угол C равен 50^\\circ
+
+# Given: ∠C = 50°
 angle at C rays C-A C-B [label="50^\\circ"]
-# Биссектриса AD: D на BC, проведена из A
+
+# AD is the angle bisector at A, meeting BC at D
 segment B-C
-point D on segment B-C
-line A-D
-bisector at A
-# Цель: угол ADC
+intersect( angle-bisector at A rays A-B A-C ) with ( segment B-C ) at D
+
+# Target: ∠ADC
 target angle at D rays D-A D-C [label="?ADC"]

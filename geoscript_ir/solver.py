@@ -377,6 +377,30 @@ def _build_point_on(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpe
         key = f"point_on_circle({point},{center})"
         return [ResidualSpec(key=key, func=func, size=1, kind="point_on_circle", source=stmt)]
 
+    if path_kind == "angle-bisector" and isinstance(payload, dict):
+        at = payload.get("at")
+        rays = payload.get("rays")
+        if not isinstance(at, str) or not isinstance(rays, (list, tuple)) or len(rays) != 2:
+            raise ValueError("angle-bisector path requires vertex and two rays")
+        ray1 = _as_edge(rays[0])
+        ray2 = _as_edge(rays[1])
+        arm1 = ray1[1]
+        arm2 = ray2[1]
+
+        def func(x: np.ndarray) -> np.ndarray:
+            p = _vec(x, index, point)
+            v = _vec(x, index, at)
+            a = _vec(x, index, arm1)
+            b = _vec(x, index, arm2)
+            lhs = _norm_sq(p - a) * _norm_sq(v - b)
+            rhs = _norm_sq(p - b) * _norm_sq(v - a)
+            return np.array([lhs - rhs], dtype=float)
+
+        key = (
+            f"point_on_angle_bisector({point},{at};{_format_edge(ray1)},{_format_edge(ray2)})"
+        )
+        return [ResidualSpec(key=key, func=func, size=1, kind="point_on_angle_bisector", source=stmt)]
+
     raise ValueError(f"Unsupported path kind for point_on: {path_kind}")
 
 
@@ -551,6 +575,17 @@ def translate(program: Program) -> Model:
             return
         if kind == "circle" and isinstance(payload, str):
             _register_point(order, seen, payload)
+            return
+        if kind == "angle-bisector" and isinstance(payload, dict):
+            at = payload.get("at")
+            if isinstance(at, str):
+                _register_point(order, seen, at)
+            rays = payload.get("rays")
+            if isinstance(rays, (list, tuple)):
+                for ray in rays:
+                    if isinstance(ray, (list, tuple)):
+                        handle_edge(ray)
+            return
 
     # scan program
     for stmt in program.stmts:
@@ -619,6 +654,8 @@ def translate(program: Program) -> Model:
         if "rhs" in data:
             for edge in data["rhs"]:
                 handle_edge(edge)
+        if "of" in data and isinstance(data["of"], (list, tuple)):
+            handle_edge(data["of"])
         if "rays" in data:
             for ray in data["rays"]:
                 handle_edge(ray)

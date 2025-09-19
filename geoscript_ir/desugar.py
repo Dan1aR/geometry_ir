@@ -1,3 +1,5 @@
+from typing import Optional
+
 from .ast import Program, Stmt
 
 
@@ -38,6 +40,16 @@ def canonical_stmt_key(stmt: Stmt):
         rays = normalize_edge_list(stmt.data['rays'])
         return ('right_angle_at', stmt.data['at'], rays)
     return None
+
+
+def _angle_bisector_vertex(path: object) -> Optional[str]:
+    if not isinstance(path, (list, tuple)) or len(path) != 2:
+        return None
+    kind, payload = path
+    if kind != 'angle-bisector' or not isinstance(payload, dict):
+        return None
+    at = payload.get('at')
+    return at if isinstance(at, str) else None
 
 
 def desugar(prog: Program) -> Program:
@@ -274,6 +286,26 @@ def desugar(prog: Program) -> Program:
                 ),
                 generated=True,
             )
+        elif s.kind == 'intersect':
+            path1 = s.data['path1']
+            path2 = s.data['path2']
+            pts = [s.data.get('at'), s.data.get('at2')]
+            for point in pts:
+                if not isinstance(point, str):
+                    continue
+                append(
+                    Stmt('point_on', s.span, {'point': point, 'path': path1}, {}, origin='desugar(intersect)'),
+                    generated=True,
+                )
+                append(
+                    Stmt('point_on', s.span, {'point': point, 'path': path2}, {}, origin='desugar(intersect)'),
+                    generated=True,
+                )
+                for vertex in filter(None, (_angle_bisector_vertex(path1), _angle_bisector_vertex(path2))):
+                    append(
+                        Stmt('segment', s.span, {'edge': edge(vertex, point)}, origin='desugar(intersect)'),
+                        generated=True,
+                    )
 
     norm = Program([])
     for stmt in out.stmts:
