@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Numeric solver pipeline for GeometryIR scenes."""
 
 from dataclasses import dataclass, field
@@ -590,7 +588,7 @@ def translate(program: Program) -> Model:
 
 
 def _initial_guess(model: Model, rng: np.random.Generator) -> np.ndarray:
-    guess = rng.uniform(-0.5, 0.5, size=2 * len(model.points))
+    guess = rng.uniform(-5, 5, size=2 * len(model.points))
     return guess
 
 
