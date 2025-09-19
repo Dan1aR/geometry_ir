@@ -1,3 +1,9 @@
+# Yandex build + infra
+lib*a
+test-results
+tests/*dSYM
+tests/geometry_agent-geometry_ir-tests
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
