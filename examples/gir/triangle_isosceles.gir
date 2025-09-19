@@ -1,0 +1,15 @@
+scene "Isosceles triangle ABC with base AC; AD is angle bisector; find angle ADC; given angle C=50^\\circ"
+layout canonical=triangle_ABC scale=1
+points A, B, C, D
+rules [no_solving=true allow_auxiliary=false no_unicode_degree=true mark_right_angles_as_square=true no_equations_on_sides=true]
+# Равнобедренный треугольник с основанием AC (равные стороны AB и BC)
+triangle A-B-C [isosceles=atB]
+# Дано: угол C равен 50^\\circ
+angle at C rays C-A C-B [label="50^\\circ"]
+# Биссектриса AD: D на BC, проведена из A
+segment B-C
+point D on segment B-C
+line A-D
+bisector at A
+# Цель: угол ADC
+target angle at D rays D-A D-C [label="?ADC"]

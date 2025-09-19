@@ -1,0 +1,23 @@
+scene "Triangle with given angles; points D,E on AC; BD=DA, BE=EC; find angle DBE"
+layout canonical=triangle_ABC scale=1
+points A, B, C, D, E
+rules [no_solving=true allow_auxiliary=false no_unicode_degree=true mark_right_angles_as_square=true no_equations_on_sides=true]
+# Треугольник и заданные углы
+triangle A-B-C
+angle at A rays A-B A-C [label="38^\\circ"]
+angle at B rays B-A B-C [label="110^\\circ"]
+angle at C rays C-A C-B [label="32^\\circ"]
+# Точки D и E на AC, при этом D лежит на отрезке AE
+segment A-C
+point D on segment A-C
+point E on segment A-C
+point D on segment A-E
+# Равенства отрезков: BD = DA и BE = EC
+segment B-D
+segment D-A
+segment B-E
+segment E-C
+equal-segments (B-D ; D-A) [label="given"]
+equal-segments (B-E ; E-C) [label="given"]
+# Цель: угол DBE
+target angle at B rays B-D B-E [label="?DBE"]
