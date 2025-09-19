@@ -6,6 +6,33 @@ def stmt(kind, data, opts=None, origin='source'):
     return Stmt(kind, Span(1, 1), data, opts or {}, origin=origin)
 
 
+def test_desugar_skips_duplicate_segments_from_polygons():
+    trap = stmt('trapezoid', {'ids': ['A', 'B', 'C', 'D']}, {'isosceles': True})
+    explicit_segment = stmt('segment', {'edge': ('A', 'B')}, {'length': 4})
+
+    out = desugar(Program([trap, explicit_segment]))
+
+    segments = [s for s in out.stmts if s.kind == 'segment' and set(s.data['edge']) == {'A', 'B'}]
+    assert len(segments) == 1
+    assert segments[0].origin == 'source'
+
+
+def test_desugar_skips_duplicate_equal_segments():
+    trap = stmt('trapezoid', {'ids': ['A', 'B', 'C', 'D']}, {'isosceles': True})
+    explicit_equal = stmt('equal_segments', {'lhs': [('A', 'D')], 'rhs': [('B', 'C')]})
+
+    out = desugar(Program([trap, explicit_equal]))
+
+    eq = [
+        s
+        for s in out.stmts
+        if s.kind == 'equal_segments'
+        and s.data == {'lhs': [('A', 'D')], 'rhs': [('B', 'C')]}
+    ]
+    assert len(eq) == 1
+    assert eq[0].origin == 'source'
+
+
 def test_polygon_desugars_into_segments():
     prog = Program([stmt('polygon', {'ids': ['A', 'B', 'C']})])
 
