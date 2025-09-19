@@ -202,3 +202,97 @@ def test_square_residuals_rely_on_desugared_statements():
     for spec in equal_segments:
         vals = spec.func(x)
         assert np.max(np.abs(vals)) < 1e-8
+
+
+def test_translate_registers_circle_helper_points():
+    model = _build_model(
+        """
+        scene "Circle helpers"
+        points A, B, C
+        circle through (A, B, C)
+        """
+    )
+
+    assert "O_ABC" in model.points
+
+
+def test_translate_registers_tangent_touchpoints():
+    model = _build_model(
+        """
+        scene "Circle tangency"
+        points A, B, O
+        segment A-B
+        circle center O tangent (A-B)
+        """
+    )
+
+    assert "T_AB" in model.points
+
+
+def test_translate_adds_min_separation_residual_for_segments():
+    model = _build_model(
+        """
+        scene "Segment"
+        points A, B
+        segment A-B [length=5]
+        """
+    )
+
+    spec = next(spec for spec in model.residuals if spec.key == "min_separation(A-B)")
+
+    collapsed = {"A": (0.0, 0.0), "B": (0.0, 0.0)}
+    vals_collapsed = spec.func(_coords_array(model, collapsed))
+    assert vals_collapsed.shape == (1,)
+    assert vals_collapsed[0] > 1e-6
+
+    separated = {"A": (0.0, 0.0), "B": (model.scale, 0.0)}
+    vals_separated = spec.func(_coords_array(model, separated))
+    assert vals_separated.shape == (1,)
+    assert vals_separated[0] < 1e-9
+
+
+def test_turn_margin_penalizes_collinear_triangle():
+    model = _build_model(
+        """
+        scene "Triangle"
+        triangle A-B-C
+        """
+    )
+
+    spec = next(spec for spec in model.residuals if spec.key == "turn_margin(A-B-C)")
+
+    collinear = {"A": (0.0, 0.0), "B": (1.0, 0.0), "C": (2.0, 0.0)}
+    vals_collinear = spec.func(_coords_array(model, collinear))
+    assert vals_collinear.shape == (3,)
+    assert np.max(vals_collinear) > 1e-3
+
+    proper = {"A": (0.0, 0.0), "B": (1.0, 0.0), "C": (0.0, 1.0)}
+    vals_proper = spec.func(_coords_array(model, proper))
+    assert vals_proper.shape == (3,)
+    assert np.max(np.abs(vals_proper)) < 1e-8
+
+
+def test_area_floor_discourages_polygon_collapse():
+    model = _build_model(
+        """
+        scene "Polygon"
+        polygon A-B-C-D
+        """
+    )
+
+    area_spec = next(spec for spec in model.residuals if spec.key == "area_floor(A-B-C-D)")
+
+    collapsed = {"A": (0.0, 0.0), "B": (0.0, 0.0), "C": (0.0, 0.0), "D": (0.0, 0.0)}
+    vals_collapsed = area_spec.func(_coords_array(model, collapsed))
+    assert vals_collapsed.shape == (1,)
+    assert vals_collapsed[0] > 1e-6
+
+    spaced = {
+        "A": (0.0, 0.0),
+        "B": (model.scale, 0.0),
+        "C": (model.scale, model.scale),
+        "D": (0.0, model.scale),
+    }
+    vals_spaced = area_spec.func(_coords_array(model, spaced))
+    assert vals_spaced.shape == (1,)
+    assert vals_spaced[0] < 1e-8

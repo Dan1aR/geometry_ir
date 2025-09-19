@@ -1,7 +1,17 @@
-"""Numeric solver pipeline for GeometryIR scenes."""
+"""
+Numeric solver pipeline for GeometryIR scenes (hardened against collapses).
+
+Drop-in replacement:
+- Stronger min-separation guards (incl. pairwise for 'points' lists like collinear)
+- Edge-length floors on polygon edges
+- Light edge-length floors on carrier (non-polygon) edges
+- Non-parallel margin for trapezoid legs
+- Prefer declared trapezoid base for orientation gauge
+- Unit-span gauge on orientation edge when no numeric scale is present
+"""
 
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 import math
 
 import numpy as np
@@ -16,8 +26,6 @@ ResidualFunc = Callable[[np.ndarray], np.ndarray]
 
 @dataclass
 class ResidualSpec:
-    """Container describing one residual block."""
-
     key: str
     func: ResidualFunc
     size: int
@@ -27,18 +35,17 @@ class ResidualSpec:
 
 @dataclass
 class Model:
-    """Numeric model compiled from GeometryIR."""
-
     points: List[PointName]
     index: Dict[PointName, int]
     residuals: List[ResidualSpec]
     gauges: List[str] = field(default_factory=list)
+    scale: float = 1.0
 
 
 @dataclass
 class SolveOptions:
     method: str = "trf"
-    loss: str = "linear"
+    loss: str = "linear"  # consider "soft_l1" when using many hinge residuals
     max_nfev: int = 2000
     tol: float = 1e-8
     reseed_attempts: int = 3
@@ -82,8 +89,27 @@ def _cross_2d(a: np.ndarray, b: np.ndarray) -> float:
 
 _DENOM_EPS = 1e-12
 _HINGE_EPS = 1e-9
+
 _TURN_MARGIN = math.sin(math.radians(1.0))
 _TURN_SIGN_MARGIN = 0.5 * (_TURN_MARGIN ** 2)
+_MIN_SEP_SCALE = 1e-1         # was 1e-3 → much stronger
+_EDGE_FLOOR_SCALE = 1e-1      # per-edge floor on polygon edges
+_CARRIER_EDGE_FLOOR = 2e-2    # light floor for non-polygon carrier edges
+# Area guards should be strong enough to avoid near-degenerate solutions but
+# still be compatible with the minimum edge floors we enforce below.  The
+# tightest configuration allowed by the edge floors is roughly a base/height of
+# ``_EDGE_FLOOR_SCALE * scene_scale`` which yields an area on the order of
+# ``0.5 * _EDGE_FLOOR_SCALE ** 2``.  A moderately sized floor keeps polygons from
+# collapsing without overwhelming legitimate configurations (e.g. the circle and
+# trapezoid examples in the repository).
+_AREA_MIN_SCALE = 2e-2
+# Likewise the non-parallel margin for trapezoid legs needs to be permissive
+# enough for nearly-parallel but valid configurations while still preventing
+# truly degenerate layouts.  Using a tiny angular margin keeps the guard
+# effective (it still rejects perfectly parallel legs) without overwhelming the
+# actual geometric constraints.  The previous margin of half a degree was large
+# enough to conflict with legitimate isosceles trapezoids.
+_TAU_NONPAR = math.sin(math.radians(5e-4))
 
 
 def _safe_norm(vec: np.ndarray) -> float:
@@ -96,6 +122,7 @@ def _normalized_cross(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def _smooth_hinge(value: float) -> float:
+    # differentiable approx of max(0, value)
     return 0.5 * (value + math.sqrt(value * value + _HINGE_EPS * _HINGE_EPS))
 
 
@@ -114,6 +141,94 @@ def _quadrilateral_convexity_residuals(edges: Sequence[np.ndarray]) -> np.ndarra
     for i in range(4):
         residuals.append(_smooth_hinge(_TURN_SIGN_MARGIN - turns[i] * turns[(i + 1) % 4]))
     return np.asarray(residuals, dtype=float)
+
+
+def _build_turn_margin(ids: Sequence[PointName], index: Dict[PointName, int]) -> ResidualSpec:
+    unique = [pid for pid in ids]
+    if len(unique) < 3:
+        raise ValueError("turn margin requires at least three points")
+
+    def func(x: np.ndarray) -> np.ndarray:
+        pts = [_vec(x, index, name) for name in unique]
+        res: List[float] = []
+        n = len(pts)
+        for i in range(n):
+            prev_pt = pts[(i - 1) % n]
+            cur_pt = pts[i]
+            next_pt = pts[(i + 1) % n]
+            u = cur_pt - prev_pt
+            v = next_pt - cur_pt
+            turn = _normalized_cross(u, v)
+            res.append(_smooth_hinge(_TURN_MARGIN - abs(turn)))
+        return np.asarray(res, dtype=float)
+
+    key = "turn_margin(" + "-".join(unique) + ")"
+    return ResidualSpec(key=key, func=func, size=len(unique), kind="turn_margin", source=None)
+
+
+def _polygon_area(pts: Sequence[np.ndarray]) -> float:
+    area = 0.0
+    n = len(pts)
+    for i in range(n):
+        x1, y1 = pts[i]
+        x2, y2 = pts[(i + 1) % n]
+        area += x1 * y2 - x2 * y1
+    return 0.5 * area
+
+
+def _build_area_floor(ids: Sequence[PointName], index: Dict[PointName, int], min_area: float) -> ResidualSpec:
+    unique = [pid for pid in ids]
+    if len(unique) < 3:
+        raise ValueError("area floor requires at least three points")
+
+    abs_min_area = abs(min_area)
+
+    def func(x: np.ndarray) -> np.ndarray:
+        pts = [_vec(x, index, name) for name in unique]
+        area = abs(_polygon_area(pts))
+        return np.array([_smooth_hinge(abs_min_area - area)], dtype=float)
+
+    key = "area_floor(" + "-".join(unique) + ")"
+    return ResidualSpec(key=key, func=func, size=1, kind="area_floor", source=None)
+
+
+def _build_min_separation(pair: Edge, index: Dict[PointName, int], min_distance: float) -> ResidualSpec:
+    if pair[0] == pair[1]:
+        raise ValueError("min separation requires two distinct points")
+    min_sq = float(min_distance * min_distance)
+
+    def func(x: np.ndarray) -> np.ndarray:
+        diff = _vec(x, index, pair[1]) - _vec(x, index, pair[0])
+        dist_sq = _norm_sq(diff)
+        return np.array([_smooth_hinge(min_sq - dist_sq)], dtype=float)
+
+    key = f"min_separation({_format_edge(pair)})"
+    return ResidualSpec(key=key, func=func, size=1, kind="min_separation", source=None)
+
+
+# --- keep every edge above a floor ---
+def _build_edge_floor(edge: Edge, index: Dict[PointName, int], min_len: float) -> ResidualSpec:
+    min_sq = float(min_len * min_len)
+
+    def func(x: np.ndarray) -> np.ndarray:
+        v = _edge_vec(x, index, edge)
+        return np.array([_smooth_hinge(min_sq - _norm_sq(v))], dtype=float)
+
+    key = f"edge_floor({_format_edge(edge)})"
+    return ResidualSpec(key=key, func=func, size=1, kind="edge_floor", source=None)
+
+
+# --- require two edges not to be parallel (tiny margin) ---
+def _build_nonparallel(edge1: Edge, edge2: Edge, index: Dict[PointName, int]) -> ResidualSpec:
+    def func(x: np.ndarray) -> np.ndarray:
+        u = _edge_vec(x, index, edge1)
+        v = _edge_vec(x, index, edge2)
+        denom = max(_safe_norm(u) * _safe_norm(v), _DENOM_EPS)
+        s = abs(_cross_2d(u, v)) / denom  # |sin(angle)|
+        return np.array([_smooth_hinge(_TAU_NONPAR - s)], dtype=float)
+
+    key = f"nonparallel({_format_edge(edge1)},{_format_edge(edge2)})"
+    return ResidualSpec(key=key, func=func, size=1, kind="nonparallel", source=None)
 
 
 def _build_segment_length(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
@@ -376,7 +491,29 @@ def translate(program: Program) -> Model:
 
     order: List[PointName] = []
     seen: Dict[PointName, int] = {}
+    distinct_pairs: Set[Edge] = set()
+    polygon_sequences: Dict[Tuple[PointName, ...], str] = {}
+    polygon_meta: Dict[Tuple[PointName, ...], Dict[str, object]] = {}  # NEW
+    scale_samples: List[float] = []
     orientation_edge: Optional[Edge] = None
+    preferred_base_edge: Optional[Edge] = None  # NEW
+    carrier_edges: Set[Edge] = set()  # NEW: edges used as carriers in constraints
+
+    def register_scale(value: object) -> None:
+        try:
+            if value is None:
+                return
+            val = float(value)
+            if math.isfinite(val) and val > 0:
+                scale_samples.append(val)
+        except (TypeError, ValueError):
+            return
+
+    def mark_distinct(a: PointName, b: PointName) -> None:
+        if a == b:
+            return
+        pair = (a, b) if a <= b else (b, a)
+        distinct_pairs.add(pair)
 
     def handle_edge(edge: Sequence[str]) -> None:
         nonlocal orientation_edge
@@ -385,45 +522,126 @@ def translate(program: Program) -> Model:
         _register_point(order, seen, b)
         if orientation_edge is None and a != b:
             orientation_edge = (a, b)
+        mark_distinct(a, b)
+        # Track as a carrier edge used by constraints
+        if a != b:
+            carrier_edges.add((a, b))
 
+    def handle_path(path_value: object) -> None:
+        if not isinstance(path_value, (list, tuple)) or len(path_value) != 2:
+            return
+        kind, payload = path_value
+        if kind in {"line", "segment", "ray"} and isinstance(payload, (list, tuple)):
+            handle_edge(payload)
+            return
+        if kind == "circle" and isinstance(payload, str):
+            _register_point(order, seen, payload)
+
+    # scan program
     for stmt in program.stmts:
         if stmt.kind == "points":
             for name in stmt.data.get("ids", []):
                 _register_point(order, seen, name)
             continue
+
         data = stmt.data
+        opts = stmt.opts
+
+        for key in ("length", "distance", "value", "radius"):
+            if key in opts:
+                register_scale(opts.get(key))
+        if stmt.kind == "distance":
+            register_scale(data.get("value"))
+        if stmt.kind == "segment":
+            register_scale(opts.get("length") or opts.get("distance") or opts.get("value"))
+
+        if stmt.kind in {"polygon", "triangle", "quadrilateral", "parallelogram", "trapezoid", "rectangle", "square", "rhombus"}:
+            ids = tuple(data.get("ids", []))
+            if len(ids) >= 3 and ids not in polygon_sequences:
+                polygon_sequences[ids] = stmt.kind
+
+            # detect trapezoid bases for orientation + leg non-parallel
+            if stmt.kind == "trapezoid" and len(ids) == 4:
+                bases_opt = opts.get("bases")
+                base_edge: Optional[Edge] = None
+                if isinstance(bases_opt, str) and "-" in bases_opt:
+                    a, b = bases_opt.split("-", 1)
+                    base_edge = (a.strip(), b.strip())
+                elif isinstance(bases_opt, (list, tuple)) and len(bases_opt) == 2:
+                    base_edge = (str(bases_opt[0]), str(bases_opt[1]))
+                if base_edge and all(p in ids for p in base_edge):
+                    remaining = [p for p in ids if p not in base_edge]
+                    if len(remaining) == 2:
+                        other_base = (remaining[0], remaining[1])
+                        polygon_meta[ids] = {"kind": "trapezoid", "bases": (base_edge, other_base)}
+                        if preferred_base_edge is None:
+                            preferred_base_edge = base_edge
+
+        # register points referenced by names/fields
         if "point" in data and isinstance(data["point"], str):
             _register_point(order, seen, data["point"])
         if "points" in data:
             for name in data["points"]:
                 _register_point(order, seen, name)
+            # NEW: strengthen min-separation by marking all pairs distinct
+            pts_list = [p for p in data["points"] if isinstance(p, str)]
+            for i in range(len(pts_list)):
+                for j in range(i + 1, len(pts_list)):
+                    mark_distinct(pts_list[i], pts_list[j])
+
+        if "ids" in data:
+            for name in data["ids"]:
+                if isinstance(name, str):
+                    _register_point(order, seen, name)
         if "edge" in data:
             handle_edge(data["edge"])
         if "edges" in data:
             for edge in data["edges"]:
                 handle_edge(edge)
+        if "lhs" in data:
+            for edge in data["lhs"]:
+                handle_edge(edge)
+        if "rhs" in data:
+            for edge in data["rhs"]:
+                handle_edge(edge)
         if "rays" in data:
             for ray in data["rays"]:
                 handle_edge(ray)
+        if "tangent_edges" in data:
+            for edge in data["tangent_edges"]:
+                handle_edge(edge)
         if "path" in data:
-            kind, payload = data["path"]
-            if kind in {"line", "segment", "ray"}:
-                handle_edge(payload)
-            elif kind == "circle" and isinstance(payload, str):
-                _register_point(order, seen, payload)
+            handle_path(data["path"])
+        if "path1" in data:
+            handle_path(data["path1"])
+        if "path2" in data:
+            handle_path(data["path2"])
         if "midpoint" in data:
             _register_point(order, seen, data["midpoint"])
         if "foot" in data:
             _register_point(order, seen, data["foot"])
+        if "center" in data and isinstance(data["center"], str):
+            _register_point(order, seen, data["center"])
+        if "through" in data and isinstance(data["through"], str):
+            _register_point(order, seen, data["through"])
+        if "at" in data and isinstance(data["at"], str):
+            _register_point(order, seen, data["at"])
+        if "at2" in data and isinstance(data["at2"], str):
+            _register_point(order, seen, data["at2"])
         if "from" in data and isinstance(data["from"], str):
             _register_point(order, seen, data["from"])
 
     if not order:
         raise ValueError("program contains no points to solve for")
 
+    # Prefer the declared trapezoid base for orientation if available
+    if preferred_base_edge is not None:
+        orientation_edge = preferred_base_edge
+
     index = {name: i for i, name in enumerate(order)}
     residuals: List[ResidualSpec] = []
 
+    # build residuals from statements
     for stmt in program.stmts:
         builder = _RESIDUAL_BUILDERS.get(stmt.kind)
         if not builder:
@@ -431,8 +649,53 @@ def translate(program: Program) -> Model:
         built = builder(stmt, index)
         residuals.extend(built)
 
-    gauges: List[str] = []
+    # global guards
+    scene_scale = max(scale_samples) if scale_samples else 1.0
 
+    # min separation for distinct pairs
+    min_sep = _MIN_SEP_SCALE * scene_scale
+    if min_sep > 0:
+        for pair in sorted(distinct_pairs):
+            residuals.append(_build_min_separation(pair, index, min_sep))
+
+    # polygon-level guards + track polygon edges for de-dup
+    polygon_edges_set: Set[Edge] = set()
+    if polygon_sequences:
+        area_floor = _AREA_MIN_SCALE * scene_scale * scene_scale
+        edge_floor = _EDGE_FLOOR_SCALE * scene_scale
+        for ids in polygon_sequences:
+            if len(ids) < 3:
+                continue
+            # convex-ish turns + area floor
+            residuals.append(_build_turn_margin(ids, index))
+            residuals.append(_build_area_floor(ids, index, area_floor))
+            # per-edge floors
+            loop = list(ids)
+            for i in range(len(loop)):
+                e = (loop[i], loop[(i + 1) % len(loop)])
+                residuals.append(_build_edge_floor(e, index, edge_floor))
+                # store both orientations for quick membership checks
+                polygon_edges_set.add(e if e[0] <= e[1] else (e[1], e[0]))
+            # trapezoid: ensure legs not parallel if bases known
+            meta = polygon_meta.get(ids)
+            if meta and meta.get("kind") == "trapezoid":
+                base1, base2 = meta["bases"]  # type: ignore[assignment]
+                a, d = base1
+                b, c = base2
+                leg1 = (a, b)
+                leg2 = (c, d)
+                residuals.append(_build_nonparallel(leg1, leg2, index))
+
+    # add light floors to non-polygon "carrier" edges
+    if carrier_edges:
+        carrier_floor = _CARRIER_EDGE_FLOOR * scene_scale
+        for e in sorted(carrier_edges):
+            key = e if e[0] <= e[1] else (e[1], e[0])
+            if key not in polygon_edges_set:
+                residuals.append(_build_edge_floor(e, index, carrier_floor))
+
+    # gauges
+    gauges: List[str] = []
     anchor_point = order[0]
 
     def anchor_func(x: np.ndarray) -> np.ndarray:
@@ -469,11 +732,72 @@ def translate(program: Program) -> Model:
         )
         gauges.append(f"orientation={_format_edge(orientation_edge)}")
 
-    return Model(points=order, index=index, residuals=residuals, gauges=gauges)
+        # NEW: if no numeric scale present, pin unit span on orientation edge
+        if not scale_samples:
+            def unit_span_func(x: np.ndarray) -> np.ndarray:
+                ax = _vec(x, index, a)[0]
+                bx = _vec(x, index, b)[0]
+                return np.array([ (bx - ax) - 1.0 ], dtype=float)
+
+            residuals.append(
+                ResidualSpec(
+                    key=f"gauge:unit_span({_format_edge(orientation_edge)})",
+                    func=unit_span_func,
+                    size=1,
+                    kind="gauge",
+                    source=None,
+                )
+            )
+            gauges.append("unit_span=1")
+
+    return Model(points=order, index=index, residuals=residuals, gauges=gauges, scale=scene_scale)
 
 
-def _initial_guess(model: Model, rng: np.random.Generator) -> np.ndarray:
-    guess = rng.uniform(-5, 5, size=2 * len(model.points))
+def _initial_guess(model: Model, rng: np.random.Generator, attempt: int) -> np.ndarray:
+    n = len(model.points)
+    guess = np.zeros(2 * n)
+    if n == 0:
+        return guess
+
+    base = max(model.scale, 1e-3)
+    # Place first three points in a stable, non-degenerate pattern.
+    guess[0] = 0.0
+    guess[1] = 0.0
+    if n >= 2:
+        guess[2] = base
+        guess[3] = 0.0
+    if n >= 3:
+        guess[4] = 0.5 * base
+        guess[5] = math.sqrt(3.0) * 0.5 * base
+    for i in range(3, n):
+        angle = (2 * math.pi * i) / max(4, n)
+        radius = 0.5 * base
+        guess[2 * i] = radius * math.cos(angle)
+        guess[2 * i + 1] = radius * math.sin(angle)
+
+    # random rotation
+    # Random rotation can help explore the search space when we reseed, but it
+    # also increases the chance that the very first attempt starts from an
+    # unfortunate configuration (e.g. nearly collapsing a trapezoid).  Keep the
+    # initial orientation deterministic for the first attempt and only rotate on
+    # subsequent retries.
+    if n >= 2 and attempt > 0:
+        theta = rng.uniform(0.0, 2 * math.pi)
+        cos_t = math.cos(theta)
+        sin_t = math.sin(theta)
+        for i in range(n):
+            x = guess[2 * i]
+            y = guess[2 * i + 1]
+            guess[2 * i] = cos_t * x - sin_t * y
+            guess[2 * i + 1] = sin_t * x + cos_t * y
+
+    jitter_scale = 0.05 * base * (1 + attempt)
+    if attempt == 0:
+        jitter = np.zeros_like(guess)
+    else:
+        jitter = rng.normal(loc=0.0, scale=jitter_scale, size=guess.shape)
+        jitter[0:2] = 0.0  # keep anchor stable at the origin
+    guess += jitter
     return guess
 
 
@@ -497,8 +821,17 @@ def solve(model: Model, options: SolveOptions = SolveOptions()) -> Solution:
     warnings: List[str] = []
     best_result: Optional[Tuple[float, np.ndarray, List[Tuple[ResidualSpec, np.ndarray]], bool]] = None
 
-    for attempt in range(max(1, options.reseed_attempts)):
-        x0 = _initial_guess(model, rng)
+    base_attempts = max(1, options.reseed_attempts)
+    # Allow a couple of extra retries when every run so far is clearly outside
+    # the acceptable residual range.  This keeps the solver robust even when the
+    # caller requests a single attempt (the additional retries only kick in when
+    # the best residual is still large, e.g. >1e-4).
+    fallback_limit = base_attempts + 2
+    attempt = 0
+    while attempt < base_attempts or (
+        attempt < fallback_limit and (best_result is None or best_result[0] > 1e-4)
+    ):
+        x0 = _initial_guess(model, rng, attempt)
 
         def fun(x: np.ndarray) -> np.ndarray:
             vals, _ = _evaluate(model, x)
@@ -524,10 +857,10 @@ def solve(model: Model, options: SolveOptions = SolveOptions()) -> Solution:
         if converged:
             break
 
-        if attempt < options.reseed_attempts - 1:
-            warnings.append(
-                f"reseed attempt {attempt + 2} after residual max {max_res:.3e}"
-            )
+        if attempt < base_attempts - 1:
+            warnings.append(f"reseed attempt {attempt + 2} after residual max {max_res:.3e}")
+
+        attempt += 1
 
     if best_result is None:
         raise RuntimeError("solver failed to evaluate residuals")

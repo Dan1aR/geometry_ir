@@ -14,6 +14,17 @@ def normalize_edge_list(edges):
     return tuple(sorted(normalize_edge(e) for e in edges))
 
 
+def _distinct_ids(ids):
+    seen = set()
+    out = []
+    for pid in ids:
+        if pid in seen:
+            continue
+        out.append(pid)
+        seen.add(pid)
+    return out
+
+
 def canonical_stmt_key(stmt: Stmt):
     if stmt.kind == 'segment':
         return ('segment', normalize_edge(stmt.data['edge']))
@@ -39,6 +50,30 @@ def desugar(prog: Program) -> Program:
             source_keys.add(key)
 
     added_keys = set()
+    helper_used = set()
+    helper_counts = {'O': 0, 'I': 0, 'T': 0}
+
+    def fresh_name(prefix, base=None):
+        prefix = prefix.upper()
+        if base:
+            base_clean = ''.join(ch for ch in base.upper() if ch.isalnum())
+        else:
+            base_clean = ''
+        if base_clean:
+            candidate = f'{prefix}_{base_clean}'
+            suffix = 2
+            while candidate in helper_used:
+                candidate = f'{prefix}_{base_clean}_{suffix}'
+                suffix += 1
+            helper_used.add(candidate)
+            return candidate
+        helper_counts[prefix] = helper_counts.get(prefix, 0) + 1
+        while True:
+            candidate = f'{prefix}_{helper_counts[prefix]}'
+            if candidate not in helper_used:
+                helper_used.add(candidate)
+                return candidate
+            helper_counts[prefix] += 1
 
     def append(stmt: Stmt, *, generated: bool) -> None:
         key = canonical_stmt_key(stmt)
@@ -127,6 +162,118 @@ def desugar(prog: Program) -> Program:
             if s.kind == 'rhombus':
                 A, B, C, D = ids
                 append(Stmt('equal_segments', s.span, {'lhs': [edge(A, B)], 'rhs': [edge(B, C), edge(C, D), edge(D, A)]}, origin='desugar(rhombus)'), generated=True)
+        elif s.kind == 'circle_center_tangent_sides':
+            center = s.data['center']
+            for a, b in s.data['tangent_edges']:
+                touch = fresh_name('T', f'{a}{b}')
+                append(
+                    Stmt(
+                        'intersect',
+                        s.span,
+                        {'path1': ('line', edge(a, b)), 'path2': ('circle', center), 'at': touch, 'at2': None},
+                        dict(s.opts),
+                        origin='desugar(circle_center_tangent_sides)'
+                    ),
+                    generated=True,
+                )
+                append(
+                    Stmt(
+                        'right_angle_at',
+                        s.span,
+                        {'at': touch, 'rays': ((touch, center), (touch, a))},
+                        {},
+                        origin='desugar(circle_center_tangent_sides)'
+                    ),
+                    generated=True,
+                )
+        elif s.kind in ('circle_through', 'circumcircle'):
+            ids = _distinct_ids(s.data['ids'])
+            if len(ids) < 3:
+                continue
+            first_three = ids[:3]
+            through = first_three[0]
+            center = fresh_name('O', ''.join(first_three))
+            append(
+                Stmt(
+                    'circle_center_radius_through',
+                    s.span,
+                    {'center': center, 'through': through},
+                    dict(s.opts),
+                    origin=f'desugar({s.kind})'
+                ),
+                generated=True,
+            )
+            rhs_points = ids[1:]
+            if rhs_points:
+                append(
+                    Stmt(
+                        'equal_segments',
+                        s.span,
+                        {
+                            'lhs': [edge(center, through)],
+                            'rhs': [edge(center, pt) for pt in rhs_points],
+                        },
+                        {},
+                        origin=f'desugar({s.kind})'
+                    ),
+                    generated=True,
+                )
+        elif s.kind == 'incircle':
+            ids = _distinct_ids(s.data['ids'])
+            if len(ids) < 3:
+                continue
+            A, B, C = ids[:3]
+            center = fresh_name('I', ''.join([A, B, C]))
+            touch_ab = fresh_name('T', f'{A}{B}')
+            touch_bc = fresh_name('T', f'{B}{C}')
+            touch_ca = fresh_name('T', f'{C}{A}')
+            append(
+                Stmt(
+                    'circle_center_radius_through',
+                    s.span,
+                    {'center': center, 'through': touch_ab},
+                    dict(s.opts),
+                    origin='desugar(incircle)'
+                ),
+                generated=True,
+            )
+            for point, seg in (
+                (touch_ab, edge(A, B)),
+                (touch_bc, edge(B, C)),
+                (touch_ca, edge(C, A)),
+            ):
+                append(
+                    Stmt('point_on', s.span, {'point': point, 'path': ('segment', seg)}, {}, origin='desugar(incircle)'),
+                    generated=True,
+                )
+            for point, vertex in (
+                (touch_ab, A),
+                (touch_bc, B),
+                (touch_ca, C),
+            ):
+                append(
+                    Stmt(
+                        'right_angle_at',
+                        s.span,
+                        {'at': point, 'rays': ((point, center), (point, vertex))},
+                        {},
+                        origin='desugar(incircle)'
+                    ),
+                    generated=True,
+                )
+            append(
+                Stmt(
+                    'equal_segments',
+                    s.span,
+                    {
+                        'lhs': [edge(center, touch_ab)],
+                        'rhs': [edge(center, touch_bc), edge(center, touch_ca)],
+                    },
+                    {},
+                    origin='desugar(incircle)'
+                ),
+                generated=True,
+            )
 
     norm = Program([])
     for stmt in out.stmts:
