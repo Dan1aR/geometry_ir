@@ -33,7 +33,6 @@ BNF = dedent(
                | 'perpendicular' 'at' ID 'to' Pair Opts?
                | 'parallel' 'through' ID 'to' Pair Opts?
                | 'angle-bisector' 'at' ID 'rays' Pair Pair Opts?
-               | 'perpendicular-bisector' 'of' Pair Opts?
                | 'median'  'from' ID 'to' Pair Opts?
                | 'altitude' 'from' ID 'to' Pair Opts?
                | 'angle' 'at' ID 'rays' Pair Pair Opts?
@@ -59,7 +58,6 @@ BNF = dedent(
                | 'segment' Pair
                | 'circle' 'center' ID
                | 'angle-bisector' 'at' ID 'rays' Pair Pair
-               | 'perpendicular-bisector' 'of' Pair
 
     EdgeList  := Pair { ',' Pair }
     IdList    := ID { ',' ID }
@@ -122,7 +120,6 @@ _PROMPT_CORE = dedent(
     - perpendicular at A to B-C
     - parallel through A to B-C
     - angle-bisector at A rays A-B A-C
-    - perpendicular-bisector of A-B
     - median from A to B-C
     - altitude from A to B-C
     - angle at A rays A-B A-C [degrees=60]
@@ -145,8 +142,7 @@ _PROMPT_CORE = dedent(
     - point R on angle-bisector at A rays A-B A-C [external=true]
     - intersect (line A-B) with (circle center O) at X[, Y] [type=external]
       Paths inside parentheses are one of: `line A-B`, `ray A-B`, `segment A-B`,
-      `circle center O`, `angle-bisector at A rays A-B A-C`,
-      `perpendicular-bisector of A-B`.
+      `circle center O`, `angle-bisector at A rays A-B A-C`.
 
     Annotations:
     - label point A [text="A"]

@@ -377,21 +377,6 @@ def _build_point_on(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpe
         key = f"point_on_circle({point},{center})"
         return [ResidualSpec(key=key, func=func, size=1, kind="point_on_circle", source=stmt)]
 
-    if path_kind == "perpendicular-bisector" and isinstance(payload, dict):
-        edge = payload.get("of")
-        if not isinstance(edge, (list, tuple)) or len(edge) != 2:
-            raise ValueError("perpendicular-bisector path requires an edge")
-        a, b = edge[0], edge[1]
-
-        def func(x: np.ndarray) -> np.ndarray:
-            p = _vec(x, index, point)
-            va = _vec(x, index, a)
-            vb = _vec(x, index, b)
-            return np.array([_norm_sq(p - va) - _norm_sq(p - vb)], dtype=float)
-
-        key = f"point_on_perpendicular_bisector({point},{_format_edge((a, b))})"
-        return [ResidualSpec(key=key, func=func, size=1, kind="point_on_perpendicular_bisector", source=stmt)]
-
     if path_kind == "angle-bisector" and isinstance(payload, dict):
         at = payload.get("at")
         rays = payload.get("rays")
@@ -600,11 +585,6 @@ def translate(program: Program) -> Model:
                 for ray in rays:
                     if isinstance(ray, (list, tuple)):
                         handle_edge(ray)
-            return
-        if kind == "perpendicular-bisector" and isinstance(payload, dict):
-            of = payload.get("of")
-            if isinstance(of, (list, tuple)):
-                handle_edge(of)
             return
 
     # scan program

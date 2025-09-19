@@ -122,12 +122,6 @@ def test_targets(text, kind, data, opts):
             {},
         ),
         (
-            'perpendicular-bisector of A-B',
-            'perpendicular_bisector_of',
-            {'of': ('A', 'B')},
-            {},
-        ),
-        (
             'median from A to B-C',
             'median_from_to',
             {'frm': 'A', 'to': ('B', 'C')},
@@ -212,13 +206,6 @@ def test_placements():
         'path': ('angle-bisector', {'at': 'A', 'rays': (('A', 'B'), ('A', 'C'))}),
     }
 
-    pt_on_perp = parse_single('point S on perpendicular-bisector of B-C')
-    assert pt_on_perp.kind == 'point_on'
-    assert pt_on_perp.data == {
-        'point': 'S',
-        'path': ('perpendicular-bisector', {'of': ('B', 'C')}),
-    }
-
     inter = parse_single('intersect (line A-B) with (circle center O) at P, Q [type=external]')
     assert inter.kind == 'intersect'
     assert inter.data == {
@@ -229,14 +216,15 @@ def test_placements():
     }
     assert inter.opts == {'type': 'external'}
 
-    inter2 = parse_single('intersect (angle-bisector at A rays A-B A-C) with (perpendicular-bisector of B-C) at T')
+    inter2 = parse_single('intersect (angle-bisector at A rays A-B A-C) with (segment B-C) at T')
     assert inter2.kind == 'intersect'
     assert inter2.data == {
         'path1': ('angle-bisector', {'at': 'A', 'rays': (('A', 'B'), ('A', 'C'))}),
-        'path2': ('perpendicular-bisector', {'of': ('B', 'C')}),
+        'path2': ('segment', ('B', 'C')),
         'at': 'T',
         'at2': None,
     }
+
 
 
 def test_rules():
