@@ -90,6 +90,36 @@ dz = desugar(prog)       # expand square to sides + right angles + equal segment
 print(print_program(dz)) # canonical form
 ```
 
+### Numeric solver (GeometryIR → SciPy)
+
+The `geoscript_ir.solver` module compiles validated GeoScript into a
+numeric model and optimizes the residuals with `scipy.optimize.least_squares`.
+
+```python
+from geoscript_ir import parse_program, validate, desugar
+from geoscript_ir.solver import translate, solve, SolveOptions
+
+text = """
+scene "Right triangle"
+points A, B, C
+segment A-B [length=4]
+segment A-C [length=3]
+segment B-C [length=5]
+right-angle at A rays A-B A-C
+"""
+
+program = parse_program(text)
+validate(program)
+desugared = desugar(program)
+model = translate(desugared)
+solution = solve(model, SolveOptions())
+
+print(solution.success, solution.max_residual)
+print(solution.point_coords)
+```
+
+See `examples/solve_right_triangle.py` for a complete runnable sample.
+
 ### Grammar & LLM prompt
 
 The canonical GeoScript grammar lives alongside the library so tooling can

@@ -3,6 +3,10 @@ name = "geoscript-ir"
 version = "0.1.0"
 description = "GeoScript parser, validator, and desugarer"
 requires-python = ">=3.8"
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+]
 
 [project.optional-dependencies]
 test = [
