@@ -1,0 +1,61 @@
+Program   := { Stmt }
+Stmt      := Scene | Layout | Points | Obj | Placement | Annot | Target | Rules | Comment
+
+Scene     := 'scene' STRING
+Layout    := 'layout' 'canonical=' ID 'scale=' NUMBER
+Points    := 'points' ID { ',' ID }
+
+Annot     := 'label point' ID Opts?
+          | 'sidelabel' Pair STRING Opts?
+
+Target    := 'target'
+             ( 'angle' 'at' ID 'rays' Pair Pair
+             | 'length' Pair
+             | 'point' ID
+             | 'circle' '(' STRING ')'
+             | 'area' '(' STRING ')'
+             | 'arc' ID '-' ID 'on' 'circle' 'center' ID Opts?
+             )
+
+Obj       := 'segment' Pair Opts?
+           | 'ray'     Pair Opts?
+           | 'line'    Pair Opts?
+           | 'circle' 'center' ID ('radius-through' ID | 'tangent' '(' EdgeList ')' ) Opts?
+           | 'circle' 'through' '(' IdList ')' Opts?
+           | 'circumcircle' 'of' IdChain Opts?
+           | 'incircle'    'of' IdChain Opts?
+           | 'perpendicular' 'at' ID 'to' Pair Opts?
+           | 'parallel' 'through' ID 'to' Pair Opts?
+           | 'bisector' 'at' ID Opts?
+           | 'median'  'from' ID 'to' Pair Opts?
+           | 'altitude' 'from' ID 'to' Pair Opts?
+           | 'angle' 'at' ID 'rays' Pair Pair Opts?
+           | 'right-angle' 'at' ID 'rays' Pair Pair Opts?
+           | 'equal-segments' '(' EdgeList ';' EdgeList ')' Opts?
+           | 'parallel-edges' '(' Pair ';' Pair ')' Opts?
+           | 'tangent' 'at' ID 'to' 'circle' 'center' ID Opts?
+           | 'line' ID '-' ID 'tangent' 'to' 'circle' 'center' ID 'at' ID Opts?
+           | 'polygon' IdChain Opts?
+           | 'triangle' ID '-' ID '-' ID Opts?
+           | 'quadrilateral' ID '-' ID '-' ID '-' ID Opts?
+           | 'parallelogram' ID '-' ID '-' ID '-' ID Opts?
+           | 'trapezoid' ID '-' ID '-' ID '-' ID Opts?
+           | 'rectangle' ID '-' ID '-' ID '-' ID Opts?
+           | 'square' ID '-' ID '-' ID '-' ID Opts?
+           | 'rhombus' ID '-' ID '-' ID '-' ID Opts?
+
+Placement := 'point' ID 'on' Path
+           | 'intersect' '(' Path ')' 'with' '(' Path ')' 'at' ID (',' ID)? Opts?
+
+Path      := 'line'    Pair
+           | 'ray'     Pair
+           | 'segment' Pair
+           | 'circle' 'center' ID
+
+EdgeList  := Pair { ',' Pair }
+IdList    := ID { ',' ID }
+IdChain   := ID '-' ID { '-' ID }
+Pair      := ID '-' ID
+
+Opts      := '[' KeyVal { ' ' KeyVal } ']'
+KeyVal    := KEY '=' (VALUE | STRING)
