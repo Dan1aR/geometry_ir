@@ -1,3 +1,5 @@
+import pytest
+
 from geoscript_ir import parse_program, validate, desugar, print_program
 
 def test_trapezoid_smoke():
@@ -26,3 +28,14 @@ def test_parse_equal_segments_single_paren():
     assert stmt.kind == 'equal_segments'
     assert stmt.data['lhs'] == [('A', 'B')]
     assert stmt.data['rhs'] == [('C', 'D')]
+
+
+def test_option_error_reports_column_pointer():
+    text = "trapezoid A-B-C-D [bases=A-D C-D]"
+    with pytest.raises(SyntaxError) as excinfo:
+        parse_program(text)
+    message = str(excinfo.value)
+    assert "unexpected value 'C-D'" in message
+    lines = message.splitlines()
+    assert lines[-2].strip() == text
+    assert lines[-1].rstrip().endswith('^')

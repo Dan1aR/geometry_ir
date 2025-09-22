@@ -1,7 +1,11 @@
 
-from typing import List, Tuple, Dict, Any
+import re
+from typing import List, Tuple, Dict, Any, Optional
 from .lexer import tokenize_line
 from .ast import Program, Stmt, Span
+
+_ERROR_LOC_RE = re.compile(r"\[line (\d+), col (\d+)\]")
+
 
 class Cursor:
     def __init__(self, tokens: List[Tuple[str,str,int,int]]):
@@ -53,6 +57,10 @@ class Cursor:
         if t:
             raise SyntaxError(f'[line {t[2]}, col {t[3]}] expected {want}, got {t[0]}')
         raise SyntaxError(f'Unexpected end of line: expected {want}')
+
+    def peek_ahead(self, offset: int = 1):
+        idx = self.i + offset
+        return self.toks[idx] if idx < len(self.toks) else None
 
 def parse_id(cur: Cursor):
     t = cur.expect('ID')
@@ -177,6 +185,7 @@ def parse_opts(cur: Cursor) -> Dict[str, Any]:
     if not cur.match('LBRACK'):
         return opts
     need_sep = False
+    last_key: Optional[str] = None
     while True:
         t = cur.peek()
         if not t:
@@ -184,13 +193,37 @@ def parse_opts(cur: Cursor) -> Dict[str, Any]:
         if t[0] == 'RBRACK':
             cur.i += 1
             break
-        if need_sep and cur.peek() and cur.peek()[0] == 'COMMA':
-            cur.i += 1
+        if need_sep:
+            if t[0] == 'COMMA':
+                cur.i += 1
+                need_sep = False
+                continue
+            if t[0] == 'ID':
+                next_tok = cur.peek_ahead()
+                if not next_tok or next_tok[0] != 'EQUAL':
+                    extra_piece = t[1]
+                    if next_tok and next_tok[0] == 'DASH':
+                        third = cur.peek_ahead(2)
+                        if third and third[0] == 'ID':
+                            extra_piece = f"{extra_piece}-{third[1]}"
+                    if last_key:
+                        raise SyntaxError(
+                            f"[line {t[2]}, col {t[3]}] unexpected value '{extra_piece}' after option '{last_key}'. "
+                            "Did you forget to separate options with a comma or close the options block?"
+                        )
+                    raise SyntaxError(
+                        f"[line {t[2]}, col {t[3]}] unexpected token '{t[1]}'. Expected another option or ']'"
+                    )
+            else:
+                raise SyntaxError(
+                    f"[line {t[2]}, col {t[3]}] unexpected token '{t[1]}'. Expected ',' or ']'"
+                )
         k = cur.expect('ID')
         key = k[1]
         cur.expect('EQUAL')
         opts[key] = parse_opt_value(cur)
         need_sep = True
+        last_key = key
     return opts
 
 def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
@@ -523,12 +556,35 @@ def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
         raise SyntaxError(f"[line {trailing[2]}, col {trailing[3]}] unexpected token {trailing[1]!r}")
     return stmt
 
+def _augment_syntax_error(err: SyntaxError, line_text: str) -> Optional[SyntaxError]:
+    message = str(err)
+    if not line_text or "\n" in message:
+        return None
+    match = _ERROR_LOC_RE.search(message)
+    if not match:
+        return None
+    try:
+        col = int(match.group(2))
+    except ValueError:
+        return None
+    col = max(col, 1)
+    caret_line = " " * (col - 1) + "^"
+    snippet = f"    {line_text.rstrip()}\n    {caret_line}"
+    return SyntaxError(f"{message}\n{snippet}")
+
+
 def parse_program(text: str) -> Program:
     prog = Program()
     for i, raw in enumerate(text.splitlines(), start=1):
         tokens = tokenize_line(raw, i)
         if not tokens:
             continue
-        stmt = parse_stmt(tokens)
+        try:
+            stmt = parse_stmt(tokens)
+        except SyntaxError as err:
+            augmented = _augment_syntax_error(err, raw)
+            if augmented is None:
+                raise
+            raise augmented from None
         if stmt: prog.stmts.append(stmt)
     return prog

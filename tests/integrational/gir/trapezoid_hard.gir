@@ -1,0 +1,9 @@
+scene "Trapezoid Diagonals Area Problem"
+layout canonical=trapezoid_AB_CD scale=1
+points A, B, C, D, O
+trapezoid A-B-C-D
+segment C-D [length=12]
+intersect (line A-C) with (line B-D) at O
+# Distance from O to line CD is 5 cm, encoded via perpendicular construction
+perpendicular at O to C-D [length=5 mark=height]
+target area ("Find area of ABED")
