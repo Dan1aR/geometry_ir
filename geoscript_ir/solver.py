@@ -73,6 +73,14 @@ class Solution:
         return normalize_point_coords(self.point_coords, scale)
 
 
+@dataclass
+class VariantSolveResult:
+    variant_index: int
+    program: Program
+    model: Model
+    solution: Solution
+
+
 def normalize_point_coords(
     point_coords: Dict[PointName, Tuple[float, float]], scale: float = 100.0
 ) -> Dict[PointName, Tuple[float, float]]:
@@ -394,8 +402,42 @@ def _build_point_on(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpe
             pt = _vec(x, index, point)
             return np.array([_cross_2d(dir_vec, pt - base)], dtype=float)
 
-        key = f"point_on_{path_kind}({point},{_format_edge(edge)})"
-        return [ResidualSpec(key=key, func=func, size=1, kind=f"point_on_{path_kind}", source=stmt)]
+        residuals = [
+            ResidualSpec(
+                key=f"point_on_{path_kind}({point},{_format_edge(edge)})",
+                func=func,
+                size=1,
+                kind=f"point_on_{path_kind}",
+                source=stmt,
+            )
+        ]
+
+        if path_kind in {"ray", "segment"}:
+
+            def bounds_func(x: np.ndarray) -> np.ndarray:
+                base = _vec(x, index, edge[0])
+                dir_vec = _edge_vec(x, index, edge)
+                diff = _vec(x, index, point) - base
+                proj = float(np.dot(diff, dir_vec))
+                if path_kind == "ray":
+                    return np.array([_smooth_hinge(-proj)], dtype=float)
+                length_sq = float(_norm_sq(dir_vec))
+                return np.array(
+                    [_smooth_hinge(-proj), _smooth_hinge(proj - length_sq)],
+                    dtype=float,
+                )
+
+            residuals.append(
+                ResidualSpec(
+                    key=f"point_on_{path_kind}_bounds({point},{_format_edge(edge)})",
+                    func=bounds_func,
+                    size=1 if path_kind == "ray" else 2,
+                    kind=f"point_on_{path_kind}_bounds",
+                    source=stmt,
+                )
+            )
+
+        return residuals
 
     if path_kind == "circle":
         radius = stmt.opts.get("radius") or stmt.opts.get("distance")
@@ -1019,4 +1061,45 @@ def solve(model: Model, options: SolveOptions = SolveOptions()) -> Solution:
         max_residual=max_res,
         residual_breakdown=breakdown_info,
         warnings=warnings,
+    )
+
+
+def _solution_score(solution: Solution) -> Tuple[int, float]:
+    return (0 if solution.success else 1, float(solution.max_residual))
+
+
+def solve_best_model(models: Sequence[Model], options: SolveOptions = SolveOptions()) -> Tuple[int, Solution]:
+    if not models:
+        raise ValueError("solve_best_model requires at least one model")
+
+    best_idx = -1
+    best_solution: Optional[Solution] = None
+
+    for idx, model in enumerate(models):
+        candidate = solve(model, options)
+        if best_solution is None or _solution_score(candidate) < _solution_score(best_solution):
+            best_idx = idx
+            best_solution = candidate
+
+    assert best_solution is not None  # for type checkers
+    return best_idx, best_solution
+
+
+def solve_with_desugar_variants(
+    program: Program, options: SolveOptions = SolveOptions()
+) -> VariantSolveResult:
+    from .desugar import desugar_variants
+
+    variants = desugar_variants(program)
+    if not variants:
+        raise ValueError("desugar produced no variants")
+
+    models: List[Model] = [translate(variant) for variant in variants]
+    best_idx, best_solution = solve_best_model(models, options)
+
+    return VariantSolveResult(
+        variant_index=best_idx,
+        program=variants[best_idx],
+        model=models[best_idx],
+        solution=best_solution,
     )

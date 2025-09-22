@@ -15,7 +15,7 @@ rules no_solving=true
     dz = desugar(prog)
     out = print_program(dz)
     assert 'segment A-B' in out
-    assert 'equal-segments (A-D ; B-C)' in out
+    assert 'equal-segments (A-B ; C-D)' in out
 
 
 def test_parse_equal_segments_single_paren():

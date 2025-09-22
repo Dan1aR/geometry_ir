@@ -1,10 +1,12 @@
 import numpy as np
 import pytest
 
-from geoscript_ir import parse_program, validate, desugar
+from geoscript_ir import desugar_variants, parse_program, validate, desugar
 from geoscript_ir.solver import (
     translate,
     solve,
+    solve_best_model,
+    solve_with_desugar_variants,
     SolveOptions,
     Solution,
     normalize_point_coords,
@@ -198,6 +200,47 @@ def test_trapezoid_reuses_desugared_parallel_residual():
     base_vals = base_parallel.func(_coords_array(model, good_coords))
     assert base_vals.shape == (1,)
     assert np.max(np.abs(base_vals)) < 1e-8
+
+
+def test_solver_picks_best_trapezoid_variant():
+    text = """
+    scene "Ambiguous trapezoid"
+    points A, B, C, D
+    trapezoid A-B-C-D
+    parallel-edges (A-B ; C-D)
+    segment A-B [length=5]
+    segment B-C [length=3]
+    segment C-D [length=4]
+    segment D-A [length=3]
+    """
+
+    prog = parse_program(text)
+    validate(prog)
+
+    variants = desugar_variants(prog)
+    assert len(variants) >= 2
+
+    models = [translate(variant) for variant in variants]
+    opts = SolveOptions(random_seed=123, reseed_attempts=1, tol=1e-6)
+    best_idx, best_solution = solve_best_model(models, opts)
+
+    assert best_idx < len(variants)
+    assert best_solution.success
+
+    chosen_keys = {spec.key for spec in models[best_idx].residuals if spec.kind == "parallel_edges"}
+    assert "parallel_edges(A-B,C-D)" in chosen_keys
+    assert "parallel_edges(D-A,B-C)" not in chosen_keys
+
+    if len(variants) > 1:
+        other_idx = 1 - best_idx if len(variants) == 2 else next(i for i in range(len(variants)) if i != best_idx)
+        other_solution = solve(models[other_idx], opts)
+        assert best_solution.max_residual <= other_solution.max_residual + 1e-9
+        other_keys = {spec.key for spec in models[other_idx].residuals if spec.kind == "parallel_edges"}
+        assert "parallel_edges(D-A,B-C)" in other_keys
+
+    summary = solve_with_desugar_variants(prog, opts)
+    assert summary.variant_index == best_idx
+    assert summary.solution.max_residual == pytest.approx(best_solution.max_residual, rel=1e-9)
 
 
 def test_square_residuals_rely_on_desugared_statements():

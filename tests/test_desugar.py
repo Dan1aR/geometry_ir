@@ -1,5 +1,5 @@
 from geoscript_ir.ast import Program, Span, Stmt
-from geoscript_ir.desugar import desugar
+from geoscript_ir.desugar import desugar, desugar_variants
 
 
 def stmt(kind, data, opts=None, origin='source'):
@@ -70,7 +70,40 @@ def test_trapezoid_bases_and_isosceles():
 
     equal_segments = [s for s in out.stmts if s.kind == 'equal_segments' and s.origin == 'desugar(trapezoid)']
     assert len(equal_segments) == 1
-    assert equal_segments[0].data == {'lhs': [('A', 'D')], 'rhs': [('B', 'C')]}
+    legs = equal_segments[0].data
+    assert len(legs['lhs']) == len(legs['rhs']) == 1
+    leg_edges = {tuple(sorted(legs['lhs'][0])), tuple(sorted(legs['rhs'][0]))}
+    assert leg_edges == {('A', 'B'), ('C', 'D')}
+
+
+def test_trapezoid_without_bases_creates_variants():
+    trap = stmt('trapezoid', {'ids': ['A', 'B', 'C', 'D']})
+    program = Program([trap])
+
+    variants = desugar_variants(program)
+    assert len(variants) == 2
+
+    # First variant matches the default ``desugar`` output for compatibility.
+    assert variants[0] == desugar(program)
+
+    def _edge_pair(stmt: Stmt) -> frozenset[tuple[str, str]]:
+        edges = stmt.data['edges']
+        return frozenset(tuple(sorted(edge)) for edge in edges)
+
+    base_pairs = []
+    for variant in variants:
+        parallel = [
+            s
+            for s in variant.stmts
+            if s.kind == 'parallel_edges' and s.origin == 'desugar(trapezoid)'
+        ]
+        assert len(parallel) == 1
+        base_pairs.append(_edge_pair(parallel[0]))
+
+    assert set(base_pairs) == {
+        frozenset({('A', 'B'), ('C', 'D')}),
+        frozenset({('A', 'D'), ('B', 'C')}),
+    }
 
 
 def test_rectangle_right_angles_and_equal_sides_added():
