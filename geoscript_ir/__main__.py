@@ -9,6 +9,7 @@ from geoscript_ir import (
     parse_program,
     print_program,
     validate,
+    normalize_point_coords
 )
 from geoscript_ir.solver import SolveOptions, Solution, translate, solve
 
@@ -132,6 +133,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     print("Max residual:", best_solution.max_residual)
     for name, (x, y) in best_solution.point_coords.items():
         print(f"{name}: ({x:.6f}, {y:.6f})")
+
+    print("Normed points:")
+    for name, (x, y) in normalize_point_coords(best_solution.point_coords).items():
+        print(f"{name}: ({x:.6f}, {y:.6f})")
+
     if best_solution.warnings:
         print("Solver warnings:")
         for warning in best_solution.warnings:
