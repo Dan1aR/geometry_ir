@@ -1,7 +1,7 @@
 # Отрезки $AB$ и $CD$ — диаметры окружности с центром $О$. Найдите периметр треугольника $AOD$, если известно, что $СВ = 13$ см, $AB = 16$ см.
-# --- Геометрическая постановка задачи ---
+
 scene "Circle"
-layout canonical=euclid scale=1
+layout canonical=generic scale=1
 points A, B, C, D, O
 
 # Окружность с центром O
@@ -16,7 +16,7 @@ point O on line C-D
 triangle A-O-D
 
 # Данные (аннотации длин)
-segment C-B [length=4]
+segment C-B [length=13]
 segment A-B [length=16]
 
 # Цели (для периметра P(AOD) = AO + OD + AD)

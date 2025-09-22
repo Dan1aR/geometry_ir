@@ -1,9 +1,10 @@
+# В трапеции $ABCD$ диагонали пересекаются в точке $О$. Найдите площадь треугольника $AOB$, если боковая сторона $CD$ трапеции равна $12$ см, а расстояние от точки $О$ до прямой $CD$ равно $5$ см.
 scene "Trapezoid Diagonals Area Problem"
-layout canonical=trapezoid_AB_CD scale=1
+layout canonical=generic scale=1
 points A, B, C, D, O
 trapezoid A-B-C-D
 segment C-D [length=12]
 intersect (line A-C) with (line B-D) at O
 # Distance from O to line CD is 5 cm, encoded via perpendicular construction
-perpendicular at O to C-D [length=5 mark=height]
+perpendicular at O to C-D [length=5]
 target area ("Find area of ABED")

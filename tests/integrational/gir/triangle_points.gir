@@ -1,3 +1,4 @@
+# В треугольнике ABC $\angle A = 38^\circ$, $\angle B = 110^\circ$, $\angle C = 32^\circ$. На стороне $АС$ отмечены точки $D$ и $E$ так, что точка $D$ лежит на отрезке $АЕ$, $BD = DA$, $BE = EC$. Найдите угол $DBE$.
 scene "Triangle with given angles; points D,E on AC; BD=DA, BE=EC; find angle DBE"
 layout canonical=triangle_ABC scale=1
 points A, B, C, D, E

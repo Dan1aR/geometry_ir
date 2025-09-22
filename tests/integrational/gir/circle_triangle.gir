@@ -1,3 +1,4 @@
+# Отрезок $МK$ — диаметр окружности с центром $О$, а $МР$ и $РK$ — равные хорды этой окружности. Найдите угол $POM$.
 scene "Diametr MK, MP = PK; find angle POM"
 layout canonical=generic scale=1
 points M, K, O, P
@@ -14,6 +15,6 @@ point O on line M-K
 segment M-K
 segment M-P
 segment P-K
-equal-segments (M-P ; P-K) [label="given"]
+equal-segments (M-P ; P-K)
 # Цель: угол POM
 target angle at O rays O-P O-M [label="?POM"]

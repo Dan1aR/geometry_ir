@@ -1,3 +1,4 @@
+# В равнобедренном треугольнике $ABC$ с основанием $АС$ проведена биссектриса $AD$. Найдите $\angle ADC$, если $\angle C = 50^\circ$.
 scene "Isosceles triangle ABC with base AC; AD is angle bisector; find angle ADC; given angle C=50^\\circ"
 layout canonical=triangle_ABC scale=1
 points A, B, C, D
