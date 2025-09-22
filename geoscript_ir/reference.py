@@ -89,11 +89,16 @@ _PROMPT_CORE = dedent(
          layout canonical=<id> scale=<number>
          points A, B, C[, ...]      # list every named point, comma-separated
     2. Translate the givens into explicit GeoScript statements, mirroring the clean samples in tests/integrational/gir/*.gir.
-       - Use one command per fact: segments, polygons, circles, parallels, right angles, equalities, etc.
+       - Use one command per fact: segments, polygons, circles, parallels, right angles, tangents, equalities, etc.
        - Circles have two syntaxes:
          * Known center ➜ `circle center O radius-through B` (optionally add tangency Opts). Put extra on-circle points with
            separate `point X on circle center O` lines.
          * Unknown center ➜ `circle through (A, B, C)` (or other point counts). Do **not** mix `center` with `through (...)`.
+       - Tangents must be explicit. RU cues like "касательная" and EN "tangent" map to:
+         * Tangent segment from an external point ➜ declare the segment (`segment A-B`) **and** the tangency (`line A-B tangent to circle center O at B`).
+         * Touchpoint-specified tangent line without the external point ➜ `tangent at B to circle center O`.
+         * A circle tangent to sides ➜ `circle center O tangent (A-B, C-D)`.
+         Anchor the touchpoints on the circle separately when the prompt implies it.
        - Keep constraints declarative: place points with `point ... on ...` or `intersect (...) with (...)`.
     3. Add annotations (labels, side texts) the prompt requires and finish with `target ...` lines capturing what to find.
     4. Include a `rules [...]` line only when the problem explicitly restricts solving/auxiliary work; omit it otherwise.
@@ -111,7 +116,7 @@ _PROMPT_CORE = dedent(
     SANITY CHECKS BEFORE SENDING
     - Every identifier used in the body appears in the `points` list (case-insensitive match).
     - Each statement matches the BNF (see below) and any options stay inside `[key=value ...]` with valid keys.
-    - Circles, parallels, right angles, tangencies, and perpendiculars are explicitly declared when the text implies them.
+    - Circles, parallels, right angles, tangencies ("касательная"), and perpendiculars are explicitly declared when the text implies them.
     - Use `right-angle ... [mark=square]` or a perpendicular construction whenever the prompt enforces a 90° relation.
     - If the text says a figure is cyclic/inscribed/circumscribed, add the corresponding circle statement.
 
