@@ -1,4 +1,5 @@
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Set
 
 from .ast import Program, Stmt
 
@@ -52,262 +53,473 @@ def _angle_bisector_vertex(path: object) -> Optional[str]:
     return at if isinstance(at, str) else None
 
 
-def desugar(prog: Program) -> Program:
-    out = Program([])
+@dataclass
+class _VariantState:
+    program: Program = field(default_factory=Program)
+    added_keys: Set[object] = field(default_factory=set)
+    helper_used: Set[str] = field(default_factory=set)
+    helper_counts: Dict[str, int] = field(default_factory=lambda: {'O': 0, 'I': 0, 'T': 0})
 
-    source_keys = set()
+    def copy(self) -> '_VariantState':
+        return _VariantState(
+            program=Program(list(self.program.stmts)),
+            added_keys=set(self.added_keys),
+            helper_used=set(self.helper_used),
+            helper_counts=dict(self.helper_counts),
+        )
+
+
+def _fresh_name(state: _VariantState, prefix: str, base: Optional[str] = None) -> str:
+    prefix = prefix.upper()
+    if base:
+        base_clean = ''.join(ch for ch in base.upper() if ch.isalnum())
+    else:
+        base_clean = ''
+    if base_clean:
+        candidate = f'{prefix}_{base_clean}'
+        suffix = 2
+        while candidate in state.helper_used:
+            candidate = f'{prefix}_{base_clean}_{suffix}'
+            suffix += 1
+        state.helper_used.add(candidate)
+        return candidate
+    state.helper_counts[prefix] = state.helper_counts.get(prefix, 0) + 1
+    while True:
+        candidate = f'{prefix}_{state.helper_counts[prefix]}'
+        if candidate not in state.helper_used:
+            state.helper_used.add(candidate)
+            return candidate
+        state.helper_counts[prefix] += 1
+
+
+def _append(state: _VariantState, stmt: Stmt, source_keys: Set[object], *, generated: bool) -> None:
+    key = canonical_stmt_key(stmt)
+    if generated and key is not None and (key in state.added_keys or key in source_keys):
+        return
+    state.program.stmts.append(stmt)
+    if key is not None:
+        state.added_keys.add(key)
+
+
+def desugar_variants(prog: Program) -> List[Program]:
+    if not prog.stmts:
+        return [Program([])]
+
+    source_keys: Set[object] = set()
     for stmt in prog.stmts:
         key = canonical_stmt_key(stmt)
         if key is not None and stmt.origin == 'source':
             source_keys.add(key)
 
-    added_keys = set()
-    helper_used = set()
-    helper_counts = {'O': 0, 'I': 0, 'T': 0}
-
-    def fresh_name(prefix, base=None):
-        prefix = prefix.upper()
-        if base:
-            base_clean = ''.join(ch for ch in base.upper() if ch.isalnum())
-        else:
-            base_clean = ''
-        if base_clean:
-            candidate = f'{prefix}_{base_clean}'
-            suffix = 2
-            while candidate in helper_used:
-                candidate = f'{prefix}_{base_clean}_{suffix}'
-                suffix += 1
-            helper_used.add(candidate)
-            return candidate
-        helper_counts[prefix] = helper_counts.get(prefix, 0) + 1
-        while True:
-            candidate = f'{prefix}_{helper_counts[prefix]}'
-            if candidate not in helper_used:
-                helper_used.add(candidate)
-                return candidate
-            helper_counts[prefix] += 1
-
-    def append(stmt: Stmt, *, generated: bool) -> None:
-        key = canonical_stmt_key(stmt)
-        if generated and key is not None:
-            if key in added_keys or key in source_keys:
-                return
-        out.stmts.append(stmt)
-        if key is not None:
-            added_keys.add(key)
+    states: List[_VariantState] = [_VariantState()]
 
     for s in prog.stmts:
-        append(s, generated=False)
+        # include original statement in every variant
+        for state in states:
+            _append(state, s, source_keys, generated=False)
+
         if s.kind == 'polygon':
             ids = s.data['ids']
-            for i in range(len(ids)):
-                a = ids[i]
-                b = ids[(i + 1) % len(ids)]
-                append(Stmt('segment', s.span, {'edge': edge(a, b)}, origin='desugar(polygon)'), generated=True)
+            for state in states:
+                for i in range(len(ids)):
+                    a = ids[i]
+                    b = ids[(i + 1) % len(ids)]
+                    _append(
+                        state,
+                        Stmt('segment', s.span, {'edge': edge(a, b)}, origin='desugar(polygon)'),
+                        source_keys,
+                        generated=True,
+                    )
         elif s.kind == 'triangle':
             ids = s.data['ids']
-            for i in range(3):
-                a = ids[i]
-                b = ids[(i + 1) % 3]
-                append(Stmt('segment', s.span, {'edge': edge(a, b)}, origin='desugar(triangle)'), generated=True)
-            iso = s.opts.get('isosceles')
-            if iso:
-                idx = {'atA': 0, 'atB': 1, 'atC': 2}[iso]
-                A = ids[idx]
-                B = ids[(idx + 1) % 3]
-                C = ids[(idx + 2) % 3]
-                append(Stmt('equal_segments', s.span, {'lhs': [edge(A, B)], 'rhs': [edge(A, C)]}, origin='desugar(triangle)'), generated=True)
-            r = s.opts.get('right')
-            if r:
-                idx = {'atA': 0, 'atB': 1, 'atC': 2}[r]
-                A = ids[idx]
-                B = ids[(idx + 1) % 3]
-                C = ids[(idx + 2) % 3]
-                append(Stmt('right_angle_at', s.span, {'at': A, 'rays': ((A, B), (A, C))}, {'mark': 'square'}, origin='desugar(triangle)'), generated=True)
+            for state in states:
+                for i in range(3):
+                    a = ids[i]
+                    b = ids[(i + 1) % 3]
+                    _append(
+                        state,
+                        Stmt('segment', s.span, {'edge': edge(a, b)}, origin='desugar(triangle)'),
+                        source_keys,
+                        generated=True,
+                    )
+                iso = s.opts.get('isosceles')
+                if iso:
+                    idx = {'atA': 0, 'atB': 1, 'atC': 2}[iso]
+                    A = ids[idx]
+                    B = ids[(idx + 1) % 3]
+                    C = ids[(idx + 2) % 3]
+                    _append(
+                        state,
+                        Stmt(
+                            'equal_segments',
+                            s.span,
+                            {'lhs': [edge(A, B)], 'rhs': [edge(A, C)]},
+                            origin='desugar(triangle)'
+                        ),
+                        source_keys,
+                        generated=True,
+                    )
+                r = s.opts.get('right')
+                if r:
+                    idx = {'atA': 0, 'atB': 1, 'atC': 2}[r]
+                    A = ids[idx]
+                    B = ids[(idx + 1) % 3]
+                    C = ids[(idx + 2) % 3]
+                    _append(
+                        state,
+                        Stmt(
+                            'right_angle_at',
+                            s.span,
+                            {'at': A, 'rays': ((A, B), (A, C))},
+                            {'mark': 'square'},
+                            origin='desugar(triangle)'
+                        ),
+                        source_keys,
+                        generated=True,
+                    )
         elif s.kind in ('quadrilateral', 'parallelogram', 'trapezoid', 'rectangle', 'square', 'rhombus'):
             ids = s.data['ids']
-            for i in range(4):
-                a = ids[i]
-                b = ids[(i + 1) % 4]
-                append(Stmt('segment', s.span, {'edge': edge(a, b)}, origin=f'desugar({s.kind})'), generated=True)
+            for state in states:
+                for i in range(4):
+                    a = ids[i]
+                    b = ids[(i + 1) % 4]
+                    _append(
+                        state,
+                        Stmt('segment', s.span, {'edge': edge(a, b)}, origin=f'desugar({s.kind})'),
+                        source_keys,
+                        generated=True,
+                    )
+
             if s.kind == 'parallelogram':
                 A, B, C, D = ids
-                append(Stmt('parallel_edges', s.span, {'edges': [edge(A, B), edge(C, D)]}, origin='desugar(parallelogram)'), generated=True)
-                append(Stmt('parallel_edges', s.span, {'edges': [edge(B, C), edge(D, A)]}, origin='desugar(parallelogram)'), generated=True)
-                append(Stmt('equal_segments', s.span, {'lhs': [edge(A, B)], 'rhs': [edge(C, D)]}, origin='desugar(parallelogram)'), generated=True)
-                append(Stmt('equal_segments', s.span, {'lhs': [edge(B, C)], 'rhs': [edge(D, A)]}, origin='desugar(parallelogram)'), generated=True)
+                for state in states:
+                    _append(
+                        state,
+                        Stmt('parallel_edges', s.span, {'edges': [edge(A, B), edge(C, D)]}, origin='desugar(parallelogram)'),
+                        source_keys,
+                        generated=True,
+                    )
+                    _append(
+                        state,
+                        Stmt('parallel_edges', s.span, {'edges': [edge(B, C), edge(D, A)]}, origin='desugar(parallelogram)'),
+                        source_keys,
+                        generated=True,
+                    )
+                    _append(
+                        state,
+                        Stmt('equal_segments', s.span, {'lhs': [edge(A, B)], 'rhs': [edge(C, D)]}, origin='desugar(parallelogram)'),
+                        source_keys,
+                        generated=True,
+                    )
+                    _append(
+                        state,
+                        Stmt('equal_segments', s.span, {'lhs': [edge(B, C)], 'rhs': [edge(D, A)]}, origin='desugar(parallelogram)'),
+                        source_keys,
+                        generated=True,
+                    )
             if s.kind == 'trapezoid':
                 A, B, C, D = ids
-                bases = s.opts.get('bases', f'{A}-{D}')  # default A-D
-                try:
-                    bx, by = bases.split('-')
-                except Exception:
-                    bx, by = A, D
                 edges = [edge(A, B), edge(B, C), edge(C, D), edge(D, A)]
                 edge_names = [f'{e[0]}-{e[1]}' for e in edges]
-                if f'{bx}-{by}' in edge_names:
-                    idx = edge_names.index(f'{bx}-{by}')
-                elif f'{by}-{bx}' in edge_names:
-                    idx = edge_names.index(f'{by}-{bx}')
+                bases_opt = s.opts.get('bases')
+
+                bx, by = A, D
+                explicit_base = False
+                if isinstance(bases_opt, str):
+                    parts = bases_opt.split('-', 1)
+                    if len(parts) == 2:
+                        explicit_base = True
+                        bx = parts[0].strip() or A
+                        by = parts[1].strip() or D
+                elif isinstance(bases_opt, (list, tuple)) and len(bases_opt) == 2:
+                    explicit_base = True
+                    bx = str(bases_opt[0]).strip() or A
+                    by = str(bases_opt[1]).strip() or D
+
+                name = f'{bx}-{by}'
+                if name in edge_names:
+                    primary_idx = edge_names.index(name)
                 else:
-                    idx = 3
-                opp = edges[(idx + 2) % 4]
-                base = edges[idx]
-                append(Stmt('parallel_edges', s.span, {'edges': [base, opp]}, origin='desugar(trapezoid)'), generated=True)
-                if s.opts.get('isosceles') is True:
-                    append(Stmt('equal_segments', s.span, {'lhs': [edge(A, D)], 'rhs': [edge(B, C)]}, origin='desugar(trapezoid)'), generated=True)
+                    rev = f'{by}-{bx}'
+                    if rev in edge_names:
+                        primary_idx = edge_names.index(rev)
+                    else:
+                        primary_idx = 3
+
+                base_indices: List[int] = [primary_idx]
+                if not explicit_base:
+                    primary_pair = {primary_idx, (primary_idx + 2) % 4}
+                    remaining = [idx for idx in range(4) if idx not in primary_pair]
+                    if len(remaining) == 2:
+                        base_indices.append(remaining[0])
+
+                new_states: List[_VariantState] = []
+                for state in states:
+                    for base_idx in base_indices:
+                        target = state.copy()
+                        base = edges[base_idx]
+                        opp = edges[(base_idx + 2) % 4]
+                        leg1 = edges[(base_idx + 1) % 4]
+                        leg2 = edges[(base_idx + 3) % 4]
+                        opts = {'_trapezoid_ids': tuple(ids), '_trapezoid_base_index': base_idx}
+                        _append(
+                            target,
+                            Stmt('parallel_edges', s.span, {'edges': [base, opp]}, opts, origin='desugar(trapezoid)'),
+                            source_keys,
+                            generated=True,
+                        )
+                        if s.opts.get('isosceles') is True:
+                            _append(
+                                target,
+                                Stmt('equal_segments', s.span, {'lhs': [leg1], 'rhs': [leg2]}, origin='desugar(trapezoid)'),
+                                source_keys,
+                                generated=True,
+                            )
+                        new_states.append(target)
+                states = new_states
             if s.kind == 'rectangle':
                 A, B, C, D = ids
-                append(Stmt('right_angle_at', s.span, {'at': A, 'rays': ((A, B), (A, D))}, {'mark': 'square'}, origin='desugar(rectangle)'), generated=True)
-                append(Stmt('right_angle_at', s.span, {'at': B, 'rays': ((B, C), (B, A))}, {'mark': 'square'}, origin='desugar(rectangle)'), generated=True)
-                append(Stmt('right_angle_at', s.span, {'at': C, 'rays': ((C, D), (C, B))}, {'mark': 'square'}, origin='desugar(rectangle)'), generated=True)
-                append(Stmt('right_angle_at', s.span, {'at': D, 'rays': ((D, A), (D, C))}, {'mark': 'square'}, origin='desugar(rectangle)'), generated=True)
-                append(Stmt('equal_segments', s.span, {'lhs': [edge(A, B)], 'rhs': [edge(C, D)]}, origin='desugar(rectangle)'), generated=True)
-                append(Stmt('equal_segments', s.span, {'lhs': [edge(B, C)], 'rhs': [edge(D, A)]}, origin='desugar(rectangle)'), generated=True)
+                for state in states:
+                    _append(
+                        state,
+                        Stmt('right_angle_at', s.span, {'at': A, 'rays': ((A, B), (A, D))}, {'mark': 'square'}, origin='desugar(rectangle)'),
+                        source_keys,
+                        generated=True,
+                    )
+                    _append(
+                        state,
+                        Stmt('right_angle_at', s.span, {'at': B, 'rays': ((B, C), (B, A))}, {'mark': 'square'}, origin='desugar(rectangle)'),
+                        source_keys,
+                        generated=True,
+                    )
+                    _append(
+                        state,
+                        Stmt('right_angle_at', s.span, {'at': C, 'rays': ((C, D), (C, B))}, {'mark': 'square'}, origin='desugar(rectangle)'),
+                        source_keys,
+                        generated=True,
+                    )
+                    _append(
+                        state,
+                        Stmt('right_angle_at', s.span, {'at': D, 'rays': ((D, A), (D, C))}, {'mark': 'square'}, origin='desugar(rectangle)'),
+                        source_keys,
+                        generated=True,
+                    )
+                    _append(
+                        state,
+                        Stmt('equal_segments', s.span, {'lhs': [edge(A, B)], 'rhs': [edge(C, D)]}, origin='desugar(rectangle)'),
+                        source_keys,
+                        generated=True,
+                    )
+                    _append(
+                        state,
+                        Stmt('equal_segments', s.span, {'lhs': [edge(B, C)], 'rhs': [edge(D, A)]}, origin='desugar(rectangle)'),
+                        source_keys,
+                        generated=True,
+                    )
             if s.kind == 'square':
                 A, B, C, D = ids
-                append(Stmt('right_angle_at', s.span, {'at': A, 'rays': ((A, B), (A, D))}, {'mark': 'square'}, origin='desugar(square)'), generated=True)
-                append(Stmt('right_angle_at', s.span, {'at': B, 'rays': ((B, C), (B, A))}, {'mark': 'square'}, origin='desugar(square)'), generated=True)
-                append(Stmt('right_angle_at', s.span, {'at': C, 'rays': ((C, D), (C, B))}, {'mark': 'square'}, origin='desugar(square)'), generated=True)
-                append(Stmt('right_angle_at', s.span, {'at': D, 'rays': ((D, A), (D, C))}, {'mark': 'square'}, origin='desugar(square)'), generated=True)
-                append(Stmt('equal_segments', s.span, {'lhs': [edge(A, B)], 'rhs': [edge(B, C), edge(C, D), edge(D, A)]}, origin='desugar(square)'), generated=True)
+                for state in states:
+                    _append(
+                        state,
+                        Stmt('right_angle_at', s.span, {'at': A, 'rays': ((A, B), (A, D))}, {'mark': 'square'}, origin='desugar(square)'),
+                        source_keys,
+                        generated=True,
+                    )
+                    _append(
+                        state,
+                        Stmt('right_angle_at', s.span, {'at': B, 'rays': ((B, C), (B, A))}, {'mark': 'square'}, origin='desugar(square)'),
+                        source_keys,
+                        generated=True,
+                    )
+                    _append(
+                        state,
+                        Stmt('right_angle_at', s.span, {'at': C, 'rays': ((C, D), (C, B))}, {'mark': 'square'}, origin='desugar(square)'),
+                        source_keys,
+                        generated=True,
+                    )
+                    _append(
+                        state,
+                        Stmt('right_angle_at', s.span, {'at': D, 'rays': ((D, A), (D, C))}, {'mark': 'square'}, origin='desugar(square)'),
+                        source_keys,
+                        generated=True,
+                    )
+                    _append(
+                        state,
+                        Stmt('equal_segments', s.span, {'lhs': [edge(A, B)], 'rhs': [edge(B, C), edge(C, D), edge(D, A)]}, origin='desugar(square)'),
+                        source_keys,
+                        generated=True,
+                    )
             if s.kind == 'rhombus':
                 A, B, C, D = ids
-                append(Stmt('equal_segments', s.span, {'lhs': [edge(A, B)], 'rhs': [edge(B, C), edge(C, D), edge(D, A)]}, origin='desugar(rhombus)'), generated=True)
+                for state in states:
+                    _append(
+                        state,
+                        Stmt('equal_segments', s.span, {'lhs': [edge(A, B)], 'rhs': [edge(B, C), edge(C, D), edge(D, A)]}, origin='desugar(rhombus)'),
+                        source_keys,
+                        generated=True,
+                    )
         elif s.kind == 'circle_center_tangent_sides':
             center = s.data['center']
-            for a, b in s.data['tangent_edges']:
-                touch = fresh_name('T', f'{a}{b}')
-                append(
-                    Stmt(
-                        'intersect',
-                        s.span,
-                        {'path1': ('line', edge(a, b)), 'path2': ('circle', center), 'at': touch, 'at2': None},
-                        dict(s.opts),
-                        origin='desugar(circle_center_tangent_sides)'
-                    ),
-                    generated=True,
-                )
-                append(
-                    Stmt(
-                        'right_angle_at',
-                        s.span,
-                        {'at': touch, 'rays': ((touch, center), (touch, a))},
-                        {},
-                        origin='desugar(circle_center_tangent_sides)'
-                    ),
-                    generated=True,
-                )
+            for state in states:
+                for a, b in s.data['tangent_edges']:
+                    touch = _fresh_name(state, 'T', f'{a}{b}')
+                    _append(
+                        state,
+                        Stmt(
+                            'intersect',
+                            s.span,
+                            {'path1': ('line', edge(a, b)), 'path2': ('circle', center), 'at': touch, 'at2': None},
+                            dict(s.opts),
+                            origin='desugar(circle_center_tangent_sides)'
+                        ),
+                        source_keys,
+                        generated=True,
+                    )
+                    _append(
+                        state,
+                        Stmt(
+                            'right_angle_at',
+                            s.span,
+                            {'at': touch, 'rays': ((touch, center), (touch, a))},
+                            {},
+                            origin='desugar(circle_center_tangent_sides)'
+                        ),
+                        source_keys,
+                        generated=True,
+                    )
         elif s.kind in ('circle_through', 'circumcircle'):
             ids = _distinct_ids(s.data['ids'])
             if len(ids) < 3:
                 continue
             first_three = ids[:3]
             through = first_three[0]
-            center = fresh_name('O', ''.join(first_three))
-            append(
-                Stmt(
-                    'circle_center_radius_through',
-                    s.span,
-                    {'center': center, 'through': through},
-                    dict(s.opts),
-                    origin=f'desugar({s.kind})'
-                ),
-                generated=True,
-            )
             rhs_points = ids[1:]
-            if rhs_points:
-                append(
+            for state in states:
+                center = _fresh_name(state, 'O', ''.join(first_three))
+                _append(
+                    state,
                     Stmt(
-                        'equal_segments',
+                        'circle_center_radius_through',
                         s.span,
-                        {
-                            'lhs': [edge(center, through)],
-                            'rhs': [edge(center, pt) for pt in rhs_points],
-                        },
-                        {},
+                        {'center': center, 'through': through},
+                        dict(s.opts),
                         origin=f'desugar({s.kind})'
                     ),
+                    source_keys,
                     generated=True,
                 )
+                if rhs_points:
+                    _append(
+                        state,
+                        Stmt(
+                            'equal_segments',
+                            s.span,
+                            {
+                                'lhs': [edge(center, through)],
+                                'rhs': [edge(center, pt) for pt in rhs_points],
+                            },
+                            {},
+                            origin=f'desugar({s.kind})'
+                        ),
+                        source_keys,
+                        generated=True,
+                    )
         elif s.kind == 'incircle':
             ids = _distinct_ids(s.data['ids'])
             if len(ids) < 3:
                 continue
             A, B, C = ids[:3]
-            center = fresh_name('I', ''.join([A, B, C]))
-            touch_ab = fresh_name('T', f'{A}{B}')
-            touch_bc = fresh_name('T', f'{B}{C}')
-            touch_ca = fresh_name('T', f'{C}{A}')
-            append(
-                Stmt(
-                    'circle_center_radius_through',
-                    s.span,
-                    {'center': center, 'through': touch_ab},
-                    dict(s.opts),
-                    origin='desugar(incircle)'
-                ),
-                generated=True,
-            )
-            for point, seg in (
-                (touch_ab, edge(A, B)),
-                (touch_bc, edge(B, C)),
-                (touch_ca, edge(C, A)),
-            ):
-                append(
-                    Stmt('point_on', s.span, {'point': point, 'path': ('segment', seg)}, {}, origin='desugar(incircle)'),
+            for state in states:
+                center = _fresh_name(state, 'I', ''.join([A, B, C]))
+                touch_ab = _fresh_name(state, 'T', f'{A}{B}')
+                touch_bc = _fresh_name(state, 'T', f'{B}{C}')
+                touch_ca = _fresh_name(state, 'T', f'{C}{A}')
+                _append(
+                    state,
+                    Stmt(
+                        'circle_center_radius_through',
+                        s.span,
+                        {'center': center, 'through': touch_ab},
+                        dict(s.opts),
+                        origin='desugar(incircle)'
+                    ),
+                    source_keys,
                     generated=True,
                 )
-            for point, vertex in (
-                (touch_ab, A),
-                (touch_bc, B),
-                (touch_ca, C),
-            ):
-                append(
+                for point, seg in (
+                    (touch_ab, edge(A, B)),
+                    (touch_bc, edge(B, C)),
+                    (touch_ca, edge(C, A)),
+                ):
+                    _append(
+                        state,
+                        Stmt('point_on', s.span, {'point': point, 'path': ('segment', seg)}, {}, origin='desugar(incircle)'),
+                        source_keys,
+                        generated=True,
+                    )
+                for point, vertex in (
+                    (touch_ab, A),
+                    (touch_bc, B),
+                    (touch_ca, C),
+                ):
+                    _append(
+                        state,
+                        Stmt(
+                            'right_angle_at',
+                            s.span,
+                            {'at': point, 'rays': ((point, center), (point, vertex))},
+                            {},
+                            origin='desugar(incircle)'
+                        ),
+                        source_keys,
+                        generated=True,
+                    )
+                _append(
+                    state,
                     Stmt(
-                        'right_angle_at',
+                        'equal_segments',
                         s.span,
-                        {'at': point, 'rays': ((point, center), (point, vertex))},
+                        {
+                            'lhs': [edge(center, touch_ab)],
+                            'rhs': [edge(center, touch_bc), edge(center, touch_ca)],
+                        },
                         {},
                         origin='desugar(incircle)'
                     ),
+                    source_keys,
                     generated=True,
                 )
-            append(
-                Stmt(
-                    'equal_segments',
-                    s.span,
-                    {
-                        'lhs': [edge(center, touch_ab)],
-                        'rhs': [edge(center, touch_bc), edge(center, touch_ca)],
-                    },
-                    {},
-                    origin='desugar(incircle)'
-                ),
-                generated=True,
-            )
         elif s.kind == 'intersect':
             path1 = s.data['path1']
             path2 = s.data['path2']
             pts = [s.data.get('at'), s.data.get('at2')]
-            for point in pts:
-                if not isinstance(point, str):
-                    continue
-                append(
-                    Stmt('point_on', s.span, {'point': point, 'path': path1}, {}, origin='desugar(intersect)'),
-                    generated=True,
-                )
-                append(
-                    Stmt('point_on', s.span, {'point': point, 'path': path2}, {}, origin='desugar(intersect)'),
-                    generated=True,
-                )
-                for vertex in filter(None, (_angle_bisector_vertex(path1), _angle_bisector_vertex(path2))):
-                    append(
-                        Stmt('segment', s.span, {'edge': edge(vertex, point)}, origin='desugar(intersect)'),
+            for state in states:
+                for point in pts:
+                    if not isinstance(point, str):
+                        continue
+                    _append(
+                        state,
+                        Stmt('point_on', s.span, {'point': point, 'path': path1}, {}, origin='desugar(intersect)'),
+                        source_keys,
                         generated=True,
                     )
+                    _append(
+                        state,
+                        Stmt('point_on', s.span, {'point': point, 'path': path2}, {}, origin='desugar(intersect)'),
+                        source_keys,
+                        generated=True,
+                    )
+                    for vertex in filter(None, (_angle_bisector_vertex(path1), _angle_bisector_vertex(path2))):
+                        _append(
+                            state,
+                            Stmt('segment', s.span, {'edge': edge(vertex, point)}, origin='desugar(intersect)'),
+                            source_keys,
+                            generated=True,
+                        )
 
-    norm = Program([])
-    for stmt in out.stmts:
-        norm.stmts.append(stmt)
-    return norm
+    return [state.program for state in states]
+
+
+def desugar(prog: Program) -> Program:
+    variants = desugar_variants(prog)
+    return variants[0] if variants else Program([])
