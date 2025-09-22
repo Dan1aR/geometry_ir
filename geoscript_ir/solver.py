@@ -13,6 +13,7 @@ Drop-in replacement:
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 import math
+import numbers
 
 import numpy as np
 from scipy.optimize import least_squares
@@ -92,8 +93,9 @@ def normalize_point_coords(
 
     Returns:
         A new dictionary with coordinates translated to start at ``(0, 0)`` and
-        scaled so that each axis spans at most ``scale`` units.  When all points
-        share the same coordinate along an axis, that axis collapses to zero.
+        scaled uniformly so that the larger axis span maps to ``scale`` units.
+        When all points share the same coordinate along an axis, that axis
+        collapses to zero after normalization.
     """
 
     if not point_coords:
@@ -107,13 +109,12 @@ def normalize_point_coords(
     min_y = min(ys)
     max_y = max(ys)
 
-    span_x = max(max_x - min_x, _DENOM_EPS)
-    span_y = max(max_y - min_y, _DENOM_EPS)
+    span = max(max_x - min_x, max_y - min_y, _DENOM_EPS)
 
     normalized: Dict[PointName, Tuple[float, float]] = {}
     for name, (x, y) in point_coords.items():
-        norm_x = ((x - min_x) / span_x) * scale
-        norm_y = ((y - min_y) / span_y) * scale
+        norm_x = ((x - min_x) / span) * scale
+        norm_y = ((y - min_y) / span) * scale
         normalized[name] = (norm_x, norm_y)
 
     return normalized
@@ -289,6 +290,12 @@ def _build_nonparallel(edge1: Edge, edge2: Edge, index: Dict[PointName, int]) ->
     return ResidualSpec(key=key, func=func, size=1, kind="nonparallel", source=None)
 
 
+def _format_numeric(value: float) -> str:
+    if math.isfinite(value) and float(value).is_integer():
+        return str(int(round(value)))
+    return f"{value:g}"
+
+
 def _build_segment_length(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
     length = stmt.opts.get("length") or stmt.opts.get("distance") or stmt.opts.get("value")
     if length is None:
@@ -296,11 +303,16 @@ def _build_segment_length(stmt: Stmt, index: Dict[PointName, int]) -> List[Resid
     value = float(length)
     edge = tuple(stmt.data["edge"])  # type: ignore[arg-type]
 
+    if isinstance(length, numbers.Real):
+        label = _format_numeric(float(length))
+    else:
+        label = str(length)
+
     def func(x: np.ndarray) -> np.ndarray:
         vec = _edge_vec(x, index, edge)
         return np.array([_norm_sq(vec) - value**2], dtype=float)
 
-    key = f"segment_length({_format_edge(edge)})"
+    key = f"segment_length({_format_edge(edge)}={label})"
     return [ResidualSpec(key=key, func=func, size=1, kind="segment_length", source=stmt)]
 
 
@@ -926,6 +938,35 @@ def _initial_guess(model: Model, rng: np.random.Generator, attempt: int) -> np.n
     if n == 0:
         return guess
 
+    # Collect simple geometric hints that can provide a better starting point
+    # than the generic polygonal scatter used below.  In particular, points that
+    # are constrained to lie on a segment benefit from being seeded near the
+    # segment itself; otherwise the optimizer can waste iterations untangling a
+    # poor initial configuration (or even get stuck in a shallow local minimum).
+    segment_hints: Dict[PointName, List[Edge]] = {}
+    seen_point_on: Set[int] = set()
+    for spec in model.residuals:
+        stmt = spec.source
+        if not stmt or stmt.kind != "point_on":
+            continue
+        stmt_id = id(stmt)
+        if stmt_id in seen_point_on:
+            continue
+        seen_point_on.add(stmt_id)
+        path = stmt.data.get("path")
+        if not isinstance(path, (list, tuple)) or len(path) != 2:
+            continue
+        path_kind, payload = path
+        if path_kind != "segment" or not isinstance(payload, (list, tuple)):
+            continue
+        if len(payload) != 2:
+            continue
+        a, b = payload
+        point = stmt.data.get("point")
+        if not isinstance(point, str) or not isinstance(a, str) or not isinstance(b, str):
+            continue
+        segment_hints.setdefault(point, []).append((a, b))
+
     base = max(model.scale, 1e-3)
     # Place first three points in a stable, non-degenerate pattern.
     guess[0] = 0.0
@@ -941,6 +982,35 @@ def _initial_guess(model: Model, rng: np.random.Generator, attempt: int) -> np.n
         radius = 0.5 * base
         guess[2 * i] = radius * math.cos(angle)
         guess[2 * i + 1] = radius * math.sin(angle)
+
+    # Apply the collected hints once the base configuration has been sketched
+    # out.  Keep the anchor/orientation seeds untouched so that the gauges stay
+    # satisfied at the starting point.
+    protected_indices: Set[int] = {0}
+    if n >= 2:
+        protected_indices.add(1)
+    for point, edges in segment_hints.items():
+        idx = model.index.get(point)
+        if idx is None or idx in protected_indices:
+            continue
+        accum_x = 0.0
+        accum_y = 0.0
+        count = 0
+        for a, b in edges:
+            ia = model.index.get(a)
+            ib = model.index.get(b)
+            if ia is None or ib is None:
+                continue
+            ax = guess[2 * ia]
+            ay = guess[2 * ia + 1]
+            bx = guess[2 * ib]
+            by = guess[2 * ib + 1]
+            accum_x += 0.5 * (ax + bx)
+            accum_y += 0.5 * (ay + by)
+            count += 1
+        if count:
+            guess[2 * idx] = accum_x / count
+            guess[2 * idx + 1] = accum_y / count
 
     # random rotation
     # Random rotation can help explore the search space when we reseed, but it
