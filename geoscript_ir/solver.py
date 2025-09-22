@@ -926,6 +926,35 @@ def _initial_guess(model: Model, rng: np.random.Generator, attempt: int) -> np.n
     if n == 0:
         return guess
 
+    # Collect simple geometric hints that can provide a better starting point
+    # than the generic polygonal scatter used below.  In particular, points that
+    # are constrained to lie on a segment benefit from being seeded near the
+    # segment itself; otherwise the optimizer can waste iterations untangling a
+    # poor initial configuration (or even get stuck in a shallow local minimum).
+    segment_hints: Dict[PointName, List[Edge]] = {}
+    seen_point_on: Set[int] = set()
+    for spec in model.residuals:
+        stmt = spec.source
+        if not stmt or stmt.kind != "point_on":
+            continue
+        stmt_id = id(stmt)
+        if stmt_id in seen_point_on:
+            continue
+        seen_point_on.add(stmt_id)
+        path = stmt.data.get("path")
+        if not isinstance(path, (list, tuple)) or len(path) != 2:
+            continue
+        path_kind, payload = path
+        if path_kind != "segment" or not isinstance(payload, (list, tuple)):
+            continue
+        if len(payload) != 2:
+            continue
+        a, b = payload
+        point = stmt.data.get("point")
+        if not isinstance(point, str) or not isinstance(a, str) or not isinstance(b, str):
+            continue
+        segment_hints.setdefault(point, []).append((a, b))
+
     base = max(model.scale, 1e-3)
     # Place first three points in a stable, non-degenerate pattern.
     guess[0] = 0.0
@@ -941,6 +970,35 @@ def _initial_guess(model: Model, rng: np.random.Generator, attempt: int) -> np.n
         radius = 0.5 * base
         guess[2 * i] = radius * math.cos(angle)
         guess[2 * i + 1] = radius * math.sin(angle)
+
+    # Apply the collected hints once the base configuration has been sketched
+    # out.  Keep the anchor/orientation seeds untouched so that the gauges stay
+    # satisfied at the starting point.
+    protected_indices: Set[int] = {0}
+    if n >= 2:
+        protected_indices.add(1)
+    for point, edges in segment_hints.items():
+        idx = model.index.get(point)
+        if idx is None or idx in protected_indices:
+            continue
+        accum_x = 0.0
+        accum_y = 0.0
+        count = 0
+        for a, b in edges:
+            ia = model.index.get(a)
+            ib = model.index.get(b)
+            if ia is None or ib is None:
+                continue
+            ax = guess[2 * ia]
+            ay = guess[2 * ia + 1]
+            bx = guess[2 * ib]
+            by = guess[2 * ib + 1]
+            accum_x += 0.5 * (ax + bx)
+            accum_y += 0.5 * (ay + by)
+            count += 1
+        if count:
+            guess[2 * idx] = accum_x / count
+            guess[2 * idx + 1] = accum_y / count
 
     # random rotation
     # Random rotation can help explore the search space when we reseed, but it
