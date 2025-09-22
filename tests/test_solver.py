@@ -109,8 +109,8 @@ def test_normalize_point_coords():
     normalized = normalize_point_coords(coords)
     assert normalized == {
         "A": (0.0, 0.0),
-        "B": (100.0, 100.0),
-        "C": (50.0, 50.0),
+        "B": (50.0, 100.0),
+        "C": (25.0, 50.0),
     }
 
     # Degenerate axis collapses to zero after normalization.

@@ -93,8 +93,9 @@ def normalize_point_coords(
 
     Returns:
         A new dictionary with coordinates translated to start at ``(0, 0)`` and
-        scaled so that each axis spans at most ``scale`` units.  When all points
-        share the same coordinate along an axis, that axis collapses to zero.
+        scaled uniformly so that the larger axis span maps to ``scale`` units.
+        When all points share the same coordinate along an axis, that axis
+        collapses to zero after normalization.
     """
 
     if not point_coords:
@@ -108,13 +109,12 @@ def normalize_point_coords(
     min_y = min(ys)
     max_y = max(ys)
 
-    span_x = max(max_x - min_x, _DENOM_EPS)
-    span_y = max(max_y - min_y, _DENOM_EPS)
+    span = max(max_x - min_x, max_y - min_y, _DENOM_EPS)
 
     normalized: Dict[PointName, Tuple[float, float]] = {}
     for name, (x, y) in point_coords.items():
-        norm_x = ((x - min_x) / span_x) * scale
-        norm_y = ((y - min_y) / span_y) * scale
+        norm_x = ((x - min_x) / span) * scale
+        norm_y = ((y - min_y) / span) * scale
         normalized[name] = (norm_x, norm_y)
 
     return normalized
