@@ -8,7 +8,7 @@ rules [no_solving=true allow_auxiliary=false no_unicode_degree=true mark_right_a
 triangle A-B-C [isosceles=atB]
 
 # Given: ∠C = 50°
-angle at C rays C-A C-B [label="50^\\circ"]
+angle at C rays C-A C-B [degrees=50]
 
 # AD is the angle bisector at A, meeting BC at D
 segment B-C

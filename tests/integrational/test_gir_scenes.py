@@ -20,12 +20,12 @@ def test_gir_scene_solves_with_low_residual(scene_path: Path) -> None:
         models,
         SolveOptions(
             random_seed=123,
-            reseed_attempts=1,
-            tol=1e-4,
+            reseed_attempts=5,
+            tol=1e-8,
         ),
     )
     assert best_idx < len(models)
     assert solution.success, f"{scene_path.name} solver failed"
-    assert solution.max_residual < 1e-4, (
+    assert solution.max_residual < 1e-8, (
         f"{scene_path.name} exceeded residual threshold: {solution.max_residual}"
     )
