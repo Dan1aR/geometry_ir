@@ -13,6 +13,7 @@ Drop-in replacement:
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 import math
+import numbers
 
 import numpy as np
 from scipy.optimize import least_squares
@@ -289,6 +290,12 @@ def _build_nonparallel(edge1: Edge, edge2: Edge, index: Dict[PointName, int]) ->
     return ResidualSpec(key=key, func=func, size=1, kind="nonparallel", source=None)
 
 
+def _format_numeric(value: float) -> str:
+    if math.isfinite(value) and float(value).is_integer():
+        return str(int(round(value)))
+    return f"{value:g}"
+
+
 def _build_segment_length(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
     length = stmt.opts.get("length") or stmt.opts.get("distance") or stmt.opts.get("value")
     if length is None:
@@ -296,11 +303,16 @@ def _build_segment_length(stmt: Stmt, index: Dict[PointName, int]) -> List[Resid
     value = float(length)
     edge = tuple(stmt.data["edge"])  # type: ignore[arg-type]
 
+    if isinstance(length, numbers.Real):
+        label = _format_numeric(float(length))
+    else:
+        label = str(length)
+
     def func(x: np.ndarray) -> np.ndarray:
         vec = _edge_vec(x, index, edge)
         return np.array([_norm_sq(vec) - value**2], dtype=float)
 
-    key = f"segment_length({_format_edge(edge)})"
+    key = f"segment_length({_format_edge(edge)}={label})"
     return [ResidualSpec(key=key, func=func, size=1, kind="segment_length", source=stmt)]
 
 
