@@ -178,6 +178,13 @@ def parse_path(cur: Cursor):
         r1, _ = parse_pair(cur)
         r2, _ = parse_pair(cur)
         return 'angle-bisector', {'at': at, 'rays': (r1, r2)}
+    if kw == 'perpendicular':
+        cur.consume_keyword('perpendicular')
+        cur.consume_keyword('at')
+        at, _ = parse_id(cur)
+        cur.consume_keyword('to')
+        to, _ = parse_pair(cur)
+        return 'perpendicular', {'at': at, 'to': to}
     raise SyntaxError(f'[line {t[2]}, col {t[3]}] invalid path kind {t[1]!r}')
 
 def parse_opts(cur: Cursor) -> Dict[str, Any]:
