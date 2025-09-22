@@ -505,6 +505,24 @@ def _build_point_on(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpe
         )
         return [ResidualSpec(key=key, func=func, size=1, kind="point_on_angle_bisector", source=stmt)]
 
+    if path_kind == "perpendicular" and isinstance(payload, dict):
+        at = payload.get("at")
+        to_edge_raw = payload.get("to")
+        if not isinstance(at, str) or to_edge_raw is None:
+            raise ValueError("perpendicular path requires an anchor point and a target edge")
+        to_edge = _as_edge(to_edge_raw)
+
+        def func(x: np.ndarray) -> np.ndarray:
+            origin = _vec(x, index, at)
+            pt = _vec(x, index, point)
+            base = _vec(x, index, to_edge[0])
+            dir_vec = _vec(x, index, to_edge[1]) - base
+            disp = pt - origin
+            return np.array([float(np.dot(dir_vec, disp))], dtype=float)
+
+        key = f"point_on_perpendicular({point},{at};{_format_edge(to_edge)})"
+        return [ResidualSpec(key=key, func=func, size=1, kind="point_on_perpendicular", source=stmt)]
+
     raise ValueError(f"Unsupported path kind for point_on: {path_kind}")
 
 

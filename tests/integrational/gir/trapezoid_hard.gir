@@ -2,7 +2,8 @@
 scene "Trapezoid Diagonals Area Problem"
 layout canonical=generic scale=1
 points A, B, C, D, O
-trapezoid A-B-C-D
+# CD - боковая сторона, поэтому AD - основание
+trapezoid A-B-C-D [bases=A-D]
 segment C-D [length=12]
 intersect (line A-C) with (line B-D) at O
 # Distance from O to line CD is 5 cm, encoded via perpendicular construction

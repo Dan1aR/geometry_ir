@@ -54,10 +54,11 @@ BNF = dedent(
                | 'intersect' '(' Path ')' 'with' '(' Path ')' 'at' ID (',' ID)? Opts?
 
     Path      := 'line'    Pair
-               | 'ray'     Pair
-               | 'segment' Pair
-               | 'circle' 'center' ID
-               | 'angle-bisector' 'at' ID 'rays' Pair Pair
+                | 'ray'     Pair
+                | 'segment' Pair
+                | 'circle' 'center' ID
+                | 'angle-bisector' 'at' ID 'rays' Pair Pair
+                | 'perpendicular' 'at' ID 'to' Pair
 
     EdgeList  := Pair { ',' Pair }
     IdList    := ID { ',' ID }
@@ -140,9 +141,11 @@ _PROMPT_CORE = dedent(
     - point P on line A-B [mark=midpoint]
     - point Q on ray A-B / segment A-B / circle center O [choose="near A"]
     - point R on angle-bisector at A rays A-B A-C [external=true]
+    - point M on perpendicular at A to B-C [length=5]
     - intersect (line A-B) with (circle center O) at X[, Y] [type=external]
       Paths inside parentheses are one of: `line A-B`, `ray A-B`, `segment A-B`,
-      `circle center O`, `angle-bisector at A rays A-B A-C`.
+      `circle center O`, `angle-bisector at A rays A-B A-C`,
+      `perpendicular at A to B-C`.
 
     Annotations:
     - label point A [text="A"]

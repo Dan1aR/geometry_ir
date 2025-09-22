@@ -206,6 +206,14 @@ def test_placements():
         'path': ('angle-bisector', {'at': 'A', 'rays': (('A', 'B'), ('A', 'C'))}),
     }
 
+    pt_on_perp = parse_single('point M on perpendicular at O to C-D [length=5]')
+    assert pt_on_perp.kind == 'point_on'
+    assert pt_on_perp.data == {
+        'point': 'M',
+        'path': ('perpendicular', {'at': 'O', 'to': ('C', 'D')}),
+    }
+    assert pt_on_perp.opts == {'length': 5}
+
     inter = parse_single('intersect (line A-B) with (circle center O) at P, Q [type=external]')
     assert inter.kind == 'intersect'
     assert inter.data == {
@@ -222,6 +230,15 @@ def test_placements():
         'path1': ('angle-bisector', {'at': 'A', 'rays': (('A', 'B'), ('A', 'C'))}),
         'path2': ('segment', ('B', 'C')),
         'at': 'T',
+        'at2': None,
+    }
+
+    inter3 = parse_single('intersect (perpendicular at O to C-D) with (line C-D) at M')
+    assert inter3.kind == 'intersect'
+    assert inter3.data == {
+        'path1': ('perpendicular', {'at': 'O', 'to': ('C', 'D')}),
+        'path2': ('line', ('C', 'D')),
+        'at': 'M',
         'at2': None,
     }
 

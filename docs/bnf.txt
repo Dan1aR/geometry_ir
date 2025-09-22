@@ -48,10 +48,11 @@ Placement := 'point' ID 'on' Path
            | 'intersect' '(' Path ')' 'with' '(' Path ')' 'at' ID (',' ID)? Opts?
 
 Path      := 'line'    Pair
-           | 'ray'     Pair
-           | 'segment' Pair
-           | 'circle' 'center' ID
-           | 'angle-bisector' 'at' ID 'rays' Pair Pair
+            | 'ray'     Pair
+            | 'segment' Pair
+            | 'circle' 'center' ID
+            | 'angle-bisector' 'at' ID 'rays' Pair Pair
+            | 'perpendicular' 'at' ID 'to' Pair
 
 EdgeList  := Pair { ',' Pair }
 IdList    := ID { ',' ID }

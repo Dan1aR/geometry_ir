@@ -16,6 +16,12 @@ def path_str(path: Tuple[str, object]) -> str:
         if isinstance(r1, (list, tuple)) and isinstance(r2, (list, tuple)):
             return f'angle-bisector at {at} rays {edge_str(r1)} {edge_str(r2)}'
         return f'angle-bisector at {at}'
+    if kind == 'perpendicular' and isinstance(payload, dict):
+        at = payload.get('at', '')
+        to_edge = payload.get('to')
+        if isinstance(to_edge, (list, tuple)):
+            return f'perpendicular at {at} to {edge_str(to_edge)}'
+        return f'perpendicular at {at}'
     return f'# [unknown path {kind}]'
 
 def print_program(prog: Program) -> str:
