@@ -90,6 +90,10 @@ _PROMPT_CORE = dedent(
          points A, B, C[, ...]      # list every named point, comma-separated
     2. Translate the givens into explicit GeoScript statements, mirroring the clean samples in tests/integrational/gir/*.gir.
        - Use one command per fact: segments, polygons, circles, parallels, right angles, equalities, etc.
+       - Circles have two syntaxes:
+         * Known center ➜ `circle center O radius-through B` (optionally add tangency Opts). Put extra on-circle points with
+           separate `point X on circle center O` lines.
+         * Unknown center ➜ `circle through (A, B, C)` (or other point counts). Do **not** mix `center` with `through (...)`.
        - Keep constraints declarative: place points with `point ... on ...` or `intersect (...) with (...)`.
     3. Add annotations (labels, side texts) the prompt requires and finish with `target ...` lines capturing what to find.
     4. Include a `rules [...]` line only when the problem explicitly restricts solving/auxiliary work; omit it otherwise.
