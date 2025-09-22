@@ -6,5 +6,8 @@ trapezoid A-B-C-D
 segment C-D [length=12]
 intersect (line A-C) with (line B-D) at O
 # Distance from O to line CD is 5 cm, encoded via perpendicular construction
-perpendicular at O to C-D [length=5]
+
+intersect( perpendicular at O to C-D ) with ( segment C-D ) at M
+segment O-M [length=5]
+
 target area ("Find area of ABED")
