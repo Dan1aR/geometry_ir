@@ -402,8 +402,42 @@ def _build_point_on(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpe
             pt = _vec(x, index, point)
             return np.array([_cross_2d(dir_vec, pt - base)], dtype=float)
 
-        key = f"point_on_{path_kind}({point},{_format_edge(edge)})"
-        return [ResidualSpec(key=key, func=func, size=1, kind=f"point_on_{path_kind}", source=stmt)]
+        residuals = [
+            ResidualSpec(
+                key=f"point_on_{path_kind}({point},{_format_edge(edge)})",
+                func=func,
+                size=1,
+                kind=f"point_on_{path_kind}",
+                source=stmt,
+            )
+        ]
+
+        if path_kind in {"ray", "segment"}:
+
+            def bounds_func(x: np.ndarray) -> np.ndarray:
+                base = _vec(x, index, edge[0])
+                dir_vec = _edge_vec(x, index, edge)
+                diff = _vec(x, index, point) - base
+                proj = float(np.dot(diff, dir_vec))
+                if path_kind == "ray":
+                    return np.array([_smooth_hinge(-proj)], dtype=float)
+                length_sq = float(_norm_sq(dir_vec))
+                return np.array(
+                    [_smooth_hinge(-proj), _smooth_hinge(proj - length_sq)],
+                    dtype=float,
+                )
+
+            residuals.append(
+                ResidualSpec(
+                    key=f"point_on_{path_kind}_bounds({point},{_format_edge(edge)})",
+                    func=bounds_func,
+                    size=1 if path_kind == "ray" else 2,
+                    kind=f"point_on_{path_kind}_bounds",
+                    source=stmt,
+                )
+            )
+
+        return residuals
 
     if path_kind == "circle":
         radius = stmt.opts.get("radius") or stmt.opts.get("distance")
