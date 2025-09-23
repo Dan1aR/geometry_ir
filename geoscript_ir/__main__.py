@@ -13,7 +13,7 @@ from geoscript_ir import (
 )
 from geoscript_ir.solver import SolveOptions, Solution, translate, solve
 
-LOGGER = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def _score_solution(solution: Solution) -> tuple:
@@ -57,32 +57,32 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     with open(args.path) as fin:
         text = fin.read()
 
-    LOGGER.info("Parsing program from %s", args.path)
+    logger.info("Parsing program from %s", args.path)
     program = parse_program(text)
     validate(program)
-    LOGGER.info("Validation succeeded")
+    logger.info("Validation succeeded")
 
     variants = desugar_variants(program)
     if not variants:
-        LOGGER.error("Desugaring produced no variants")
+        logger.error("Desugaring produced no variants")
         raise SystemExit(1)
 
-    LOGGER.info("Generated %d desugared variant(s)", len(variants))
+    logger.info("Generated %d desugared variant(s)", len(variants))
 
     solve_options = SolveOptions(random_seed=args.seed, reseed_attempts=args.reseed_attempts)
     variant_results: List[Dict[str, object]] = []
 
     for idx, variant in enumerate(variants):
-        LOGGER.info("Variant %d IR:\n%s", idx, print_program(variant))
+        logger.info("Variant %d IR:\n%s", idx, print_program(variant))
         warnings = check_consistency(variant)
         if warnings:
             for warning in warnings:
-                LOGGER.warning("Variant %d consistency warning: %s", idx, warning)
+                logger.warning("Variant %d consistency warning: %s", idx, warning)
         else:
-            LOGGER.info("Variant %d has no consistency warnings", idx)
+            logger.info("Variant %d has no consistency warnings", idx)
 
         model = translate(variant)
-        LOGGER.info(
+        logger.info(
             "Variant %d model: %d point(s), %d gauge(s), %d residual(s)",
             idx,
             len(model.points),
@@ -91,7 +91,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         )
 
         solution = solve(model, solve_options)
-        LOGGER.info(
+        logger.info(
             "Variant %d solver result: success=%s, max_residual=%.3e",
             idx,
             solution.success,
@@ -99,7 +99,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         )
         if solution.warnings:
             for warning in solution.warnings:
-                LOGGER.warning("Variant %d solver warning: %s", idx, warning)
+                logger.warning("Variant %d solver warning: %s", idx, warning)
 
         variant_results.append(
             {

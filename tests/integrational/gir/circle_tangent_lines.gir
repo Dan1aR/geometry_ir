@@ -1,0 +1,14 @@
+# Отрезки $AB$ и $AC$ являются отрезками касательных к окружности с центром $О$, проведёнными из точки $А$. Найдите угол $ВАС$, если середина отрезка $АО$ лежит на окружности.
+scene "Tangents from A to circle with midpoint on circle; find angle BAC"
+layout canonical=triangle_ABO scale=1
+points A, B, C, O, M
+circle center O radius-through M
+segment A-O
+point M on segment A-O [mark=midpoint]
+point B on circle center O
+point C on circle center O
+segment A-B
+segment A-C
+line A-B tangent to circle center O at B
+line A-C tangent to circle center O at C
+target angle at A rays A-B A-C [label="?BAC"]
