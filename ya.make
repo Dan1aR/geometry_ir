@@ -17,6 +17,7 @@ PY_SRCS(
     geoscript_ir/parser.py
     geoscript_ir/printer.py
     geoscript_ir/reference.py
+    geoscript_ir/reference_tikz.py
     geoscript_ir/solver.py
     geoscript_ir/validate.py
     examples/solve_circle.py
