@@ -387,6 +387,28 @@ def desugar_variants(prog: Program) -> List[Program]:
                         source_keys,
                         generated=True,
                     )
+        elif s.kind == 'line_tangent_at':
+            center = s.data['center']
+            at = s.data['at']
+            edge_pts = list(s.data['edge'])
+            if at in edge_pts:
+                other_pts = [pt for pt in edge_pts if pt != at]
+            else:
+                other_pts = edge_pts
+            for state in states:
+                for other in other_pts or [at]:
+                    _append(
+                        state,
+                        Stmt(
+                            'right_angle_at',
+                            s.span,
+                            {'at': at, 'rays': ((at, center), (at, other))},
+                            {},
+                            origin='desugar(line_tangent_at)'
+                        ),
+                        source_keys,
+                        generated=True,
+                    )
         elif s.kind in ('circle_through', 'circumcircle'):
             ids = _distinct_ids(s.data['ids'])
             if len(ids) < 3:
