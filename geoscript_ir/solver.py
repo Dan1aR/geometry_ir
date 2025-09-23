@@ -831,6 +831,11 @@ def translate(program: Program) -> Model:
     if not order:
         raise ValueError("program contains no points to solve for")
 
+    # Guard against collapsed layouts by separating every point pair
+    for i, a in enumerate(order):
+        for b in order[i + 1:]:
+            mark_distinct(a, b)
+
     # Prefer the declared trapezoid base for orientation if available
     if preferred_base_edge is not None:
         orientation_edge = preferred_base_edge

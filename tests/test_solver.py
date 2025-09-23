@@ -336,6 +336,18 @@ def test_translate_adds_min_separation_residual_for_segments():
     assert vals_separated[0] < 1e-9
 
 
+def test_translate_adds_min_separation_for_all_point_pairs():
+    model = _build_model(
+        """
+        scene "Triple points"
+        points A, B, C
+        """
+    )
+
+    keys = {spec.key for spec in model.residuals if spec.kind == "min_separation"}
+    assert {"min_separation(A-B)", "min_separation(A-C)", "min_separation(B-C)"} <= keys
+
+
 def test_turn_margin_penalizes_collinear_triangle():
     model = _build_model(
         """
