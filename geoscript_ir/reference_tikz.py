@@ -33,6 +33,9 @@ GEOSCRIPT_TO_TIKZ_PROMPT = dedent(
     - Respond with TikZ wrapped exactly once in `<tikz>` and `</tikz>`.
     - Emit a single `\begin{tikzpicture}[scale=<layout scale>] ... \end{tikzpicture}` block.
     - No explanatory prose, comments only if they clarify drawing steps.
+    - Draw every named point as a dot **and** attach a visible label. If GeoScript does not provide
+      an explicit `label point` statement, place the point name using a reasonable default anchor
+      (`labela`/`labelb`/`labelr`/`labell`) inferred from the point position.
     - Assume the document preamble already loads: `calc`, `intersections`, `angles`, `quotes`,
       `through`, `decorations.markings`, `positioning`, `arrows.meta`.
     - Define the base styles at the top of the picture:
@@ -83,6 +86,10 @@ GEOSCRIPT_TO_TIKZ_PROMPT = dedent(
       inscribed circle using its foot on a side.
     - `perpendicular`, `parallel`, `median`, `altitude`, `angle-bisector`: draw helper lines or
       segments as given. For medians/altitudes, compute the foot or midpoint with intersections.
+      When an `angle-bisector` is declared, the bisector ray/segment must emanate from the vertex
+      through the specified constructed point, and you must mark the two adjacent angles with
+      matching `pic{angle=...}` arcs (e.g. a single arc on each side, both using the same style) so
+      the equality of the halves is visible.
     - `tangent at P to circle center O`: draw the tangent line through P using the perpendicular to
       radius OP. `line X-Y tangent ... at Z` keeps the line endpoints X and Y but must also include
       the tangency mark at Z.
@@ -95,6 +102,8 @@ GEOSCRIPT_TO_TIKZ_PROMPT = dedent(
     ANNOTATIONS & LABELS
     - `label point P [pos=...] [label="text"]`: attach the label according to the direction hint
       using the helper styles above. If `label=` overrides the name, typeset that text verbatim.
+      When no explicit label command exists for a point, still show its name with an inferred anchor
+      so every vertex in the diagram is identifiable.
     - `sidelabel A-B "text" [pos=...]`: place the text at the segment midpoint. Always wrap
       sidelabel text in math mode (`{ $<text>$ }`). Do not insert '=' inside the text unless GeoScript
       explicitly requests it.
@@ -205,6 +214,51 @@ GEOSCRIPT_TO_TIKZ_PROMPT = dedent(
       \path (B) coordinate (start) (T) coordinate (mid);
       \draw[dashed, very thick] (B) to[bend left] node[midway, above] {?BT} (T);
       ...
+    \end{tikzpicture}
+    </tikz>
+
+    Example 3 — Triangle with bisectors and implicit point labels
+    GeoScript:
+    <geoscript>
+    scene "Bisectors in triangle MNP"
+    layout canonical=triangle_MNP scale=1
+    points M, N, P, D, K, O
+    triangle M-N-P
+    angle-bisector at M rays M-N M-P
+    intersect (angle-bisector at M rays M-N M-P) with (segment N-P) at D
+    angle-bisector at N rays N-M N-P
+    intersect (angle-bisector at N rays N-M N-P) with (segment M-P) at K
+    intersect (line M-D) with (line N-K) at O
+    target area (Find OK : ON)
+    </geoscript>
+
+    TikZ (schematic excerpt):
+    <tikz>
+    \begin{tikzpicture}[scale=1]
+      \tikzset{...}
+      % Canonical placement and derived points as instructed
+      \coordinate (M) at (0,0);
+      \coordinate (N) at (4,0);
+      \coordinate (P) at ($(M)!0.6!(N)+(0,3)$);
+      ... construct D, K, O via intersections ...
+      \draw (M)--(N)--(P)--cycle;
+      \draw (M)--(D);
+      \draw (N)--(K);
+      % Equal angle marks for bisectors
+      \draw pic[angle radius=9pt] {angle = N--M--D};
+      \draw pic[angle radius=9pt] {angle = D--M--P};
+      \draw pic[angle radius=9pt] {angle = P--N--K};
+      \draw pic[angle radius=9pt] {angle = K--N--M};
+      % Target area shading
+      \fill[gray!20, dashed] (O)--(K)--(N)--cycle;
+      \node at ($(O)!0.4!(K)$) {?};
+      % All points labelled, even without `label point`
+      \fill (M) circle (1.5pt) node[labelb] {M};
+      \fill (N) circle (1.5pt) node[labelb] {N};
+      \fill (P) circle (1.5pt) node[labela] {P};
+      \fill (D) circle (1.5pt) node[labelr] {D};
+      \fill (K) circle (1.5pt) node[labela] {K};
+      \fill (O) circle (1.5pt) node[labelr] {O};
     \end{tikzpicture}
     </tikz>
 
