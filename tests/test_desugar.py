@@ -185,6 +185,24 @@ def test_circle_tangent_edges_expand_to_intersections_and_right_angles():
     assert all(s.opts == {} for s in right_angles)
 
 
+def test_line_tangent_at_produces_right_angles():
+    tangent = stmt(
+        'line_tangent_at',
+        {'edge': ('A', 'B'), 'center': 'O', 'at': 'B'},
+    )
+
+    out = desugar(Program([tangent]))
+
+    right_angles = [
+        s
+        for s in out.stmts
+        if s.kind == 'right_angle_at' and s.origin == 'desugar(line_tangent_at)'
+    ]
+    assert len(right_angles) == 1
+    assert right_angles[0].data == {'at': 'B', 'rays': (('B', 'O'), ('B', 'A'))}
+    assert right_angles[0].opts == {}
+
+
 def test_intersect_generates_point_on_and_segments():
     bisector = ('angle-bisector', {'at': 'A', 'rays': (('A', 'B'), ('A', 'C'))})
     segment = ('segment', ('B', 'C'))
