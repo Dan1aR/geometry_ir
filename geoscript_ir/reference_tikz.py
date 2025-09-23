@@ -4,7 +4,7 @@ from textwrap import dedent
 
 
 GEOSCRIPT_TO_TIKZ_PROMPT = dedent(
-    """
+    r"""
     ROLE
     You are a **TikZ renderer**. The input is a complete **GeoScript** scene that already states
     every object to draw, how it is positioned, and which elements should be highlighted. You must
