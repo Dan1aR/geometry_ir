@@ -17,8 +17,11 @@ angle at A rays A-B A-C
     prog = run_pipeline(text)
     warnings = check_consistency(prog)
     assert warnings
-    assert 'angle_at' in warnings[0]
-    assert 'A-B' in warnings[0] and 'A-C' in warnings[0]
+    warning = warnings[0]
+    assert warning.kind == 'angle_at'
+    assert 'A-B' in warning.message and 'A-C' in warning.message
+    assert 'segment A-B' in warning.hotfixes
+    assert 'segment A-C' in warning.hotfixes
 
 
 def test_angle_with_segments_has_no_warnings():

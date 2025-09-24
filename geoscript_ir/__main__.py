@@ -5,6 +5,7 @@ from typing import Dict, List, Optional, Sequence
 
 from geoscript_ir import (
     check_consistency,
+    ConsistencyWarning,
     desugar_variants,
     parse_program,
     print_program,
@@ -74,10 +75,12 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     for idx, variant in enumerate(variants):
         logger.info("Variant %d IR:\n%s", idx, print_program(variant))
-        warnings = check_consistency(variant)
+        warnings: List[ConsistencyWarning] = check_consistency(variant)
         if warnings:
             for warning in warnings:
                 logger.warning("Variant %d consistency warning: %s", idx, warning)
+                for hotfix in warning.hotfixes:
+                    logger.info("Variant %d suggested hotfix: %s", idx, hotfix)
         else:
             logger.info("Variant %d has no consistency warnings", idx)
 
@@ -120,7 +123,14 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     print(f"Selected variant: {best_index}")
     print(f"Desugared:\n{print_program(best_program)}")
-    print(f"Warnings:\n{best_warnings}")
+    print("Warnings:")
+    if best_warnings:
+        for warning in best_warnings:
+            print(f"  - {warning}")
+            for hotfix in warning.hotfixes:
+                print(f"    hotfix: {hotfix}")
+    else:
+        print("  (none)")
 
     print("Model:")
     print(f"  Points: {best_model.points}")
