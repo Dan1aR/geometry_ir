@@ -164,6 +164,22 @@ _PROMPT_CORE = dedent(
       intersect (perpendicular at O to C-D) with (segment C-D) at M
       segment O-M [length=5]
       target area ("Find area of triangle AOB")
+
+    - Example 3
+      Input: "Right triangle ABC has angle B = 21 degrees. Let CD be the bisector and CM the median from the right vertex C. Find the angle between CD and CM."
+      Output:
+      <geoscript>
+      scene "Right-angled triangle with angle B=21^\\circ, find angle between CD and CM"
+      layout canonical=triangle_ABC scale=1.0
+      points A, B, C, D, M
+      triangle A-B-C
+      angle at C rays C-A C-B [degrees=90]
+      angle at B rays B-A B-C [degrees=21]
+      angle at A rays A-B A-C [degrees=69]
+      intersect (angle-bisector at C rays C-A C-B) with (segment A-B) at D
+      intersect (median from C to A-B) with (segment A-B) at M
+      target angle at C rays C-D C-M [label="?"]
+      </geoscript>
     """
 ).strip()
 
