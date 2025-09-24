@@ -22,6 +22,12 @@ def path_str(path: Tuple[str, object]) -> str:
         if isinstance(to_edge, (list, tuple)):
             return f'perpendicular at {at} to {edge_str(to_edge)}'
         return f'perpendicular at {at}'
+    if kind == 'median' and isinstance(payload, dict):
+        frm = payload.get('frm', '')
+        to_edge = payload.get('to')
+        if isinstance(to_edge, (list, tuple)):
+            return f'median from {frm} to {edge_str(to_edge)}'
+        return f'median from {frm}'
     return f'# [unknown path {kind}]'
 
 def print_program(prog: Program) -> str:

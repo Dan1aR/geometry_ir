@@ -58,6 +58,7 @@ BNF = dedent(
                 | 'segment' Pair
                 | 'circle' 'center' ID
                 | 'angle-bisector' 'at' ID 'rays' Pair Pair
+                | 'median'  'from' ID 'to' Pair
                 | 'perpendicular' 'at' ID 'to' Pair
 
     EdgeList  := Pair { ',' Pair }

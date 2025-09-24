@@ -214,6 +214,13 @@ def test_placements():
     }
     assert pt_on_perp.opts == {'length': 5}
 
+    pt_on_median = parse_single('point T on median from C to A-B')
+    assert pt_on_median.kind == 'point_on'
+    assert pt_on_median.data == {
+        'point': 'T',
+        'path': ('median', {'frm': 'C', 'to': ('A', 'B')}),
+    }
+
     inter = parse_single('intersect (line A-B) with (circle center O) at P, Q [type=external]')
     assert inter.kind == 'intersect'
     assert inter.data == {
