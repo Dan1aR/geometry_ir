@@ -261,20 +261,31 @@ def test_placements():
 
 
 @pytest.mark.parametrize(
-    'text',
+    'text, expected_text, factor',
     [
-        'segment A-B [length=sqrt(19)]',
-        'segment A-B [length=sqrt{19}]',
-        'segment A-B [length=\\sqrt{19}]',
+        ('segment A-B [length=sqrt(19)]', 'sqrt(19)', 1),
+        ('segment A-B [length=2*sqrt(19)]', '2*sqrt(19)', 2),
     ],
 )
-def test_segment_length_with_sqrt(text):
+def test_segment_length_with_sqrt(text, expected_text, factor):
     stmt = parse_single(text)
     assert stmt.kind == 'segment'
     length = stmt.opts['length']
     assert isinstance(length, SymbolicNumber)
-    assert str(length) == 'sqrt(19)'
-    assert float(length) == pytest.approx(math.sqrt(19))
+    assert str(length) == expected_text
+    assert float(length) == pytest.approx(factor * math.sqrt(19))
+
+
+@pytest.mark.parametrize(
+    'text',
+    [
+        'segment A-B [length=sqrt{19}]',
+        'segment A-B [length=\\sqrt{19}]',
+    ],
+)
+def test_segment_length_rejects_latex_sqrt(text):
+    with pytest.raises(SyntaxError):
+        parse_program(text)
 
 
 def test_rules():

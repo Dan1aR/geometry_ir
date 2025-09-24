@@ -136,7 +136,27 @@ def parse_opt_value(cur: Cursor):
         return cur.match('STRING')[1]
     if vtok[0] == 'NUMBER':
         num_tok = cur.match('NUMBER')
-        return _parse_number_literal(num_tok[1])
+        base_value = _parse_number_literal(num_tok[1])
+        if cur.peek() and cur.peek()[0] == 'STAR':
+            cur.match('STAR')
+            sqrt_tok = cur.expect('ID')
+            if sqrt_tok[1].lower() != 'sqrt':
+                raise SyntaxError(
+                    f"[line {sqrt_tok[2]}, col {sqrt_tok[3]}] expected 'sqrt' after '*'"
+                )
+            nxt = cur.peek()
+            if not nxt or nxt[0] != 'LPAREN':
+                if nxt:
+                    raise SyntaxError(
+                        f"[line {nxt[2]}, col {nxt[3]}] expected '(' after sqrt"
+                    )
+                raise SyntaxError(
+                    f"[line {sqrt_tok[2]}, col {sqrt_tok[3]}] unexpected end after sqrt, expected '('"
+                )
+            sqrt_value = _parse_sqrt_value(cur)
+            text = f"{num_tok[1]}*{sqrt_value.text}"
+            return SymbolicNumber(text=text, value=base_value * sqrt_value.value)
+        return base_value
     if vtok[0] == 'ID':
         id_tok = cur.match('ID')
         raw = id_tok[1]
@@ -144,8 +164,16 @@ def parse_opt_value(cur: Cursor):
         if low in ('true', 'false'):
             return low == 'true'
         nxt = cur.peek()
-        if low == 'sqrt' and nxt and nxt[0] in ('LPAREN', 'LBRACE'):
-            return _parse_sqrt_value(cur, nxt[0])
+        if low == 'sqrt':
+            if nxt and nxt[0] == 'LPAREN':
+                return _parse_sqrt_value(cur)
+            if nxt:
+                raise SyntaxError(
+                    f"[line {nxt[2]}, col {nxt[3]}] expected '(' after sqrt"
+                )
+            raise SyntaxError(
+                f"[line {id_tok[2]}, col {id_tok[3]}] unexpected end after sqrt, expected '('"
+            )
         if cur.peek() and cur.peek()[0] == 'DASH':
             cur.i += 1
             t2 = cur.expect('ID')
@@ -158,9 +186,8 @@ def _parse_number_literal(raw: str):
     return float(raw) if ('.' in raw or 'e' in raw.lower()) else int(raw)
 
 
-def _parse_sqrt_value(cur: Cursor, opener_kind: str) -> SymbolicNumber:
-    cur.expect(opener_kind)
-    closer_kind = 'RPAREN' if opener_kind == 'LPAREN' else 'RBRACE'
+def _parse_sqrt_value(cur: Cursor) -> SymbolicNumber:
+    cur.expect('LPAREN')
     inner_tok = cur.expect('NUMBER')
     inner_raw = inner_tok[1]
     try:
@@ -173,7 +200,7 @@ def _parse_sqrt_value(cur: Cursor, opener_kind: str) -> SymbolicNumber:
         raise SyntaxError(
             f"[line {inner_tok[2]}, col {inner_tok[3]}] sqrt argument must be non-negative"
         )
-    cur.expect(closer_kind)
+    cur.expect('RPAREN')
     text = f"sqrt({inner_raw})"
     return SymbolicNumber(text=text, value=math.sqrt(inner_value))
 

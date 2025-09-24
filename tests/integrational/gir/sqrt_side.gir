@@ -5,6 +5,6 @@ points A, B, C
 triangle A-B-C
 segment B-C
 segment A-B [length=sqrt(100)]
-segment A-C [length=\sqrt{51}]
+segment A-C [length=sqrt(51)]
 right-angle at C rays C-A C-B [mark=square]
 target angle at A rays A-B A-C [label="sin A = ?"]
