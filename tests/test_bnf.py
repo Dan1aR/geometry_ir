@@ -1,6 +1,9 @@
+import math
+
 import pytest
 
 from geoscript_ir import parse_program
+from geoscript_ir.numbers import SymbolicNumber
 
 
 def parse_single(text: str):
@@ -249,6 +252,23 @@ def test_placements():
         'at2': None,
     }
 
+
+
+@pytest.mark.parametrize(
+    'text',
+    [
+        'segment A-B [length=sqrt(19)]',
+        'segment A-B [length=sqrt{19}]',
+        'segment A-B [length=\\sqrt{19}]',
+    ],
+)
+def test_segment_length_with_sqrt(text):
+    stmt = parse_single(text)
+    assert stmt.kind == 'segment'
+    length = stmt.opts['length']
+    assert isinstance(length, SymbolicNumber)
+    assert str(length) == 'sqrt(19)'
+    assert float(length) == pytest.approx(math.sqrt(19))
 
 
 def test_rules():

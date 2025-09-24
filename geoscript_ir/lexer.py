@@ -8,6 +8,8 @@ SYMBOLS = {
     ']': 'RBRACK',
     '(': 'LPAREN',
     ')': 'RPAREN',
+    '{': 'LBRACE',
+    '}': 'RBRACE',
     ',': 'COMMA',
     '-': 'DASH',
     ';': 'SEMI',
@@ -16,7 +18,7 @@ SYMBOLS = {
 
 WS = ' \t\r'
 
-_id_re = re.compile(r'[A-Za-z][A-Za-z0-9_]*')
+_id_re = re.compile(r'\\?[A-Za-z][A-Za-z0-9_]*')
 _num_re = re.compile(r'(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?')
 _str_re = re.compile(r'"([^"\\]|\\.)*"')  # double-quoted with escapes
 
@@ -50,6 +52,8 @@ def tokenize_line(s: str, line_no: int) -> List[Token]:
         m = _id_re.match(s, i)
         if m:
             val = m.group(0)
+            if val.startswith('\\'):
+                val = val[1:]
             tokens.append(('ID', val, line_no, col))
             i = m.end()
             continue

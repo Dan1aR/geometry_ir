@@ -107,7 +107,7 @@ _PROMPT_CORE = dedent(
     OPTIONS CHEATSHEET
     - GeoScript only reads the options listed below. Never output bare `[]`, and never invent new keys.
       * Global rules: `no_solving`, `allow_auxiliary`, `no_unicode_degree`, `no_equations_on_sides`, `mark_right_angles_as_square`.
-      * Segment/edge data: `length=<number>`, `label="text"`.
+      * Segment/edge data: `length=<number|sqrt(...)>`, `label="text"`.
       * Polygon metadata: `bases=A-D` for trapezoids, `isosceles=atB` for isosceles triangles.
       * Angle/arc data: `degrees=<number>`, `label="text"`, `mark=square` for right angles.
       * Point/line markers: `mark=midpoint`, `mark=directed`, `color=<name>` when the prompt specifies styling.
@@ -167,8 +167,7 @@ _PROMPT_CORE = dedent(
 
     - Example 3
       Input: "Right triangle ABC has angle B = 21 degrees. Let CD be the bisector and CM the median from the right vertex C. Find the angle between CD and CM."
-      Output:
-      <geoscript>
+      Output (lines to place inside the geoscript wrapper shown above):
       scene "Right-angled triangle with angle B=21^\\circ, find angle between CD and CM"
       layout canonical=triangle_ABC scale=1.0
       points A, B, C, D, M
@@ -179,7 +178,6 @@ _PROMPT_CORE = dedent(
       intersect (angle-bisector at C rays C-A C-B) with (segment A-B) at D
       intersect (median from C to A-B) with (segment A-B) at M
       target angle at C rays C-D C-M [label="?"]
-      </geoscript>
     """
 ).strip()
 

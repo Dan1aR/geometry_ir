@@ -1,8 +1,10 @@
 
+import math
 import re
 from typing import List, Tuple, Dict, Any, Optional
 from .lexer import tokenize_line
 from .ast import Program, Stmt, Span
+from .numbers import SymbolicNumber
 
 _ERROR_LOC_RE = re.compile(r"\[line (\d+), col (\d+)\]")
 
@@ -133,19 +135,47 @@ def parse_opt_value(cur: Cursor):
     if vtok[0] == 'STRING':
         return cur.match('STRING')[1]
     if vtok[0] == 'NUMBER':
-        num = cur.match('NUMBER')[1]
-        return float(num) if ('.' in num or 'e' in num.lower()) else int(num)
+        num_tok = cur.match('NUMBER')
+        return _parse_number_literal(num_tok[1])
     if vtok[0] == 'ID':
-        raw = cur.match('ID')[1]
+        id_tok = cur.match('ID')
+        raw = id_tok[1]
         low = raw.lower()
         if low in ('true', 'false'):
             return low == 'true'
+        nxt = cur.peek()
+        if low == 'sqrt' and nxt and nxt[0] in ('LPAREN', 'LBRACE'):
+            return _parse_sqrt_value(cur, nxt[0])
         if cur.peek() and cur.peek()[0] == 'DASH':
             cur.i += 1
             t2 = cur.expect('ID')
             return f'{raw.upper()}-{t2[1].upper()}'
         return raw
     raise SyntaxError(f'[line {vtok[2]}, col {vtok[3]}] invalid option value token {vtok[0]}')
+
+
+def _parse_number_literal(raw: str):
+    return float(raw) if ('.' in raw or 'e' in raw.lower()) else int(raw)
+
+
+def _parse_sqrt_value(cur: Cursor, opener_kind: str) -> SymbolicNumber:
+    cur.expect(opener_kind)
+    closer_kind = 'RPAREN' if opener_kind == 'LPAREN' else 'RBRACE'
+    inner_tok = cur.expect('NUMBER')
+    inner_raw = inner_tok[1]
+    try:
+        inner_value = float(inner_raw)
+    except ValueError as exc:
+        raise SyntaxError(
+            f"[line {inner_tok[2]}, col {inner_tok[3]}] invalid numeric value '{inner_raw}' inside sqrt"
+        ) from exc
+    if inner_value < 0:
+        raise SyntaxError(
+            f"[line {inner_tok[2]}, col {inner_tok[3]}] sqrt argument must be non-negative"
+        )
+    cur.expect(closer_kind)
+    text = f"sqrt({inner_raw})"
+    return SymbolicNumber(text=text, value=math.sqrt(inner_value))
 
 
 def parse_path(cur: Cursor):
