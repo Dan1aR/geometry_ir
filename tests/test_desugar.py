@@ -297,28 +297,70 @@ def test_incircle_adds_touch_points_and_equal_radii():
     assert centers[0].data == {'center': 'I_ABC', 'through': 'T_AB'}
     assert centers[0].opts == {'label': 'incircle'}
 
+    intersects = [
+        s
+        for s in out.stmts
+        if s.kind == 'intersect' and s.origin == 'desugar(incircle)'
+    ]
+    assert len(intersects) == 3
+
+    expected_edges = {
+        'T_AB': ('A', 'B'),
+        'T_BC': ('B', 'C'),
+        'T_CA': ('C', 'A'),
+    }
+
+    for inter_stmt in intersects:
+        at_point = inter_stmt.data['at']
+        assert at_point in expected_edges
+        assert inter_stmt.data['at2'] is None
+        path1_kind, path1_payload = inter_stmt.data['path1']
+        path2_kind, path2_payload = inter_stmt.data['path2']
+        assert path1_kind == 'perpendicular'
+        assert path2_kind == 'line'
+        assert path1_payload == {'at': 'I_ABC', 'to': expected_edges[at_point]}
+        assert path2_payload == expected_edges[at_point]
+
     point_on = [
         s
         for s in out.stmts
         if s.kind == 'point_on' and s.origin == 'desugar(incircle)'
     ]
-    assert {s.data['point'] for s in point_on} == {'T_AB', 'T_BC', 'T_CA'}
-    assert {s.data['path'] for s in point_on} == {
-        ('segment', ('A', 'B')),
-        ('segment', ('B', 'C')),
-        ('segment', ('C', 'A')),
+
+    assert {s.data['path'][0] for s in point_on} == {'perpendicular', 'line', 'ray'}
+
+    perps = {
+        s.data['point']: s.data['path'][1]['to']
+        for s in point_on
+        if s.data['path'][0] == 'perpendicular'
+    }
+    assert perps == {pt: expected_edges[pt] for pt in expected_edges}
+
+    lines = {
+        s.data['point']: s.data['path'][1]
+        for s in point_on
+        if s.data['path'][0] == 'line'
+    }
+    assert lines == expected_edges
+
+    rays = {
+        (s.data['point'], s.data['path'][1])
+        for s in point_on
+        if s.data['path'][0] == 'ray'
+    }
+    assert rays == {
+        ('T_AB', ('A', 'B')),
+        ('T_AB', ('B', 'A')),
+        ('T_BC', ('B', 'C')),
+        ('T_BC', ('C', 'B')),
+        ('T_CA', ('C', 'A')),
+        ('T_CA', ('A', 'C')),
     }
 
-    right_angles = [
-        s
+    assert not any(
+        s.kind == 'right_angle_at' and s.origin == 'desugar(incircle)'
         for s in out.stmts
-        if s.kind == 'right_angle_at' and s.origin == 'desugar(incircle)'
-    ]
-    assert {(s.data['at'], s.data['rays'][1]) for s in right_angles} == {
-        ('T_AB', ('T_AB', 'A')),
-        ('T_BC', ('T_BC', 'B')),
-        ('T_CA', ('T_CA', 'C')),
-    }
+    )
 
     eqs = [
         s

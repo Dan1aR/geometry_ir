@@ -473,29 +473,40 @@ def desugar_variants(prog: Program) -> List[Program]:
                     (touch_bc, edge(B, C)),
                     (touch_ca, edge(C, A)),
                 ):
-                    _append(
-                        state,
-                        Stmt('point_on', s.span, {'point': point, 'path': ('segment', seg)}, {}, origin='desugar(incircle)'),
-                        source_keys,
-                        generated=True,
-                    )
-                for point, vertex in (
-                    (touch_ab, A),
-                    (touch_bc, B),
-                    (touch_ca, C),
-                ):
+                    perp_path = ('perpendicular', {'at': center, 'to': seg})
+                    line_path = ('line', seg)
                     _append(
                         state,
                         Stmt(
-                            'right_angle_at',
+                            'intersect',
                             s.span,
-                            {'at': point, 'rays': ((point, center), (point, vertex))},
+                            {
+                                'path1': perp_path,
+                                'path2': line_path,
+                                'at': point,
+                                'at2': None,
+                            },
                             {},
                             origin='desugar(incircle)'
                         ),
                         source_keys,
                         generated=True,
                     )
+                    for path in (perp_path, line_path):
+                        _append(
+                            state,
+                            Stmt('point_on', s.span, {'point': point, 'path': path}, {}, origin='desugar(incircle)'),
+                            source_keys,
+                            generated=True,
+                        )
+                    for start, end in (seg, seg[::-1]):
+                        ray_path = ('ray', (start, end))
+                        _append(
+                            state,
+                            Stmt('point_on', s.span, {'point': point, 'path': ray_path}, {}, origin='desugar(incircle)'),
+                            source_keys,
+                            generated=True,
+                        )
                 _append(
                     state,
                     Stmt(
