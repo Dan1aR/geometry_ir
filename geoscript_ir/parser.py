@@ -522,6 +522,15 @@ def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
         center, _ = parse_id(cur)
         opts = parse_opts(cur)
         stmt = Stmt('tangent_at', sp, {'at': at, 'center': center}, opts)
+    elif kw == 'diameter':
+        cur.consume_keyword('diameter')
+        edge, sp = parse_pair(cur)
+        cur.consume_keyword('to')
+        cur.consume_keyword('circle')
+        cur.consume_keyword('center')
+        center, _ = parse_id(cur)
+        opts = parse_opts(cur)
+        stmt = Stmt('diameter', sp, {'edge': edge, 'center': center}, opts)
     elif kw == 'polygon':
         cur.consume_keyword('polygon')
         ids, sp = parse_idchain(cur)

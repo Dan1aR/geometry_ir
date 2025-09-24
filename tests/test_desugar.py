@@ -221,6 +221,17 @@ def test_intersect_generates_point_on_and_segments():
     assert {s.data['edge'] for s in segments} == {('A', 'D')}
 
 
+def test_diameter_desugars_to_point_on_segment():
+    diameter_stmt = stmt('diameter', {'edge': ('A', 'B'), 'center': 'O'})
+
+    out = desugar(Program([diameter_stmt]))
+
+    generated = [s for s in out.stmts if s.origin == 'desugar(diameter)']
+    assert len(generated) == 1
+    assert generated[0].kind == 'point_on'
+    assert generated[0].data == {'point': 'O', 'path': ('segment', ('A', 'B'))}
+
+
 def test_circle_through_creates_center_and_equal_radii():
     circle = stmt('circle_through', {'ids': ['A', 'B', 'C', 'D']}, {'label': 'omega'})
 

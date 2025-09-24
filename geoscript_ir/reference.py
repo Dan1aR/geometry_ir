@@ -40,6 +40,7 @@ BNF = dedent(
                | 'equal-segments' '(' EdgeList ';' EdgeList ')' Opts?
                | 'parallel-edges' '(' Pair ';' Pair ')' Opts?
                | 'tangent' 'at' ID 'to' 'circle' 'center' ID Opts?
+               | 'diameter' Pair 'to' 'circle' 'center' ID Opts?
                | 'line' ID '-' ID 'tangent' 'to' 'circle' 'center' ID 'at' ID Opts?
                | 'polygon' IdChain Opts?
                | 'triangle' ID '-' ID '-' ID Opts?

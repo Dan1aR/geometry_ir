@@ -161,6 +161,12 @@ def test_targets(text, kind, data, opts):
             {},
         ),
         (
+            'diameter A-B to circle center O',
+            'diameter',
+            {'edge': ('A', 'B'), 'center': 'O'},
+            {},
+        ),
+        (
             'polygon A-B-C-D-E',
             'polygon',
             {'ids': ['A', 'B', 'C', 'D', 'E']},

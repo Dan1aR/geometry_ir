@@ -17,3 +17,10 @@ def test_segment_length_prints_symbolic_value():
     prog = Program([stmt])
 
     assert print_program(prog) == 'segment A-B [length=sqrt(19)]\n'
+
+
+def test_diameter_prints_statement():
+    stmt = Stmt('diameter', Span(1, 1), {'edge': ('A', 'B'), 'center': 'O'})
+    prog = Program([stmt])
+
+    assert print_program(prog) == 'diameter A-B to circle center O\n'
