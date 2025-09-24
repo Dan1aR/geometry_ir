@@ -99,6 +99,11 @@ def print_program(prog: Program, *, original_only: bool = False) -> str:
             lines.append(f'equal-segments ({lhs} ; {rhs})')
         elif s.kind == 'tangent_at':
             lines.append(f'tangent at {s.data["at"]} to circle center {s.data["center"]}{o}'); continue
+        elif s.kind == 'diameter':
+            lines.append(
+                f'diameter {edge_str(s.data["edge"])} to circle center {s.data["center"]}{o}'
+            );
+            continue
         elif s.kind == 'polygon':
             ids = '-'.join(s.data['ids']); lines.append(f'polygon {ids}{o}'); continue
         elif s.kind in ('triangle','quadrilateral','parallelogram','trapezoid','rectangle','square','rhombus'):

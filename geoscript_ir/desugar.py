@@ -538,6 +538,22 @@ def desugar_variants(prog: Program) -> List[Program]:
                             source_keys,
                             generated=True,
                         )
+        elif s.kind == 'diameter':
+            center = s.data['center']
+            segment = s.data['edge']
+            for state in states:
+                _append(
+                    state,
+                    Stmt(
+                        'point_on',
+                        s.span,
+                        {'point': center, 'path': ('segment', segment)},
+                        {},
+                        origin='desugar(diameter)'
+                    ),
+                    source_keys,
+                    generated=True,
+                )
 
     return [state.program for state in states]
 

@@ -47,6 +47,30 @@ def test_translate_adds_gauges_and_residuals():
     assert any(g.startswith("orientation=") for g in model.gauges)
 
 
+def test_diameter_adds_point_on_segment_residuals():
+    model = _build_model(
+        """
+        scene "Diameter"
+        points A, B, O
+        segment A-B
+        diameter A-B to circle center O
+        """
+    )
+
+    point_on_specs = [
+        spec
+        for spec in model.residuals
+        if spec.key in {
+            "point_on_segment(O,A-B)",
+            "point_on_segment_bounds(O,A-B)",
+        }
+    ]
+
+    keys = {spec.key for spec in point_on_specs}
+    assert keys == {"point_on_segment(O,A-B)", "point_on_segment_bounds(O,A-B)"}
+    assert {spec.source.origin for spec in point_on_specs} == {"desugar(diameter)"}
+
+
 def test_solver_right_triangle_solution_is_stable():
     model = _build_model(
         """
