@@ -1,0 +1,10 @@
+# В треугольнике $ABC$ угол $C$ равен $90^\circ$, $AB = 10$, $AC = \sqrt{51}$. Найдите $\sin A$
+scene "Right-angled triangle ABC with AB=10, AC=В треугольнике $ABC$ угол $C$ равен $90^\circ$, $AB = 10$, $AC = \sqrt{51}$. Найдите $\sin A$; find sin A"
+layout canonical=triangle_ABC scale=1.0
+points A, B, C
+triangle A-B-C
+segment B-C
+segment A-B [length=2*sqrt(100)]
+segment A-C [length=2\sqrt{51}]
+right-angle at C rays C-A C-B [mark=square]
+target angle at A rays A-B A-C [label="sin A = ?"]

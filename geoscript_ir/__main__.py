@@ -42,8 +42,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser.add_argument(
         "--reseed-attempts",
         type=int,
-        default=5,
-        help="Number of solver reseed attempts (default: 5)",
+        default=10,
+        help="Number of solver reseed attempts (default: 10)",
     )
     args = parser.parse_args(argv)
 
