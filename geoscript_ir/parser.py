@@ -185,6 +185,13 @@ def parse_path(cur: Cursor):
         cur.consume_keyword('to')
         to, _ = parse_pair(cur)
         return 'perpendicular', {'at': at, 'to': to}
+    if kw == 'median':
+        cur.consume_keyword('median')
+        cur.consume_keyword('from')
+        frm, _ = parse_id(cur)
+        cur.consume_keyword('to')
+        to, _ = parse_pair(cur)
+        return 'median', {'frm': frm, 'to': to}
     raise SyntaxError(f'[line {t[2]}, col {t[3]}] invalid path kind {t[1]!r}')
 
 def parse_opts(cur: Cursor) -> Dict[str, Any]:

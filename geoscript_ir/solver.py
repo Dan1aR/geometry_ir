@@ -523,6 +523,24 @@ def _build_point_on(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpe
         key = f"point_on_perpendicular({point},{at};{_format_edge(to_edge)})"
         return [ResidualSpec(key=key, func=func, size=1, kind="point_on_perpendicular", source=stmt)]
 
+    if path_kind == "median" and isinstance(payload, dict):
+        frm = payload.get("frm")
+        to_edge_raw = payload.get("to")
+        if not isinstance(frm, str) or to_edge_raw is None:
+            raise ValueError("median path requires a vertex and a target edge")
+        to_edge = _as_edge(to_edge_raw)
+
+        def func(x: np.ndarray) -> np.ndarray:
+            vertex = _vec(x, index, frm)
+            pt = _vec(x, index, point)
+            a = _vec(x, index, to_edge[0])
+            b = _vec(x, index, to_edge[1])
+            mid = 0.5 * (a + b)
+            return np.array([_cross_2d(pt - vertex, mid - vertex)], dtype=float)
+
+        key = f"point_on_median({point},{frm};{_format_edge(to_edge)})"
+        return [ResidualSpec(key=key, func=func, size=1, kind="point_on_median", source=stmt)]
+
     raise ValueError(f"Unsupported path kind for point_on: {path_kind}")
 
 
@@ -707,6 +725,14 @@ def translate(program: Program) -> Model:
                 for ray in rays:
                     if isinstance(ray, (list, tuple)):
                         handle_edge(ray)
+            return
+        if kind == "median" and isinstance(payload, dict):
+            frm = payload.get("frm")
+            if isinstance(frm, str):
+                _register_point(order, seen, frm)
+            to_edge = payload.get("to")
+            if isinstance(to_edge, (list, tuple)):
+                handle_edge(to_edge)
             return
 
     # scan program
