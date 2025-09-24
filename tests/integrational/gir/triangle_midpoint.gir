@@ -1,0 +1,16 @@
+# Острый угол B прямоугольного треугольника ABC равен 21^\circ. Найдите величину угла между биссектрисой CD и медианой CM, проведёнными из вершины прямого угла C. Ответ дайте в градусах.
+scene "Right-angled triangle with angle B=21^\\circ, find angle between CD and CM"
+layout canonical=triangle_ABC scale=1.0
+points A, B, C, D, M
+triangle A-B-C
+angle at C rays C-A C-B [degrees=90]
+angle at B rays B-A B-C [degrees=21]
+angle at A rays A-B A-C [degrees=69]
+
+# Add angle bisector
+intersect (angle-bisector at C rays C-A C-B) with (segment A-B) at D
+
+# Add median
+intersect (median from C to A-B) with (segment A-B) at M
+
+target angle at C rays C-D C-M [label="?"]
