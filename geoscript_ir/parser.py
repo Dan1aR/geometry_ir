@@ -136,7 +136,29 @@ def parse_opt_value(cur: Cursor):
         return cur.match('STRING')[1]
     if vtok[0] == 'NUMBER':
         num_tok = cur.match('NUMBER')
-        return _parse_number_literal(num_tok[1])
+        base = _parse_number_literal(num_tok[1])
+        nxt = cur.peek()
+        if nxt and nxt[0] in ('STAR', 'ID'):
+            had_star = False
+            if nxt[0] == 'STAR':
+                had_star = True
+                cur.expect('STAR')
+                nxt = cur.peek()
+            if nxt and nxt[0] == 'ID' and nxt[1].lower() == 'sqrt':
+                sqrt_tok = cur.expect('ID')
+                opener = cur.peek()
+                if not opener or opener[0] not in ('LPAREN', 'LBRACE'):
+                    raise SyntaxError(
+                        f"[line {sqrt_tok[2]}, col {sqrt_tok[3]}] expected '(' or '{{' after 'sqrt'"
+                    )
+                sqrt_val = _parse_sqrt_value(cur, opener[0])
+                text = f"{num_tok[1]}*{sqrt_val.text}"
+                return SymbolicNumber(text=text, value=base * sqrt_val.value)
+            if had_star:
+                raise SyntaxError(
+                    f"[line {nxt[2] if nxt else num_tok[2]}, col {nxt[3] if nxt else num_tok[3]}] expected 'sqrt' after '*' in numeric expression"
+                )
+        return base
     if vtok[0] == 'ID':
         id_tok = cur.match('ID')
         raw = id_tok[1]

@@ -14,6 +14,7 @@ SYMBOLS = {
     '-': 'DASH',
     ';': 'SEMI',
     '=': 'EQUAL',
+    '*': 'STAR',
 }
 
 WS = ' \t\r'
