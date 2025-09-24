@@ -450,31 +450,29 @@ def desugar_variants(prog: Program) -> List[Program]:
             ids = _distinct_ids(s.data['ids'])
             if len(ids) < 3:
                 continue
-            A, B, C = ids[:3]
+            edges = [edge(ids[i], ids[(i + 1) % len(ids)]) for i in range(len(ids))]
             for state in states:
-                center = _fresh_name(state, 'I', ''.join([A, B, C]))
-                touch_ab = _fresh_name(state, 'T', f'{A}{B}')
-                touch_bc = _fresh_name(state, 'T', f'{B}{C}')
-                touch_ca = _fresh_name(state, 'T', f'{C}{A}')
+                center = _fresh_name(state, 'I', ''.join(ids))
+                touch_points = []
+                for seg in edges:
+                    point = _fresh_name(state, 'T', f'{seg[0]}{seg[1]}')
+                    touch_points.append((point, seg))
+                first_touch, _ = touch_points[0]
                 _append(
                     state,
                     Stmt(
                         'circle_center_radius_through',
                         s.span,
-                        {'center': center, 'through': touch_ab},
+                        {'center': center, 'through': first_touch},
                         dict(s.opts),
                         origin='desugar(incircle)'
                     ),
                     source_keys,
                     generated=True,
                 )
-                for point, seg in (
-                    (touch_ab, edge(A, B)),
-                    (touch_bc, edge(B, C)),
-                    (touch_ca, edge(C, A)),
-                ):
+                for point, seg in touch_points:
                     perp_path = ('perpendicular', {'at': center, 'to': seg})
-                    line_path = ('line', seg)
+                    segment_path = ('segment', seg)
                     _append(
                         state,
                         Stmt(
@@ -482,7 +480,7 @@ def desugar_variants(prog: Program) -> List[Program]:
                             s.span,
                             {
                                 'path1': perp_path,
-                                'path2': line_path,
+                                'path2': segment_path,
                                 'at': point,
                                 'at2': None,
                             },
@@ -492,7 +490,7 @@ def desugar_variants(prog: Program) -> List[Program]:
                         source_keys,
                         generated=True,
                     )
-                    for path in (perp_path, line_path):
+                    for path in (perp_path, segment_path):
                         _append(
                             state,
                             Stmt('point_on', s.span, {'point': point, 'path': path}, {}, origin='desugar(incircle)'),
@@ -507,21 +505,22 @@ def desugar_variants(prog: Program) -> List[Program]:
                             source_keys,
                             generated=True,
                         )
-                _append(
-                    state,
-                    Stmt(
-                        'equal_segments',
-                        s.span,
-                        {
-                            'lhs': [edge(center, touch_ab)],
-                            'rhs': [edge(center, touch_bc), edge(center, touch_ca)],
-                        },
-                        {},
-                        origin='desugar(incircle)'
-                    ),
-                    source_keys,
-                    generated=True,
-                )
+                if len(touch_points) > 1:
+                    _append(
+                        state,
+                        Stmt(
+                            'equal_segments',
+                            s.span,
+                            {
+                                'lhs': [edge(center, touch_points[0][0])],
+                                'rhs': [edge(center, tp[0]) for tp in touch_points[1:]],
+                            },
+                            {},
+                            origin='desugar(incircle)'
+                        ),
+                        source_keys,
+                        generated=True,
+                    )
         elif s.kind == 'intersect':
             path1 = s.data['path1']
             path2 = s.data['path2']

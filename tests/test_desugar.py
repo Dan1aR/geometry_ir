@@ -317,7 +317,7 @@ def test_incircle_adds_touch_points_and_equal_radii():
         path1_kind, path1_payload = inter_stmt.data['path1']
         path2_kind, path2_payload = inter_stmt.data['path2']
         assert path1_kind == 'perpendicular'
-        assert path2_kind == 'line'
+        assert path2_kind == 'segment'
         assert path1_payload == {'at': 'I_ABC', 'to': expected_edges[at_point]}
         assert path2_payload == expected_edges[at_point]
 
@@ -327,7 +327,7 @@ def test_incircle_adds_touch_points_and_equal_radii():
         if s.kind == 'point_on' and s.origin == 'desugar(incircle)'
     ]
 
-    assert {s.data['path'][0] for s in point_on} == {'perpendicular', 'line', 'ray'}
+    assert {s.data['path'][0] for s in point_on} == {'perpendicular', 'segment', 'ray'}
 
     perps = {
         s.data['point']: s.data['path'][1]['to']
@@ -336,12 +336,12 @@ def test_incircle_adds_touch_points_and_equal_radii():
     }
     assert perps == {pt: expected_edges[pt] for pt in expected_edges}
 
-    lines = {
+    segments = {
         s.data['point']: s.data['path'][1]
         for s in point_on
-        if s.data['path'][0] == 'line'
+        if s.data['path'][0] == 'segment'
     }
-    assert lines == expected_edges
+    assert segments == expected_edges
 
     rays = {
         (s.data['point'], s.data['path'][1])
@@ -371,4 +371,75 @@ def test_incircle_adds_touch_points_and_equal_radii():
     assert eqs[0].data == {
         'lhs': [('I_ABC', 'T_AB')],
         'rhs': [('I_ABC', 'T_BC'), ('I_ABC', 'T_CA')],
+    }
+
+
+def test_incircle_polygon_touches_each_side():
+    circle = stmt('incircle', {'ids': ['A', 'B', 'C', 'D']})
+
+    out = desugar(Program([circle]))
+
+    centers = [
+        s
+        for s in out.stmts
+        if s.kind == 'circle_center_radius_through' and s.origin == 'desugar(incircle)'
+    ]
+    assert len(centers) == 1
+    assert centers[0].data == {'center': 'I_ABCD', 'through': 'T_AB'}
+
+    intersects = [
+        s
+        for s in out.stmts
+        if s.kind == 'intersect' and s.origin == 'desugar(incircle)'
+    ]
+    assert len(intersects) == 4
+
+    expected_edges = {
+        'T_AB': ('A', 'B'),
+        'T_BC': ('B', 'C'),
+        'T_CD': ('C', 'D'),
+        'T_DA': ('D', 'A'),
+    }
+
+    for inter_stmt in intersects:
+        at_point = inter_stmt.data['at']
+        assert at_point in expected_edges
+        path1_kind, path1_payload = inter_stmt.data['path1']
+        path2_kind, path2_payload = inter_stmt.data['path2']
+        assert path1_kind == 'perpendicular'
+        assert path1_payload == {'at': 'I_ABCD', 'to': expected_edges[at_point]}
+        assert path2_kind == 'segment'
+        assert path2_payload == expected_edges[at_point]
+
+    perps = {
+        s.data['point']: s.data['path'][1]['to']
+        for s in out.stmts
+        if s.kind == 'point_on'
+        and s.origin == 'desugar(incircle)'
+        and s.data['path'][0] == 'perpendicular'
+    }
+    assert perps == {pt: expected_edges[pt] for pt in expected_edges}
+
+    segments = {
+        s.data['point']: s.data['path'][1]
+        for s in out.stmts
+        if s.kind == 'point_on'
+        and s.origin == 'desugar(incircle)'
+        and s.data['path'][0] == 'segment'
+    }
+    assert segments == expected_edges
+
+    eqs = [
+        s
+        for s in out.stmts
+        if s.kind == 'equal_segments' and s.origin == 'desugar(incircle)'
+    ]
+    assert len(eqs) == 1
+    assert eqs[0].data == {
+        'lhs': [('I_ABCD', 'T_AB')],
+        'rhs': [
+            ('I_ABCD', 'T_BC'),
+            ('I_ABCD', 'T_CD'),
+            ('I_ABCD', 'T_DA'),
+        ],
     }
