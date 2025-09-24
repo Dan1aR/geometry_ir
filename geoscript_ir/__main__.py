@@ -12,15 +12,9 @@ from geoscript_ir import (
     validate,
     normalize_point_coords
 )
-from geoscript_ir.solver import SolveOptions, Solution, translate, solve
+from geoscript_ir.solver import SolveOptions, score_solution, translate, solve
 
 logger = logging.getLogger(__name__)
-
-
-def _score_solution(solution: Solution) -> tuple:
-    """Score solutions by convergence success then residual size."""
-
-    return (0 if solution.success else 1, float(solution.max_residual))
 
 
 def _configure_logging(level: str) -> None:
@@ -114,7 +108,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             }
         )
 
-    best = min(variant_results, key=lambda entry: _score_solution(entry["solution"]))
+    best = min(variant_results, key=lambda entry: score_solution(entry["solution"]))
     best_index = best["index"]
     best_program = best["program"]
     best_warnings = best["warnings"]

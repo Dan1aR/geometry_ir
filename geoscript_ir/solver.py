@@ -81,6 +81,10 @@ class VariantSolveResult:
     model: Model
     solution: Solution
 
+def score_solution(solution: Solution) -> tuple:
+    """Score solutions by convergence success then residual size."""
+
+    return (0 if solution.success else 1, float(solution.max_residual))
 
 def normalize_point_coords(
     point_coords: Dict[PointName, Tuple[float, float]], scale: float = 100.0

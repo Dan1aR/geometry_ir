@@ -16,6 +16,7 @@ from .solver import (
     Solution,
     VariantSolveResult,
     normalize_point_coords,
+    score_solution
 )
 
 __all__ = [
@@ -43,4 +44,5 @@ __all__ = [
     'LLM_PROMPT',
     'get_llm_prompt',
     'GEOSCRIPT_TO_TIKZ_PROMPT',
+    'score_solution',
 ]
