@@ -1,4 +1,5 @@
 from .ast import Program
+from .numbers import SymbolicNumber
 from typing import Tuple
 
 def edge_str(e: Tuple[str,str]) -> str:
@@ -41,6 +42,8 @@ def print_program(prog: Program) -> str:
                 if isinstance(v, bool):
                     vv = 'true' if v else 'false'
                 elif isinstance(v, (int,float)):
+                    vv = str(v)
+                elif isinstance(v, SymbolicNumber):
                     vv = str(v)
                 else:
                     vv = v if (isinstance(v,str) and ' ' not in v) else f'"{v}"'
