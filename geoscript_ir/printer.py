@@ -31,9 +31,11 @@ def path_str(path: Tuple[str, object]) -> str:
         return f'median from {frm}'
     return f'# [unknown path {kind}]'
 
-def print_program(prog: Program) -> str:
+def print_program(prog: Program, *, original_only: bool = False) -> str:
     lines = []
     for s in prog.stmts:
+        if original_only and s.origin != 'source':
+            continue
         o = ''
         if s.opts:
             parts = []

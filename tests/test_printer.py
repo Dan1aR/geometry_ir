@@ -24,3 +24,16 @@ def test_diameter_prints_statement():
     prog = Program([stmt])
 
     assert print_program(prog) == 'diameter A-B to circle center O\n'
+
+
+def test_original_only_skips_generated_statements():
+    original = Stmt('segment', Span(1, 1), {'edge': ('A', 'B')})
+    generated = Stmt(
+        'segment',
+        Span(2, 1),
+        {'edge': ('B', 'C')},
+        origin='desugar(triangle)',
+    )
+    prog = Program([original, generated])
+
+    assert print_program(prog, original_only=True) == 'segment A-B\n'
