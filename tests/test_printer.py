@@ -17,3 +17,16 @@ def test_segment_length_prints_symbolic_value():
     prog = Program([stmt])
 
     assert print_program(prog) == 'segment A-B [length=sqrt(19)]\n'
+
+
+def test_original_only_skips_generated_statements():
+    original = Stmt('segment', Span(1, 1), {'edge': ('A', 'B')})
+    generated = Stmt(
+        'segment',
+        Span(2, 1),
+        {'edge': ('B', 'C')},
+        origin='desugar(triangle)',
+    )
+    prog = Program([original, generated])
+
+    assert print_program(prog, original_only=True) == 'segment A-B\n'
