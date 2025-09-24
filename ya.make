@@ -20,6 +20,7 @@ PY_SRCS(
     geoscript_ir/reference_tikz.py
     geoscript_ir/solver.py
     geoscript_ir/validate.py
+    geoscript_ir/numbers.py
     examples/solve_circle.py
     examples/solve_trapezoid.py
 )
