@@ -1,8 +1,21 @@
+from dataclasses import dataclass, field
 from typing import Iterable, List, Sequence, Tuple
 
 from .ast import Program, Stmt
 
 Ray = Tuple[str, str]
+
+
+@dataclass
+class ConsistencyWarning:
+    line: int
+    col: int
+    kind: str
+    message: str
+    hotfixes: List[str] = field(default_factory=list)
+
+    def __str__(self) -> str:  # pragma: no cover - trivial string formatting
+        return self.message
 
 
 def _normalize_edge(edge: Sequence[str]) -> Tuple[str, str]:
@@ -34,8 +47,8 @@ def _format_ray(ray: Ray) -> str:
     return f'{ray[0]}-{ray[1]}'
 
 
-def check_consistency(prog: Program) -> List[str]:
-    warnings: List[str] = []
+def check_consistency(prog: Program) -> List[ConsistencyWarning]:
+    warnings: List[ConsistencyWarning] = []
     supported = _supported_rays(prog.stmts)
 
     for stmt in prog.stmts:
@@ -46,9 +59,21 @@ def check_consistency(prog: Program) -> List[str]:
                 if ray_norm not in supported:
                     missing.append(_format_ray(ray_norm))
             if missing:
+                missing = list(dict.fromkeys(missing))
                 rays_text = ', '.join(missing)
+                hotfixes = [f'segment {ray}' for ray in missing]
+                message = (
+                    f"[line {stmt.span.line}, col {stmt.span.col}] {stmt.kind} "
+                    f"missing support for rays: {rays_text}"
+                )
                 warnings.append(
-                    f"[line {stmt.span.line}, col {stmt.span.col}] {stmt.kind} missing support for rays: {rays_text}"
+                    ConsistencyWarning(
+                        line=stmt.span.line,
+                        col=stmt.span.col,
+                        kind=stmt.kind,
+                        message=message,
+                        hotfixes=hotfixes,
+                    )
                 )
     return warnings
 

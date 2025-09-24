@@ -19,7 +19,14 @@ def run():
     print(f"Desuga prog: {dz}\n")
 
     warnings = check_consistency(dz)
-    print(f"Warnings:\n{warnings}")
+    print("Warnings:")
+    if warnings:
+        for warning in warnings:
+            print(f"  - {warning}")
+            for hotfix in warning.hotfixes:
+                print(f"    hotfix: {hotfix}")
+    else:
+        print("  (none)")
 
     print(f"Final program:\n{print_program(dz)}")
 
