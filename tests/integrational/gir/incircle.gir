@@ -1,0 +1,8 @@
+# В четырёхугольник $ABCD$ вписана окружность, $AB = 10$, $CD = 17$. Найдите периметр четырёхугольника $ABCD$.
+scene "Inscribed circle in quadrilateral ABCD; AB=10, CD=17; find perimeter"
+layout canonical=quadrilateral scale=1.0
+points A, B, C, D
+quadrilateral A-B-C-D
+incircle of A-B-C-D
+segment A-B [length=10]
+segment C-D [length=17]
