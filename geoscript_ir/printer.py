@@ -134,4 +134,4 @@ def print_program(prog: Program) -> str:
             lines.append(f'# [unknown kind {s.kind}]'); continue
         if o and lines:
             lines[-1] += o
-    return '\n'.join(lines)
+    return '\n'.join(lines) + "\n"
