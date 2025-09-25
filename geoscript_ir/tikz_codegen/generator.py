@@ -4,13 +4,9 @@ import math
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+from .utils import latex_escape_keep_math
 from ..ast import Program
 
-__all__ = [
-    "generate_tikz_code",
-    "generate_tikz_document",
-    "latex_escape_keep_math",
-]
 
 standalone_tpl = r"""\documentclass[border=2pt]{standalone}
 \usepackage[utf8]{inputenc}
@@ -61,52 +57,6 @@ _SIDELABEL_POS_TO_STYLE = {
     "above": "labela",
     "below": "labelb",
 }
-
-_ESCAPE_MAP = {
-    "\\": r"\\textbackslash{}",
-    "&": r"\\&",
-    "%": r"\\%",
-    "#": r"\\#",
-    "_": r"\\_",
-    "{": r"\\{",
-    "}": r"\\}",
-    "~": r"\\textasciitilde{}",
-    "^": r"\\textasciicircum{}",
-}
-
-
-def latex_escape_keep_math(text: str) -> str:
-    """Escape LaTeX special characters in ``text`` while preserving math mode.
-
-    Any substring enclosed in ``$...$`` is passed through verbatim.  Outside
-    math mode, common LaTeX special characters are escaped using ``_ESCAPE_MAP``
-    and newlines are converted into ``\\`` line breaks.
-    """
-
-    if not text:
-        return ""
-
-    escaped: List[str] = []
-    in_math = False
-    idx = 0
-    while idx < len(text):
-        ch = text[idx]
-        if ch == "$":
-            escaped.append("$")
-            in_math = not in_math
-            idx += 1
-            continue
-        if in_math:
-            escaped.append(ch)
-            idx += 1
-            continue
-        if ch == "\n":
-            escaped.append(r"\\ ")
-            idx += 1
-            continue
-        escaped.append(_ESCAPE_MAP.get(ch, ch))
-        idx += 1
-    return "".join(escaped)
 
 
 def generate_tikz_document(

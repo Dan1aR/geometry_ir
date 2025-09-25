@@ -167,6 +167,5 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         output_path.write_text(tikz_document, encoding="utf-8")
         print(f"TikZ document written to {output_path}")
 
-
 if __name__ == "__main__":
     main(sys.argv[1:])
