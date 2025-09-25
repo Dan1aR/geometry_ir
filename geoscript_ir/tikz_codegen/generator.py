@@ -417,7 +417,7 @@ def _render_angle_markings(
         radius = _compute_angle_radius(coords[vertex], coords[start], coords[end])
         if spec.kind == "right":
             lines.append(
-                "  \\pic [draw, angle radius={radius}] {{right angle = ({start})--({vertex})--({end})}};".format(
+                "  \\pic [draw, angle radius={radius}] {{right angle = {start}--{vertex}--{end}}};".format(
                     radius=_format_float(radius), start=start, vertex=vertex, end=end
                 )
             )
@@ -427,7 +427,7 @@ def _render_angle_markings(
         if label_text:
             label_part = f', "{_escape_pic_label(label_text)}"'
         lines.append(
-            "  \\pic [draw, angle eccentricity=1.35, angle radius={radius}{label}] {{angle = ({start})--({vertex})--({end})}};".format(
+            "  \\pic [draw, angle eccentricity=1.35, angle radius={radius}{label}] {{angle = {start}--{vertex}--{end}}};".format(
                 radius=_format_float(radius), label=label_part, start=start, vertex=vertex, end=end
             )
         )

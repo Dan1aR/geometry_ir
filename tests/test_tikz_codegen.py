@@ -87,7 +87,7 @@ def test_angle_measurement_pic_with_degrees() -> None:
     tikz = generate_tikz_code(program, coords)
 
     assert "\\pic [draw" in tikz
-    assert "angle = (C)--(B)--(A)" in tikz
+    assert "angle = C--B--A" in tikz
     assert '"$107^\\circ$"' in tikz
 
 
@@ -106,4 +106,4 @@ def test_right_angle_marked_with_square_pic() -> None:
 
     tikz = generate_tikz_code(program, coords)
 
-    assert "right angle = (A)--(C)--(B)" in tikz
+    assert "right angle = A--C--B" in tikz
