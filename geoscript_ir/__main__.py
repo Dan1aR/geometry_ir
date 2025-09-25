@@ -162,6 +162,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         tikz_document = generate_tikz_document(
             best_program,
             best_solution.point_coords,
+            normalize=True,
         )
         output_path.write_text(tikz_document, encoding="utf-8")
         print(f"TikZ document written to {output_path}")
