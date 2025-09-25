@@ -2,7 +2,7 @@ from .parser import parse_program
 from .validate import validate, ValidationError
 from .desugar import desugar, desugar_variants
 from .consistency import check_consistency, ConsistencyWarning
-from .printer import print_program
+from .printer import print_program, format_stmt
 from .ast import Program, Stmt, Span
 from .reference import BNF, LLM_PROMPT, get_llm_prompt
 from .reference_tikz import GEOSCRIPT_TO_TIKZ_PROMPT
@@ -29,6 +29,7 @@ __all__ = [
     'check_consistency',
     'ConsistencyWarning',
     'print_program',
+    'format_stmt',
     'translate',
     'solve',
     'solve_best_model',

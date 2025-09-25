@@ -1,4 +1,4 @@
-from . import parse_program, validate, desugar, print_program, check_consistency
+from . import parse_program, validate, desugar, print_program, check_consistency, format_stmt
 
 DEMO = """
 scene "Isosceles trapezoid with circumcircle"
@@ -24,7 +24,7 @@ def run():
         for warning in warnings:
             print(f"  - {warning}")
             for hotfix in warning.hotfixes:
-                print(f"    hotfix: {hotfix}")
+                print(f"    hotfix: {format_stmt(hotfix)}")
     else:
         print("  (none)")
 

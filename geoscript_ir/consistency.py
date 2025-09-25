@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Iterable, List, Sequence, Tuple
 
-from .ast import Program, Stmt
+from .ast import Program, Span, Stmt
 
 Ray = Tuple[str, str]
 
@@ -23,7 +23,7 @@ class ConsistencyWarning:
     col: int
     kind: str
     message: str
-    hotfixes: List[str] = field(default_factory=list)
+    hotfixes: List[Stmt] = field(default_factory=list)
 
     def __str__(self) -> str:  # pragma: no cover - trivial string formatting
         return self.message
@@ -79,6 +79,15 @@ def _polygon_edges(ids: Sequence[str]) -> List[Tuple[str, str]]:
     return edges
 
 
+def _segment_hotfix(edge: Ray, span: Span) -> Stmt:
+    return Stmt(
+        'segment',
+        span,
+        {'edge': tuple(edge)},
+        origin='hotfix(consistency)',
+    )
+
+
 def check_consistency(prog: Program) -> List[ConsistencyWarning]:
     warnings: List[ConsistencyWarning] = []
     supported = _supported_rays(prog.stmts)
@@ -86,15 +95,15 @@ def check_consistency(prog: Program) -> List[ConsistencyWarning]:
 
     for stmt in prog.stmts:
         if stmt.kind in ('angle_at', 'right_angle_at', 'target_angle'):
-            missing = []
+            missing: List[Ray] = []
             for ray in stmt.data['rays']:
                 ray_norm = _normalize_edge(ray)
                 if ray_norm not in supported:
-                    missing.append(_format_ray(ray_norm))
+                    missing.append(ray_norm)
             if missing:
                 missing = list(dict.fromkeys(missing))
-                rays_text = ', '.join(missing)
-                hotfixes = [f'segment {ray}' for ray in missing]
+                rays_text = ', '.join(_format_ray(ray) for ray in missing)
+                hotfixes = [_segment_hotfix(ray, stmt.span) for ray in missing]
                 message = (
                     f"[line {stmt.span.line}, col {stmt.span.col}] {stmt.kind} "
                     f"missing support for rays: {rays_text}"
@@ -110,15 +119,15 @@ def check_consistency(prog: Program) -> List[ConsistencyWarning]:
                 )
         elif stmt.kind in _POLYGON_KINDS:
             ids = stmt.data['ids']
-            missing_edges: List[str] = []
+            missing_edges: List[Ray] = []
             for edge in _polygon_edges(ids):
                 edge_norm = _normalize_edge(edge)
                 if edge_norm not in source_segments:
-                    missing_edges.append(_format_ray(edge_norm))
+                    missing_edges.append(edge_norm)
             if missing_edges:
                 missing_edges = list(dict.fromkeys(missing_edges))
-                missing_text = ', '.join(missing_edges)
-                hotfixes = [f'segment {edge}' for edge in missing_edges]
+                missing_text = ', '.join(_format_ray(edge) for edge in missing_edges)
+                hotfixes = [_segment_hotfix(edge, stmt.span) for edge in missing_edges]
                 message = (
                     f"[line {stmt.span.line}, col {stmt.span.col}] {stmt.kind} "
                     f"missing segments: {missing_text}"
