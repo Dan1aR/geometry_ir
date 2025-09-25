@@ -41,4 +41,4 @@ def test_main_writes_tikz_document(tmp_path, monkeypatch):
     cli.main([str(program_path), "--tikz-output-path", str(tikz_path)])
 
     assert tikz_path.read_text(encoding="utf-8") == "tikz document"
-    assert rendered_documents == [("variant", {"A": (0.0, 0.0)}, {})]
+    assert rendered_documents == [("variant", {"A": (0.0, 0.0)}, {"normalize": True})]

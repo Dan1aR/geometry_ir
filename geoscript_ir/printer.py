@@ -1,4 +1,4 @@
-from .ast import Program
+from .ast import Program, Stmt
 from .numbers import SymbolicNumber
 from typing import Tuple
 
@@ -145,3 +145,8 @@ def print_program(prog: Program, *, original_only: bool = False) -> str:
         if o and lines:
             lines[-1] += o
     return '\n'.join(lines) + "\n"
+
+
+def format_stmt(stmt: Stmt) -> str:
+    """Return a single-line representation of ``stmt``."""
+    return print_program(Program(stmts=[stmt])).strip()

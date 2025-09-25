@@ -22,8 +22,14 @@ angle at A rays A-B A-C
     warning = warnings[0]
     assert warning.kind == 'angle_at'
     assert 'A-B' in warning.message and 'A-C' in warning.message
-    assert 'segment A-B' in warning.hotfixes
-    assert 'segment A-C' in warning.hotfixes
+    assert any(
+        hotfix.kind == 'segment' and hotfix.data['edge'] == ('A', 'B')
+        for hotfix in warning.hotfixes
+    )
+    assert any(
+        hotfix.kind == 'segment' and hotfix.data['edge'] == ('A', 'C')
+        for hotfix in warning.hotfixes
+    )
 
 
 def test_angle_with_segments_has_no_warnings():
@@ -88,7 +94,10 @@ def test_polygon_missing_segments_emits_warning(kind, ids):
         expected_edges.append(f"{a}-{b}")
     for edge in expected_edges:
         assert edge in warning.message
-        assert f'segment {edge}' in warning.hotfixes
+        assert any(
+            hotfix.kind == 'segment' and hotfix.data['edge'] == tuple(edge.split('-'))
+            for hotfix in warning.hotfixes
+        )
 
 
 @pytest.mark.parametrize(

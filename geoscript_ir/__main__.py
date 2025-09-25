@@ -10,6 +10,7 @@ from geoscript_ir import (
     desugar_variants,
     generate_tikz_document,
     parse_program,
+    format_stmt,
     print_program,
     validate,
     normalize_point_coords
@@ -82,7 +83,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             for warning in warnings:
                 logger.warning("Variant %d consistency warning: %s", idx, warning)
                 for hotfix in warning.hotfixes:
-                    logger.info("Variant %d suggested hotfix: %s", idx, hotfix)
+                    logger.info(
+                        "Variant %d suggested hotfix: %s",
+                        idx,
+                        format_stmt(hotfix),
+                    )
         else:
             logger.info("Variant %d has no consistency warnings", idx)
 
@@ -130,7 +135,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         for warning in best_warnings:
             print(f"  - {warning}")
             for hotfix in warning.hotfixes:
-                print(f"    hotfix: {hotfix}")
+                print(f"    hotfix: {format_stmt(hotfix)}")
     else:
         print("  (none)")
 
