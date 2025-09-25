@@ -23,6 +23,12 @@ def path_str(path: Tuple[str, object]) -> str:
         if isinstance(to_edge, (list, tuple)):
             return f'perpendicular at {at} to {edge_str(to_edge)}'
         return f'perpendicular at {at}'
+    if kind == 'altitude' and isinstance(payload, dict):
+        frm = payload.get('frm', '')
+        to_edge = payload.get('to')
+        if isinstance(to_edge, (list, tuple)):
+            return f'altitude from {frm} to {edge_str(to_edge)}'
+        return f'altitude from {frm}'
     if kind == 'median' and isinstance(payload, dict):
         frm = payload.get('frm', '')
         to_edge = payload.get('to')
