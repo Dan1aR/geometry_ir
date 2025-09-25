@@ -2,10 +2,11 @@
 
 import math
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 from .utils import latex_escape_keep_math
 from ..ast import Program
+from ..numbers import SymbolicNumber
 
 
 standalone_tpl = r"""\documentclass[border=2pt]{standalone}
@@ -59,6 +60,21 @@ _SIDELABEL_POS_TO_STYLE = {
 }
 
 
+@dataclass
+class _SegmentLengthSpec:
+    edge: Tuple[str, str]
+    text: str
+
+
+@dataclass
+class _AngleSpec:
+    vertex: str
+    start: str
+    end: str
+    kind: str  # 'angle' or 'right'
+    label: Optional[str] = None
+
+
 def generate_tikz_document(
     program: Program,
     point_coords: Mapping[str, Tuple[float, float]],
@@ -102,12 +118,13 @@ def generate_tikz_code(
         raise TypeError("program must be an instance of Program")
 
     layout_scale = _extract_layout_scale(program)
-    segments = _extract_segments(program)
+    segments, segment_lengths = _extract_segments(program)
     rays = _extract_rays(program)
     lines = _extract_lines(program)
     circles = _extract_circles(program)
     labels = _extract_point_labels(program)
     sidelabels = _extract_sidelabels(program)
+    angles = _extract_angle_markings(program)
 
     tikz: List[str] = []
     tikz.append(f"\\begin{{tikzpicture}}[scale={_format_float(layout_scale)}]")
@@ -145,9 +162,19 @@ def generate_tikz_code(
     if segments or rays or lines or circles:
         tikz.append("")
 
+    angle_lines = _render_angle_markings(angles, coords)
+    if angle_lines:
+        tikz.extend(angle_lines)
+        tikz.append("")
+
     tikz.extend(_render_point_markers(coords, labels))
     if coords:
         tikz.append("")
+
+    sidelabel_edges = {tuple(sorted(edge)) for edge, _, _ in sidelabels}
+    tikz.extend(
+        _render_segment_lengths(segment_lengths.values(), sidelabel_edges, coords)
+    )
     tikz.extend(_render_sidelabels(sidelabels, coords))
 
     tikz.append("\\end{tikzpicture}")
@@ -188,9 +215,12 @@ def _extract_layout_scale(program: Program) -> float:
     return 1.0
 
 
-def _extract_segments(program: Program) -> List[Tuple[str, str]]:
+def _extract_segments(
+    program: Program,
+) -> Tuple[List[Tuple[str, str]], Dict[Tuple[str, str], _SegmentLengthSpec]]:
     seen: Dict[Tuple[str, str], Tuple[str, str]] = {}
     order: List[Tuple[str, str]] = []
+    lengths: Dict[Tuple[str, str], _SegmentLengthSpec] = {}
     for stmt in program.stmts:
         if stmt.kind == "segment":
             edge = tuple(stmt.data.get("edge", ()))
@@ -200,7 +230,11 @@ def _extract_segments(program: Program) -> List[Tuple[str, str]]:
             if key not in seen:
                 seen[key] = edge
                 order.append(edge)
-    return order
+            length_text = _extract_segment_length_text(stmt.opts)
+            if length_text:
+                orientation = seen.get(key, edge)
+                lengths[key] = _SegmentLengthSpec(edge=orientation, text=length_text)
+    return order, lengths
 
 
 def _extract_rays(program: Program) -> List[Tuple[str, str]]:
@@ -277,6 +311,39 @@ def _extract_sidelabels(program: Program) -> List[Tuple[Tuple[str, str], str, Op
     return sidelabels
 
 
+def _extract_angle_markings(program: Program) -> List[_AngleSpec]:
+    angles: List[_AngleSpec] = []
+    for stmt in program.stmts:
+        if stmt.kind == "angle_at":
+            at = stmt.data.get("at")
+            rays = stmt.data.get("rays", ())
+            if not isinstance(at, str) or not isinstance(rays, tuple) or len(rays) != 2:
+                continue
+            start = _ray_endpoint(rays[0], at)
+            end = _ray_endpoint(rays[1], at)
+            if not start or not end:
+                continue
+            label = _format_angle_degrees(stmt.opts.get("degrees")) if stmt.opts else None
+            if label:
+                angles.append(
+                    _AngleSpec(vertex=at, start=start, end=end, kind="angle", label=label)
+                )
+        elif stmt.kind == "right_angle_at":
+            at = stmt.data.get("at")
+            rays = stmt.data.get("rays", ())
+            if not isinstance(at, str) or not isinstance(rays, tuple) or len(rays) != 2:
+                continue
+            mark = stmt.opts.get("mark") if stmt.opts else None
+            if not (isinstance(mark, str) and mark.lower() == "square"):
+                continue
+            start = _ray_endpoint(rays[0], at)
+            end = _ray_endpoint(rays[1], at)
+            if not start or not end:
+                continue
+            angles.append(_AngleSpec(vertex=at, start=start, end=end, kind="right"))
+    return angles
+
+
 def _render_point_markers(
     coords: Mapping[str, Tuple[float, float]],
     labels: Mapping[str, _LabelSpec],
@@ -316,6 +383,57 @@ def _render_sidelabels(
     return lines
 
 
+def _render_segment_lengths(
+    lengths: Iterable[_SegmentLengthSpec],
+    sidelabel_edges: Set[Tuple[str, str]],
+    coords: Mapping[str, Tuple[float, float]],
+) -> List[str]:
+    lines: List[str] = []
+    for spec in lengths:
+        a, b = spec.edge
+        if a not in coords or b not in coords:
+            continue
+        key = tuple(sorted((a, b)))
+        if key in sidelabel_edges:
+            continue
+        formatted = _format_label_text(spec.text)
+        if not formatted:
+            continue
+        lines.append(
+            f"  \\node[labela] at ($({a})!0.5!({b})$) {{{formatted}}};"
+        )
+    return lines
+
+
+def _render_angle_markings(
+    angles: Sequence[_AngleSpec],
+    coords: Mapping[str, Tuple[float, float]],
+) -> List[str]:
+    lines: List[str] = []
+    for spec in angles:
+        vertex, start, end = spec.vertex, spec.start, spec.end
+        if vertex not in coords or start not in coords or end not in coords:
+            continue
+        radius = _compute_angle_radius(coords[vertex], coords[start], coords[end])
+        if spec.kind == "right":
+            lines.append(
+                "  \\pic [draw, angle radius={radius}] {{right angle = ({start})--({vertex})--({end})}};".format(
+                    radius=_format_float(radius), start=start, vertex=vertex, end=end
+                )
+            )
+            continue
+        label_text = _format_label_text(spec.label) if spec.label else ""
+        label_part = ""
+        if label_text:
+            label_part = f', "{_escape_pic_label(label_text)}"'
+        lines.append(
+            "  \\pic [draw, angle eccentricity=1.35, angle radius={radius}{label}] {{angle = ({start})--({vertex})--({end})}};".format(
+                radius=_format_float(radius), label=label_part, start=start, vertex=vertex, end=end
+            )
+        )
+    return lines
+
+
 def _coords_centre(coords: Iterable[Tuple[float, float]]) -> Tuple[float, float]:
     xs = [pt[0] for pt in coords]
     ys = [pt[1] for pt in coords]
@@ -339,6 +457,68 @@ def _format_label_text(text: str) -> str:
     if stripped.startswith("$") and stripped.endswith("$"):
         return stripped
     return f"${stripped}$"
+
+
+def _format_measurement_value(value: object) -> Optional[str]:
+    if isinstance(value, SymbolicNumber):
+        return value.text
+    if isinstance(value, (int, float)):
+        return _format_float(float(value))
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped if stripped else None
+    return None
+
+
+def _extract_segment_length_text(
+    opts: Optional[Mapping[str, object]]
+) -> Optional[str]:
+    if not opts:
+        return None
+    for key in ("length", "distance", "value"):
+        if key in opts:
+            text = _format_measurement_value(opts[key])
+            if text:
+                return text
+    return None
+
+
+def _format_angle_degrees(value: object) -> Optional[str]:
+    text = _format_measurement_value(value)
+    if not text:
+        return None
+    if "\\circ" in text:
+        return text
+    return f"{text}^\\circ"
+
+
+def _compute_angle_radius(
+    vertex: Tuple[float, float],
+    start: Tuple[float, float],
+    end: Tuple[float, float],
+) -> float:
+    dist1 = _distance(vertex, start)
+    dist2 = _distance(vertex, end)
+    min_dist = min(dist1, dist2)
+    if min_dist <= 1e-6:
+        return 0.4
+    radius = max(min_dist * 0.35, 0.35)
+    return min(radius, min_dist * 0.9)
+
+
+def _escape_pic_label(text: str) -> str:
+    return text.replace('"', '\\"')
+
+
+def _ray_endpoint(ray: object, vertex: str) -> Optional[str]:
+    if not isinstance(ray, Sequence) or len(ray) != 2:
+        return None
+    start, end = ray
+    if not isinstance(start, str) or not isinstance(end, str):
+        return None
+    if start != vertex:
+        return None
+    return end
 
 
 def _distance(a: Tuple[float, float], b: Tuple[float, float]) -> float:
