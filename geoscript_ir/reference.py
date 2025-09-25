@@ -108,7 +108,9 @@ _PROMPT_CORE = dedent(
     OPTIONS CHEATSHEET
     - GeoScript only reads the options listed below. Never output bare `[]`, and never invent new keys.
       * Global rules: `no_solving`, `allow_auxiliary`, `no_unicode_degree`, `no_equations_on_sides`, `mark_right_angles_as_square`.
-      * Segment/edge data: `length=<number|sqrt(...)>`, `label="text"`.
+      * Segment/edge data: `length=<number|sqrt(number)|number*sqrt(number)>`, `label="text"`.
+        Square roots must use `sqrt(...)` with parentheses (e.g., `[length=sqrt(5)]` or `[length=3*sqrt(2)]`). Do not use the
+        legacy LaTeX-style backslash-sqrt-with-braces form.
       * Polygon metadata: `bases=A-D` for trapezoids, `isosceles=atB` for isosceles triangles.
       * Angle/arc data: `degrees=<number>`, `label="text"`, `mark=square` for right angles.
       * Point/line markers: `mark=midpoint`, `mark=directed`, `color=<name>` when the prompt specifies styling.
