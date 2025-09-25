@@ -5,6 +5,17 @@ from .ast import Program, Stmt
 
 Ray = Tuple[str, str]
 
+_POLYGON_KINDS = {
+    'polygon',
+    'triangle',
+    'quadrilateral',
+    'parallelogram',
+    'trapezoid',
+    'rectangle',
+    'square',
+    'rhombus',
+}
+
 
 @dataclass
 class ConsistencyWarning:
@@ -47,9 +58,31 @@ def _format_ray(ray: Ray) -> str:
     return f'{ray[0]}-{ray[1]}'
 
 
+def _source_segments(stmts: Iterable[Stmt]) -> set[Ray]:
+    segments: set[Ray] = set()
+    for stmt in stmts:
+        if stmt.kind == 'segment' and stmt.origin == 'source':
+            a, b = _normalize_edge(stmt.data['edge'])
+            segments.add((a, b))
+            segments.add((b, a))
+    return segments
+
+
+def _polygon_edges(ids: Sequence[str]) -> List[Tuple[str, str]]:
+    if len(ids) < 2:
+        return []
+    edges: List[Tuple[str, str]] = []
+    count = len(ids)
+    for idx, a in enumerate(ids):
+        b = ids[(idx + 1) % count]
+        edges.append((a, b))
+    return edges
+
+
 def check_consistency(prog: Program) -> List[ConsistencyWarning]:
     warnings: List[ConsistencyWarning] = []
     supported = _supported_rays(prog.stmts)
+    source_segments = _source_segments(prog.stmts)
 
     for stmt in prog.stmts:
         if stmt.kind in ('angle_at', 'right_angle_at', 'target_angle'):
@@ -65,6 +98,30 @@ def check_consistency(prog: Program) -> List[ConsistencyWarning]:
                 message = (
                     f"[line {stmt.span.line}, col {stmt.span.col}] {stmt.kind} "
                     f"missing support for rays: {rays_text}"
+                )
+                warnings.append(
+                    ConsistencyWarning(
+                        line=stmt.span.line,
+                        col=stmt.span.col,
+                        kind=stmt.kind,
+                        message=message,
+                        hotfixes=hotfixes,
+                    )
+                )
+        elif stmt.kind in _POLYGON_KINDS:
+            ids = stmt.data['ids']
+            missing_edges: List[str] = []
+            for edge in _polygon_edges(ids):
+                edge_norm = _normalize_edge(edge)
+                if edge_norm not in source_segments:
+                    missing_edges.append(_format_ray(edge_norm))
+            if missing_edges:
+                missing_edges = list(dict.fromkeys(missing_edges))
+                missing_text = ', '.join(missing_edges)
+                hotfixes = [f'segment {edge}' for edge in missing_edges]
+                message = (
+                    f"[line {stmt.span.line}, col {stmt.span.col}] {stmt.kind} "
+                    f"missing segments: {missing_text}"
                 )
                 warnings.append(
                     ConsistencyWarning(
