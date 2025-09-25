@@ -26,6 +26,18 @@ def test_diameter_prints_statement():
     assert print_program(prog) == 'diameter A-B to circle center O\n'
 
 
+def test_diameter_prints_points_on_circle_option():
+    stmt = Stmt(
+        'diameter',
+        Span(1, 1),
+        {'edge': ('A', 'B'), 'center': 'O'},
+        {'points_on_circle': True},
+    )
+    prog = Program([stmt])
+
+    assert print_program(prog) == 'diameter A-B to circle center O [points_on_circle=true]\n'
+
+
 def test_original_only_skips_generated_statements():
     original = Stmt('segment', Span(1, 1), {'edge': ('A', 'B')})
     generated = Stmt(

@@ -17,6 +17,7 @@ def test_validate_accepts_valid_program():
             stmt('angle_at', {'at': 'A', 'rays': (('A', 'B'), ('A', 'C'))}),
             stmt('equal_segments', {'lhs': [('A', 'B')], 'rhs': [('C', 'D')]}),
             stmt('circle_through', {'ids': ['A', 'B', 'E']}),
+            stmt('diameter', {'edge': ('A', 'B'), 'center': 'O'}, {'points_on_circle': True}),
             Stmt('rules', Span(7, 1), {}, {'no_solving': True, 'allow_auxiliary': False}),
         ]
     )
@@ -57,6 +58,23 @@ def test_trapezoid_isosceles_must_be_boolean(value, should_error):
         with pytest.raises(ValidationError) as exc:
             validate(prog)
         assert 'trapezoid isosceles' in str(exc.value)
+    else:
+        validate(prog)
+
+
+@pytest.mark.parametrize(
+    'value, should_error',
+    [(None, False), (True, False), (False, False), ('yes', True)],
+)
+def test_diameter_points_on_circle_must_be_boolean(value, should_error):
+    prog = Program([
+        stmt('diameter', {'edge': ('A', 'B'), 'center': 'O'}, {'points_on_circle': value})
+    ])
+
+    if should_error:
+        with pytest.raises(ValidationError) as exc:
+            validate(prog)
+        assert 'diameter points_on_circle' in str(exc.value)
     else:
         validate(prog)
 
