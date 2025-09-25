@@ -49,10 +49,9 @@ def validate(prog: Program) -> None:
             if not s.data['lhs'] or not s.data['rhs']:
                 raise ValidationError(f'[line {s.span.line}, col {s.span.col}] equal-segments needs both sides non-empty')
         elif k == 'diameter':
-            poc = s.opts.get('points_on_circle')
-            if poc not in (None, True, False):
+            for key in s.opts:
                 raise ValidationError(
-                    f'[line {s.span.line}, col {s.span.col}] diameter points_on_circle must be true|false'
+                    f'[line {s.span.line}, col {s.span.col}] diameter does not support option "{key}"'
                 )
         elif k == 'circle_through':
             ids = s.data['ids']

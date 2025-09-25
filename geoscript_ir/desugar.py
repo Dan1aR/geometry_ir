@@ -564,20 +564,20 @@ def desugar_variants(prog: Program) -> List[Program]:
                     source_keys,
                     generated=True,
                 )
-                if s.opts.get('points_on_circle') is True:
-                    for point in segment:
-                        _append(
-                            state,
-                            Stmt(
-                                'point_on',
-                                s.span,
-                                {'point': point, 'path': ('circle', center)},
-                                {},
-                                origin='desugar(diameter)'
-                            ),
-                            source_keys,
-                            generated=True,
-                        )
+                for i, point in enumerate(segment):
+                    radius_point = segment[1 - i]
+                    _append(
+                        state,
+                        Stmt(
+                            'point_on',
+                            s.span,
+                            {'point': point, 'path': ('circle', center)},
+                            {'radius_point': radius_point},
+                            origin='desugar(diameter)'
+                        ),
+                        source_keys,
+                        generated=True,
+                    )
                 _append(
                     state,
                     Stmt(
