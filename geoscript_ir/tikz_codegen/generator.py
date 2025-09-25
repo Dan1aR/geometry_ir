@@ -1,11 +1,13 @@
 """Utilities to translate GeoScript programs into TikZ code."""
 
 import math
+import re
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 from .utils import latex_escape_keep_math
 from ..ast import Program
+from ..numbers import SymbolicNumber
 
 
 standalone_tpl = r"""\documentclass[border=2pt]{standalone}
@@ -59,6 +61,22 @@ _SIDELABEL_POS_TO_STYLE = {
 }
 
 
+@dataclass
+class _SegmentLengthSpec:
+    edge: Tuple[str, str]
+    text: str
+
+
+@dataclass
+class _AngleSpec:
+    vertex: str
+    start: str
+    end: str
+    kind: str  # 'angle' or 'right'
+    label: Optional[str] = None
+    degrees: Optional[float] = None
+
+
 def generate_tikz_document(
     program: Program,
     point_coords: Mapping[str, Tuple[float, float]],
@@ -102,12 +120,13 @@ def generate_tikz_code(
         raise TypeError("program must be an instance of Program")
 
     layout_scale = _extract_layout_scale(program)
-    segments = _extract_segments(program)
+    segments, segment_lengths = _extract_segments(program)
     rays = _extract_rays(program)
     lines = _extract_lines(program)
     circles = _extract_circles(program)
     labels = _extract_point_labels(program)
     sidelabels = _extract_sidelabels(program)
+    angles = _extract_angle_markings(program)
 
     tikz: List[str] = []
     tikz.append(f"\\begin{{tikzpicture}}[scale={_format_float(layout_scale)}]")
@@ -145,9 +164,19 @@ def generate_tikz_code(
     if segments or rays or lines or circles:
         tikz.append("")
 
+    angle_lines = _render_angle_markings(angles, coords)
+    if angle_lines:
+        tikz.extend(angle_lines)
+        tikz.append("")
+
     tikz.extend(_render_point_markers(coords, labels))
     if coords:
         tikz.append("")
+
+    sidelabel_edges = {tuple(sorted(edge)) for edge, _, _ in sidelabels}
+    tikz.extend(
+        _render_segment_lengths(segment_lengths.values(), sidelabel_edges, coords)
+    )
     tikz.extend(_render_sidelabels(sidelabels, coords))
 
     tikz.append("\\end{tikzpicture}")
@@ -188,9 +217,12 @@ def _extract_layout_scale(program: Program) -> float:
     return 1.0
 
 
-def _extract_segments(program: Program) -> List[Tuple[str, str]]:
+def _extract_segments(
+    program: Program,
+) -> Tuple[List[Tuple[str, str]], Dict[Tuple[str, str], _SegmentLengthSpec]]:
     seen: Dict[Tuple[str, str], Tuple[str, str]] = {}
     order: List[Tuple[str, str]] = []
+    lengths: Dict[Tuple[str, str], _SegmentLengthSpec] = {}
     for stmt in program.stmts:
         if stmt.kind == "segment":
             edge = tuple(stmt.data.get("edge", ()))
@@ -200,7 +232,11 @@ def _extract_segments(program: Program) -> List[Tuple[str, str]]:
             if key not in seen:
                 seen[key] = edge
                 order.append(edge)
-    return order
+            length_text = _extract_segment_length_text(stmt.opts)
+            if length_text:
+                orientation = seen.get(key, edge)
+                lengths[key] = _SegmentLengthSpec(edge=orientation, text=length_text)
+    return order, lengths
 
 
 def _extract_rays(program: Program) -> List[Tuple[str, str]]:
@@ -277,6 +313,74 @@ def _extract_sidelabels(program: Program) -> List[Tuple[Tuple[str, str], str, Op
     return sidelabels
 
 
+def _extract_angle_markings(program: Program) -> List[_AngleSpec]:
+    angles: List[_AngleSpec] = []
+    for stmt in program.stmts:
+        if stmt.kind == "angle_at":
+            at = stmt.data.get("at")
+            rays = stmt.data.get("rays", ())
+            if not isinstance(at, str) or not isinstance(rays, tuple) or len(rays) != 2:
+                continue
+            start = _ray_endpoint(rays[0], at)
+            end = _ray_endpoint(rays[1], at)
+            if not start or not end:
+                continue
+            degrees_value = stmt.opts.get("degrees") if stmt.opts else None
+            label, numeric = (
+                _format_angle_label_and_value(degrees_value)
+                if degrees_value is not None
+                else (None, None)
+            )
+            if degrees_value is not None and _is_ninety_degrees(degrees_value):
+                angles.append(
+                    _AngleSpec(
+                        vertex=at,
+                        start=start,
+                        end=end,
+                        kind="right",
+                        label=label,
+                        degrees=numeric,
+                    )
+                )
+            elif label:
+                angles.append(
+                    _AngleSpec(
+                        vertex=at,
+                        start=start,
+                        end=end,
+                        kind="angle",
+                        label=label,
+                        degrees=numeric,
+                    )
+                )
+        elif stmt.kind == "right_angle_at":
+            at = stmt.data.get("at")
+            rays = stmt.data.get("rays", ())
+            if not isinstance(at, str) or not isinstance(rays, tuple) or len(rays) != 2:
+                continue
+            start = _ray_endpoint(rays[0], at)
+            end = _ray_endpoint(rays[1], at)
+            if not start or not end:
+                continue
+            label: Optional[str] = None
+            degrees_numeric: Optional[float] = None
+            if stmt.opts and "degrees" in stmt.opts:
+                label, degrees_numeric = _format_angle_label_and_value(
+                    stmt.opts.get("degrees")
+                )
+            angles.append(
+                _AngleSpec(
+                    vertex=at,
+                    start=start,
+                    end=end,
+                    kind="right",
+                    label=label,
+                    degrees=degrees_numeric,
+                )
+            )
+    return angles
+
+
 def _render_point_markers(
     coords: Mapping[str, Tuple[float, float]],
     labels: Mapping[str, _LabelSpec],
@@ -316,6 +420,83 @@ def _render_sidelabels(
     return lines
 
 
+def _render_segment_lengths(
+    lengths: Iterable[_SegmentLengthSpec],
+    sidelabel_edges: Set[Tuple[str, str]],
+    coords: Mapping[str, Tuple[float, float]],
+) -> List[str]:
+    lines: List[str] = []
+    for spec in lengths:
+        a, b = spec.edge
+        if a not in coords or b not in coords:
+            continue
+        key = tuple(sorted((a, b)))
+        if key in sidelabel_edges:
+            continue
+        formatted = _format_label_text(spec.text)
+        if not formatted:
+            continue
+        lines.append(
+            f"  \\node[labela] at ($({a})!0.5!({b})$) {{{formatted}}};"
+        )
+    return lines
+
+
+def _render_angle_markings(
+    angles: Sequence[_AngleSpec],
+    coords: Mapping[str, Tuple[float, float]],
+) -> List[str]:
+    lines: List[str] = []
+    for spec in angles:
+        vertex = spec.vertex
+        start_name = spec.start
+        end_name = spec.end
+        if (
+            vertex not in coords
+            or start_name not in coords
+            or end_name not in coords
+        ):
+            continue
+        vertex_pt = coords[vertex]
+        start_pt = coords[start_name]
+        end_pt = coords[end_name]
+        if spec.degrees is not None:
+            if _should_swap_angle_rays(vertex_pt, start_pt, end_pt, spec.degrees):
+                start_name, end_name = end_name, start_name
+                start_pt, end_pt = end_pt, start_pt
+        radius = _compute_angle_radius(vertex_pt, start_pt, end_pt)
+        label_text = _format_label_text(spec.label) if spec.label else ""
+        if spec.kind == "right":
+            lines.append(
+                "  \\pic [draw, angle radius={radius}, angle eccentricity=1.12] {{right angle = {start}--{vertex}--{end}}};".format(
+                    radius=_format_float(radius), start=start_name, vertex=vertex, end=end_name
+                )
+            )
+            if label_text:
+                label_pos = _angle_label_position(vertex_pt, start_pt, end_pt, radius)
+                if label_pos:
+                    px, py = label_pos
+                    lines.append(
+                        "  \\node at ({px}, {py}) {{{label}}};".format(
+                            px=_format_float(px), py=_format_float(py), label=label_text
+                        )
+                    )
+            continue
+        arc_cmd = _angle_arc_command(vertex_pt, start_pt, end_pt, radius)
+        if arc_cmd:
+            lines.append(arc_cmd)
+        if label_text:
+            label_pos = _angle_label_position(vertex_pt, start_pt, end_pt, radius)
+            if label_pos:
+                px, py = label_pos
+                lines.append(
+                    "  \\node at ({px}, {py}) {{{label}}};".format(
+                        px=_format_float(px), py=_format_float(py), label=label_text
+                    )
+                )
+    return lines
+
+
 def _coords_centre(coords: Iterable[Tuple[float, float]]) -> Tuple[float, float]:
     xs = [pt[0] for pt in coords]
     ys = [pt[1] for pt in coords]
@@ -332,13 +513,268 @@ def _infer_label_style(point: Tuple[float, float], centre: Tuple[float, float]) 
     return "labela" if dy >= 0 else "labelb"
 
 
+def _latexify_math_text(text: str) -> str:
+    converted, ok = _convert_sqrt_expressions(text)
+    if not ok:
+        return text
+    return _simplify_numeric_times_sqrt(converted)
+
+
+def _convert_sqrt_expressions(text: str) -> Tuple[str, bool]:
+    result: List[str] = []
+    i = 0
+    changed = False
+    while i < len(text):
+        if text.startswith("sqrt(", i):
+            i += 5
+            depth = 1
+            inner_start = i
+            while i < len(text) and depth > 0:
+                ch = text[i]
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                i += 1
+            if depth != 0:
+                return text, False
+            inner_raw = text[inner_start : i - 1]
+            inner_converted, ok = _convert_sqrt_expressions(inner_raw)
+            if not ok:
+                return text, False
+            result.append(r"\sqrt{" + inner_converted + "}")
+            changed = True
+            continue
+        result.append(text[i])
+        i += 1
+    return ("".join(result), True if changed or result else True)
+
+
+_NUMERIC_TIMES_SQRT_RE = re.compile(r"(?<![\\w)])(-?\d+(?:\.\d+)?)\s*\*\s*(?=\\sqrt)")
+
+
+def _simplify_numeric_times_sqrt(text: str) -> str:
+    return _NUMERIC_TIMES_SQRT_RE.sub(r"\1", text)
+
+
 def _format_label_text(text: str) -> str:
     stripped = text.strip()
     if not stripped:
         return ""
     if stripped.startswith("$") and stripped.endswith("$"):
         return stripped
-    return f"${stripped}$"
+    return f"${_latexify_math_text(stripped)}$"
+
+
+def _format_measurement_value(value: object) -> Optional[str]:
+    if isinstance(value, SymbolicNumber):
+        return value.text
+    if isinstance(value, (int, float)):
+        return _format_float(float(value))
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped if stripped else None
+    return None
+
+
+def _extract_segment_length_text(
+    opts: Optional[Mapping[str, object]]
+) -> Optional[str]:
+    if not opts:
+        return None
+    for key in ("length", "distance", "value"):
+        if key in opts:
+            text = _format_measurement_value(opts[key])
+            if text:
+                return text
+    return None
+
+
+def _format_angle_label_and_value(value: object) -> Tuple[Optional[str], Optional[float]]:
+    numeric = _coerce_float(value)
+    text = _format_measurement_value(value)
+    if not text:
+        return None, numeric
+    if "\\circ" not in text and "°" not in text:
+        text = f"{text}^\\circ"
+    return text, numeric
+
+
+def _is_ninety_degrees(value: object) -> bool:
+    numeric = _coerce_float(value)
+    if numeric is None:
+        return False
+    return math.isfinite(numeric) and abs(numeric - 90.0) <= 1e-6
+
+
+def _coerce_float(value: object) -> Optional[float]:
+    if isinstance(value, SymbolicNumber):
+        return float(value.value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        cleaned = value.strip().strip("$")
+        cleaned = cleaned.replace("\\,", "")
+        cleaned = cleaned.replace("\\circ", "")
+        cleaned = cleaned.replace("\\deg", "")
+        cleaned = cleaned.replace("°", "")
+        cleaned = cleaned.replace("^", "")
+        cleaned = re.sub(r"[{}]", "", cleaned)
+        try:
+            return float(cleaned)
+        except ValueError:
+            match = re.search(r"-?\d+(?:\.\d+)?", cleaned)
+            if match:
+                try:
+                    return float(match.group(0))
+                except ValueError:
+                    return None
+        return None
+    return None
+
+
+def _compute_angle_radius(
+    vertex: Tuple[float, float],
+    start: Tuple[float, float],
+    end: Tuple[float, float],
+) -> float:
+    dist1 = _distance(vertex, start)
+    dist2 = _distance(vertex, end)
+    min_dist = min(dist1, dist2)
+    if min_dist <= 1e-6:
+        return 0.4
+    radius = max(min_dist * 0.35, 0.35)
+    return min(radius, min_dist * 0.9)
+
+
+def _angle_label_position(
+    vertex: Tuple[float, float],
+    start: Tuple[float, float],
+    end: Tuple[float, float],
+    radius: float,
+) -> Optional[Tuple[float, float]]:
+    dir1 = _normalise_vector((start[0] - vertex[0], start[1] - vertex[1]))
+    dir2 = _normalise_vector((end[0] - vertex[0], end[1] - vertex[1]))
+    if dir1 is None or dir2 is None:
+        return None
+    bisector = (dir1[0] + dir2[0], dir1[1] + dir2[1])
+    norm = _vector_length(bisector)
+    if norm <= 1e-9:
+        return None
+    bisector = (bisector[0] / norm, bisector[1] / norm)
+    offset = radius + max(0.1, radius * 0.15)
+    return (
+        vertex[0] + bisector[0] * offset,
+        vertex[1] + bisector[1] * offset,
+    )
+
+
+def _should_swap_angle_rays(
+    vertex: Tuple[float, float],
+    start: Tuple[float, float],
+    end: Tuple[float, float],
+    target_degrees: float,
+) -> bool:
+    ccw = _counter_clockwise_angle(vertex, start, end)
+    if ccw is None:
+        return False
+    if not math.isfinite(target_degrees):
+        return False
+    target = target_degrees % 360.0
+    if target < 0:
+        target += 360.0
+    alt = (360.0 - ccw) % 360.0
+    current_diff = _angle_difference(ccw, target)
+    alternate_diff = _angle_difference(alt, target)
+    if alternate_diff + 1e-6 < current_diff:
+        return True
+    return False
+
+
+def _counter_clockwise_angle(
+    vertex: Tuple[float, float],
+    start: Tuple[float, float],
+    end: Tuple[float, float],
+) -> Optional[float]:
+    start_vec = (start[0] - vertex[0], start[1] - vertex[1])
+    end_vec = (end[0] - vertex[0], end[1] - vertex[1])
+    if _vector_length(start_vec) <= 1e-9 or _vector_length(end_vec) <= 1e-9:
+        return None
+    cross = start_vec[0] * end_vec[1] - start_vec[1] * end_vec[0]
+    dot = start_vec[0] * end_vec[0] + start_vec[1] * end_vec[1]
+    angle = math.degrees(math.atan2(cross, dot))
+    if angle < 0:
+        angle += 360.0
+    return angle
+
+
+def _angle_difference(a: float, b: float) -> float:
+    diff = ((a - b + 180.0) % 360.0) - 180.0
+    return abs(diff)
+
+
+def _angle_arc_command(
+    vertex: Tuple[float, float],
+    start: Tuple[float, float],
+    end: Tuple[float, float],
+    radius: float,
+) -> Optional[str]:
+    start_vec = (start[0] - vertex[0], start[1] - vertex[1])
+    end_vec = (end[0] - vertex[0], end[1] - vertex[1])
+    start_dir = _normalise_vector(start_vec)
+    end_dir = _normalise_vector(end_vec)
+    if start_dir is None or end_dir is None:
+        return None
+    start_angle = math.degrees(math.atan2(start_dir[1], start_dir[0]))
+    end_angle = math.degrees(math.atan2(end_dir[1], end_dir[0]))
+    delta = (end_angle - start_angle) % 360.0
+    if delta <= 1e-3:
+        return None
+    end_angle = start_angle + delta
+    sx = _format_float(start_dir[0] * radius)
+    sy = _format_float(start_dir[1] * radius)
+    vx = _format_float(vertex[0])
+    vy = _format_float(vertex[1])
+    radius_str = _format_float(radius)
+    options = ", ".join(
+        [
+            f"shift={{({vx},{vy})}}",
+            "line cap=round",
+            "line width=0.6pt",
+        ]
+    )
+    return (
+        "  \\draw[{options}] ({sx}, {sy}) arc[start angle={sa}, end angle={ea}, radius={radius}];".format(
+            options=options,
+            sx=sx,
+            sy=sy,
+            sa=_format_float(start_angle),
+            ea=_format_float(end_angle),
+            radius=radius_str,
+        )
+    )
+
+
+def _normalise_vector(vec: Tuple[float, float]) -> Optional[Tuple[float, float]]:
+    length = _vector_length(vec)
+    if length <= 1e-9:
+        return None
+    return (vec[0] / length, vec[1] / length)
+
+
+def _vector_length(vec: Tuple[float, float]) -> float:
+    return math.hypot(vec[0], vec[1])
+
+
+def _ray_endpoint(ray: object, vertex: str) -> Optional[str]:
+    if not isinstance(ray, Sequence) or len(ray) != 2:
+        return None
+    start, end = ray
+    if not isinstance(start, str) or not isinstance(end, str):
+        return None
+    if start != vertex:
+        return None
+    return end
 
 
 def _distance(a: Tuple[float, float], b: Tuple[float, float]) -> float:

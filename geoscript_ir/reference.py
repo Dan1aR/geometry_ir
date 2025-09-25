@@ -181,6 +181,18 @@ _PROMPT_CORE = dedent(
       intersect (angle-bisector at C rays C-A C-B) with (segment A-B) at D
       intersect (median from C to A-B) with (segment A-B) at M
       target angle at C rays C-D C-M [label="?"]
+    - Example 4
+      Input: "Circle with center O has diameter AB. Points C and D lie on the circle. Find angle ACB."
+      Output (lines to place inside the geoscript wrapper shown above):
+      scene "Circle with diameter AB; find angle ACB"
+      layout canonical=generic scale=1
+      points A, B, C, D, O
+      segment A-B
+      circle center O radius-through A
+      diameter A-B to circle center O
+      point C on circle center O
+      point D on circle center O
+      target angle at C rays C-A C-B [label="?ACB"]
     """
 ).strip()
 
