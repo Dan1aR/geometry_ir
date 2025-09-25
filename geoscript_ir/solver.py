@@ -1120,11 +1120,10 @@ def solve(model: Model, options: SolveOptions = SolveOptions()) -> Solution:
     # caller requests a single attempt (the additional retries only kick in when
     # the best residual is still large, e.g. >1e-4).
     fallback_limit = base_attempts + 2
-    attempt = 0
-    while attempt < base_attempts or (
-        attempt < fallback_limit and best_residual > 1e-4
-    ):
-        x0 = _initial_guess(model, rng, attempt)
+    def run_attempt(attempt_index: int) -> Tuple[float, bool]:
+        nonlocal best_result, best_residual
+
+        x0 = _initial_guess(model, rng, attempt_index)
 
         def fun(x: np.ndarray) -> np.ndarray:
             vals, _ = _evaluate(model, x)
@@ -1149,11 +1148,33 @@ def solve(model: Model, options: SolveOptions = SolveOptions()) -> Solution:
             best_result = (score, max_res, result.x, breakdown, converged)
 
         best_residual = min(best_residual, max_res)
+        return max_res, converged
 
+    any_converged = False
+    for attempt in range(base_attempts):
+        max_res, converged = run_attempt(attempt)
+        if converged:
+            any_converged = True
         if not converged and attempt < base_attempts - 1:
             warnings.append(f"reseed attempt {attempt + 2} after residual max {max_res:.3e}")
 
-        attempt += 1
+    total_attempts = base_attempts
+    while (
+        not any_converged
+        and total_attempts < fallback_limit
+        and best_residual > 1e-4
+    ):
+        max_res, converged = run_attempt(total_attempts)
+        if converged:
+            any_converged = True
+        next_attempt = total_attempts + 1
+        if (
+            not converged
+            and next_attempt < fallback_limit
+            and best_residual > 1e-4
+        ):
+            warnings.append(f"reseed attempt {total_attempts + 2} after residual max {max_res:.3e}")
+        total_attempts = next_attempt
 
     if best_result is None:
         raise RuntimeError("solver failed to evaluate residuals")
