@@ -6,6 +6,7 @@ from .printer import print_program
 from .ast import Program, Stmt, Span
 from .reference import BNF, LLM_PROMPT, get_llm_prompt
 from .reference_tikz import GEOSCRIPT_TO_TIKZ_PROMPT
+from .tikz_codegen import generate_tikz_code, generate_tikz_document, latex_escape_keep_math
 from .solver import (
     translate,
     solve,
@@ -44,5 +45,8 @@ __all__ = [
     'LLM_PROMPT',
     'get_llm_prompt',
     'GEOSCRIPT_TO_TIKZ_PROMPT',
+    'generate_tikz_code',
+    'generate_tikz_document',
+    'latex_escape_keep_math',
     'score_solution',
 ]

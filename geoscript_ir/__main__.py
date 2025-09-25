@@ -1,12 +1,14 @@
 import argparse
 import logging
 import sys
+from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 from geoscript_ir import (
     check_consistency,
     ConsistencyWarning,
     desugar_variants,
+    generate_tikz_document,
     parse_program,
     print_program,
     validate,
@@ -44,6 +46,12 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         type=int,
         default=10,
         help="Number of solver reseed attempts (default: 10)",
+    )
+    parser.add_argument(
+        "--tikz-output-path",
+        help=(
+            "Write a standalone TikZ document for the best variant to the given path"
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -146,6 +154,18 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         print("Solver warnings:")
         for warning in best_solution.warnings:
             print(f"  - {warning}")
+
+    if args.tikz_output_path:
+        output_path = Path(args.tikz_output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info("Writing TikZ document to %s", output_path)
+        tikz_document = generate_tikz_document(
+            best_program,
+            best_solution.point_coords,
+            normalize=True,
+        )
+        output_path.write_text(tikz_document, encoding="utf-8")
+        print(f"TikZ document written to {output_path}")
 
 
 if __name__ == "__main__":
