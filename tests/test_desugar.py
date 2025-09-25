@@ -227,34 +227,28 @@ def test_diameter_desugars_to_point_on_segment_and_equal_radii():
     out = desugar(Program([diameter_stmt]))
 
     generated = [s for s in out.stmts if s.origin == 'desugar(diameter)']
-    assert len(generated) == 2
+    assert len(generated) == 4
 
-    point_on = next(s for s in generated if s.kind == 'point_on')
-    assert point_on.data == {'point': 'O', 'path': ('segment', ('A', 'B'))}
+    point_on_segment = next(
+        s
+        for s in generated
+        if s.kind == 'point_on' and s.data['path'] == ('segment', ('A', 'B'))
+    )
+    assert point_on_segment.data == {'point': 'O', 'path': ('segment', ('A', 'B'))}
+
+    circle_point_on = [
+        s for s in generated if s.kind == 'point_on' and s.data['path'] == ('circle', 'O')
+    ]
+    assert len(circle_point_on) == 2
+    assert {s.data['point'] for s in circle_point_on} == {'A', 'B'}
+    assert next(s.opts for s in circle_point_on if s.data['point'] == 'A') == {'radius_point': 'B'}
+    assert next(s.opts for s in circle_point_on if s.data['point'] == 'B') == {'radius_point': 'A'}
 
     equal_segments = next(s for s in generated if s.kind == 'equal_segments')
     assert equal_segments.data == {
         'lhs': [('O', 'A')],
         'rhs': [('O', 'B')],
     }
-
-
-def test_diameter_points_option_places_endpoints_on_circle():
-    diameter_stmt = stmt(
-        'diameter',
-        {'edge': ('A', 'B'), 'center': 'O'},
-        {'points_on_circle': True},
-    )
-
-    out = desugar(Program([diameter_stmt]))
-
-    generated = [s for s in out.stmts if s.origin == 'desugar(diameter)']
-    circle_point_on = [
-        s for s in generated if s.kind == 'point_on' and s.data['path'] == ('circle', 'O')
-    ]
-
-    assert len(circle_point_on) == 2
-    assert {s.data['point'] for s in circle_point_on} == {'A', 'B'}
 
 
 def test_circle_through_creates_center_and_equal_radii():

@@ -76,6 +76,14 @@ def test_diameter_adds_point_on_segment_and_radius_residuals():
     assert len(equal_segments_specs) == 1
     assert equal_segments_specs[0].source.origin == "desugar(diameter)"
 
+    circle_specs = [
+        spec
+        for spec in model.residuals
+        if spec.key in {"point_on_circle(A,O)", "point_on_circle(B,O)"}
+    ]
+    assert {spec.key for spec in circle_specs} == {"point_on_circle(A,O)", "point_on_circle(B,O)"}
+    assert {spec.source.origin for spec in circle_specs} == {"desugar(diameter)"}
+
 
 def test_solver_right_triangle_solution_is_stable():
     model = _build_model(
