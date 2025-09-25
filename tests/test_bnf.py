@@ -230,6 +230,13 @@ def test_placements():
         'path': ('median', {'frm': 'C', 'to': ('A', 'B')}),
     }
 
+    pt_on_altitude = parse_single('point H on altitude from A to B-C')
+    assert pt_on_altitude.kind == 'point_on'
+    assert pt_on_altitude.data == {
+        'point': 'H',
+        'path': ('altitude', {'frm': 'A', 'to': ('B', 'C')}),
+    }
+
     inter = parse_single('intersect (line A-B) with (circle center O) at P, Q [type=external]')
     assert inter.kind == 'intersect'
     assert inter.data == {
@@ -255,6 +262,15 @@ def test_placements():
         'path1': ('perpendicular', {'at': 'O', 'to': ('C', 'D')}),
         'path2': ('line', ('C', 'D')),
         'at': 'M',
+        'at2': None,
+    }
+
+    inter4 = parse_single('intersect (altitude from A to B-C) with (segment B-C) at H')
+    assert inter4.kind == 'intersect'
+    assert inter4.data == {
+        'path1': ('altitude', {'frm': 'A', 'to': ('B', 'C')}),
+        'path2': ('segment', ('B', 'C')),
+        'at': 'H',
         'at2': None,
     }
 
