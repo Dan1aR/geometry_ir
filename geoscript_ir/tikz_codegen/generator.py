@@ -324,8 +324,17 @@ def _extract_angle_markings(program: Program) -> List[_AngleSpec]:
             end = _ray_endpoint(rays[1], at)
             if not start or not end:
                 continue
-            label = _format_angle_degrees(stmt.opts.get("degrees")) if stmt.opts else None
-            if label:
+            degrees_value = stmt.opts.get("degrees") if stmt.opts else None
+            label = (
+                _format_angle_degrees(degrees_value)
+                if degrees_value is not None
+                else None
+            )
+            if degrees_value is not None and _is_ninety_degrees(degrees_value):
+                angles.append(
+                    _AngleSpec(vertex=at, start=start, end=end, kind="right", label=label)
+                )
+            elif label:
                 angles.append(
                     _AngleSpec(vertex=at, start=start, end=end, kind="angle", label=label)
                 )
@@ -334,16 +343,16 @@ def _extract_angle_markings(program: Program) -> List[_AngleSpec]:
             rays = stmt.data.get("rays", ())
             if not isinstance(at, str) or not isinstance(rays, tuple) or len(rays) != 2:
                 continue
-            mark = stmt.opts.get("mark") if stmt.opts else None
-            if mark not in (None, "") and not (
-                isinstance(mark, str) and mark.lower() == "square"
-            ):
-                continue
             start = _ray_endpoint(rays[0], at)
             end = _ray_endpoint(rays[1], at)
             if not start or not end:
                 continue
-            angles.append(_AngleSpec(vertex=at, start=start, end=end, kind="right"))
+            label = None
+            if stmt.opts and "degrees" in stmt.opts:
+                label = _format_angle_degrees(stmt.opts.get("degrees"))
+            angles.append(
+                _AngleSpec(vertex=at, start=start, end=end, kind="right", label=label)
+            )
     return angles
 
 
@@ -419,14 +428,23 @@ def _render_angle_markings(
             continue
         vertex_pt, start_pt, end_pt = coords[vertex], coords[start], coords[end]
         radius = _compute_angle_radius(vertex_pt, start_pt, end_pt)
+        label_text = _format_label_text(spec.label) if spec.label else ""
         if spec.kind == "right":
             lines.append(
                 "  \\pic [draw, angle radius={radius}, angle eccentricity=1.12] {{right angle = {start}--{vertex}--{end}}};".format(
                     radius=_format_float(radius), start=start, vertex=vertex, end=end
                 )
             )
+            if label_text:
+                label_pos = _angle_label_position(vertex_pt, start_pt, end_pt, radius)
+                if label_pos:
+                    px, py = label_pos
+                    lines.append(
+                        "  \\node at ({px}, {py}) {{{label}}};".format(
+                            px=_format_float(px), py=_format_float(py), label=label_text
+                        )
+                    )
             continue
-        label_text = _format_label_text(spec.label) if spec.label else ""
         arc_cmd = _angle_arc_command(vertex_pt, start_pt, end_pt, radius)
         if arc_cmd:
             lines.append(arc_cmd)
@@ -542,6 +560,39 @@ def _format_angle_degrees(value: object) -> Optional[str]:
     if "\\circ" in text:
         return text
     return f"{text}^\\circ"
+
+
+def _is_ninety_degrees(value: object) -> bool:
+    numeric = _coerce_float(value)
+    if numeric is None:
+        return False
+    return math.isfinite(numeric) and abs(numeric - 90.0) <= 1e-6
+
+
+def _coerce_float(value: object) -> Optional[float]:
+    if isinstance(value, SymbolicNumber):
+        return float(value.value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        cleaned = value.strip().strip("$")
+        cleaned = cleaned.replace("\\,", "")
+        cleaned = cleaned.replace("\\circ", "")
+        cleaned = cleaned.replace("\\deg", "")
+        cleaned = cleaned.replace("°", "")
+        cleaned = cleaned.replace("^", "")
+        cleaned = re.sub(r"[{}]", "", cleaned)
+        try:
+            return float(cleaned)
+        except ValueError:
+            match = re.search(r"-?\d+(?:\.\d+)?", cleaned)
+            if match:
+                try:
+                    return float(match.group(0))
+                except ValueError:
+                    return None
+        return None
+    return None
 
 
 def _compute_angle_radius(

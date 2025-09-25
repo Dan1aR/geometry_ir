@@ -132,6 +132,45 @@ def test_right_angle_without_mark_defaults_to_square() -> None:
     assert tikz.count("right angle = A--C--B") == 1
 
 
+def test_angle_with_ninety_degrees_uses_square_pic() -> None:
+    program = Program(
+        [
+            Stmt(
+                "angle_at",
+                Span(1, 1),
+                {"at": "B", "rays": (("B", "C"), ("B", "A"))},
+                {"degrees": 90},
+            )
+        ]
+    )
+    coords = {"A": (0.0, 1.0), "B": (0.0, 0.0), "C": (1.0, 0.0)}
+
+    tikz = generate_tikz_code(program, coords)
+
+    assert "right angle = C--B--A" in tikz
+    assert "{$90^\\circ$};" in tikz
+    assert "arc[start angle=" not in tikz
+
+
+def test_right_angle_with_degrees_adds_label() -> None:
+    program = Program(
+        [
+            Stmt(
+                "right_angle_at",
+                Span(1, 1),
+                {"at": "C", "rays": (("C", "A"), ("C", "B"))},
+                {"degrees": 90},
+            )
+        ]
+    )
+    coords = {"A": (0.0, 0.0), "B": (1.0, 0.0), "C": (0.0, 1.0)}
+
+    tikz = generate_tikz_code(program, coords)
+
+    assert "right angle = A--C--B" in tikz
+    assert tikz.count("{$90^\\circ$};") == 1
+
+
 def test_segment_length_uses_latex_for_sqrt() -> None:
     program = Program(
         [
