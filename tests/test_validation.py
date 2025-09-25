@@ -121,3 +121,19 @@ def test_rules_options_must_be_known_and_boolean():
     with pytest.raises(ValidationError) as exc:
         validate(prog_non_boolean)
     assert 'must be boolean' in str(exc.value)
+
+
+def test_validate_catches_solver_builder_value_errors():
+    prog = Program(
+        [
+            stmt('points', {'ids': ['A', 'B', 'P']}),
+            stmt('point_on', {'point': 'P', 'path': ('perpendicular', {'to': ('A', 'B')})}, line=2, col=5),
+        ]
+    )
+
+    with pytest.raises(ValidationError) as exc:
+        validate(prog)
+
+    message = str(exc.value)
+    assert 'perpendicular path requires an anchor point' in message
+    assert '[line 2, col 5]' in message

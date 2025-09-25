@@ -1,6 +1,9 @@
+from copy import deepcopy
+from typing import List
+
 from .ast import Program
 from .ast import Span
-from typing import List
+from .solver import ResidualBuilderError, translate
 
 class ValidationError(Exception):
     pass
@@ -63,3 +66,11 @@ def validate(prog: Program) -> None:
                     raise ValidationError(f'[line {s.span.line}, col {s.span.col}] unknown rules option "{key}"')
                 if not isinstance(val, bool):
                     raise ValidationError(f'[line {s.span.line}, col {s.span.col}] rules option "{key}" must be boolean')
+
+    try:
+        translate(deepcopy(prog))
+    except ResidualBuilderError as exc:
+        span = exc.stmt.span
+        raise ValidationError(f'[line {span.line}, col {span.col}] {exc}') from exc
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc

@@ -81,6 +81,14 @@ class VariantSolveResult:
     model: Model
     solution: Solution
 
+
+class ResidualBuilderError(ValueError):
+    """Error raised when a residual builder rejects a statement."""
+
+    def __init__(self, stmt: Stmt, message: str):
+        super().__init__(message)
+        self.stmt = stmt
+
 def score_solution(solution: Solution) -> tuple:
     """Score solutions by convergence success then residual size."""
 
@@ -878,7 +886,10 @@ def translate(program: Program) -> Model:
         builder = _RESIDUAL_BUILDERS.get(stmt.kind)
         if not builder:
             continue
-        built = builder(stmt, index)
+        try:
+            built = builder(stmt, index)
+        except ValueError as exc:
+            raise ResidualBuilderError(stmt, str(exc)) from exc
         residuals.extend(built)
 
     # global guards
