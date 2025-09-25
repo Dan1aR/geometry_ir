@@ -74,6 +74,7 @@ class _AngleSpec:
     end: str
     kind: str  # 'angle' or 'right'
     label: Optional[str] = None
+    degrees: Optional[float] = None
 
 
 def generate_tikz_document(
@@ -325,18 +326,32 @@ def _extract_angle_markings(program: Program) -> List[_AngleSpec]:
             if not start or not end:
                 continue
             degrees_value = stmt.opts.get("degrees") if stmt.opts else None
-            label = (
-                _format_angle_degrees(degrees_value)
+            label, numeric = (
+                _format_angle_label_and_value(degrees_value)
                 if degrees_value is not None
-                else None
+                else (None, None)
             )
             if degrees_value is not None and _is_ninety_degrees(degrees_value):
                 angles.append(
-                    _AngleSpec(vertex=at, start=start, end=end, kind="right", label=label)
+                    _AngleSpec(
+                        vertex=at,
+                        start=start,
+                        end=end,
+                        kind="right",
+                        label=label,
+                        degrees=numeric,
+                    )
                 )
             elif label:
                 angles.append(
-                    _AngleSpec(vertex=at, start=start, end=end, kind="angle", label=label)
+                    _AngleSpec(
+                        vertex=at,
+                        start=start,
+                        end=end,
+                        kind="angle",
+                        label=label,
+                        degrees=numeric,
+                    )
                 )
         elif stmt.kind == "right_angle_at":
             at = stmt.data.get("at")
@@ -347,11 +362,21 @@ def _extract_angle_markings(program: Program) -> List[_AngleSpec]:
             end = _ray_endpoint(rays[1], at)
             if not start or not end:
                 continue
-            label = None
+            label: Optional[str] = None
+            degrees_numeric: Optional[float] = None
             if stmt.opts and "degrees" in stmt.opts:
-                label = _format_angle_degrees(stmt.opts.get("degrees"))
+                label, degrees_numeric = _format_angle_label_and_value(
+                    stmt.opts.get("degrees")
+                )
             angles.append(
-                _AngleSpec(vertex=at, start=start, end=end, kind="right", label=label)
+                _AngleSpec(
+                    vertex=at,
+                    start=start,
+                    end=end,
+                    kind="right",
+                    label=label,
+                    degrees=degrees_numeric,
+                )
             )
     return angles
 
@@ -423,16 +448,28 @@ def _render_angle_markings(
 ) -> List[str]:
     lines: List[str] = []
     for spec in angles:
-        vertex, start, end = spec.vertex, spec.start, spec.end
-        if vertex not in coords or start not in coords or end not in coords:
+        vertex = spec.vertex
+        start_name = spec.start
+        end_name = spec.end
+        if (
+            vertex not in coords
+            or start_name not in coords
+            or end_name not in coords
+        ):
             continue
-        vertex_pt, start_pt, end_pt = coords[vertex], coords[start], coords[end]
+        vertex_pt = coords[vertex]
+        start_pt = coords[start_name]
+        end_pt = coords[end_name]
+        if spec.degrees is not None:
+            if _should_swap_angle_rays(vertex_pt, start_pt, end_pt, spec.degrees):
+                start_name, end_name = end_name, start_name
+                start_pt, end_pt = end_pt, start_pt
         radius = _compute_angle_radius(vertex_pt, start_pt, end_pt)
         label_text = _format_label_text(spec.label) if spec.label else ""
         if spec.kind == "right":
             lines.append(
                 "  \\pic [draw, angle radius={radius}, angle eccentricity=1.12] {{right angle = {start}--{vertex}--{end}}};".format(
-                    radius=_format_float(radius), start=start, vertex=vertex, end=end
+                    radius=_format_float(radius), start=start_name, vertex=vertex, end=end_name
                 )
             )
             if label_text:
@@ -553,13 +590,14 @@ def _extract_segment_length_text(
     return None
 
 
-def _format_angle_degrees(value: object) -> Optional[str]:
+def _format_angle_label_and_value(value: object) -> Tuple[Optional[str], Optional[float]]:
+    numeric = _coerce_float(value)
     text = _format_measurement_value(value)
     if not text:
-        return None
-    if "\\circ" in text:
-        return text
-    return f"{text}^\\circ"
+        return None, numeric
+    if "\\circ" not in text and "°" not in text:
+        text = f"{text}^\\circ"
+    return text, numeric
 
 
 def _is_ninety_degrees(value: object) -> bool:
@@ -629,6 +667,50 @@ def _angle_label_position(
         vertex[0] + bisector[0] * offset,
         vertex[1] + bisector[1] * offset,
     )
+
+
+def _should_swap_angle_rays(
+    vertex: Tuple[float, float],
+    start: Tuple[float, float],
+    end: Tuple[float, float],
+    target_degrees: float,
+) -> bool:
+    ccw = _counter_clockwise_angle(vertex, start, end)
+    if ccw is None:
+        return False
+    if not math.isfinite(target_degrees):
+        return False
+    target = target_degrees % 360.0
+    if target < 0:
+        target += 360.0
+    alt = (360.0 - ccw) % 360.0
+    current_diff = _angle_difference(ccw, target)
+    alternate_diff = _angle_difference(alt, target)
+    if alternate_diff + 1e-6 < current_diff:
+        return True
+    return False
+
+
+def _counter_clockwise_angle(
+    vertex: Tuple[float, float],
+    start: Tuple[float, float],
+    end: Tuple[float, float],
+) -> Optional[float]:
+    start_vec = (start[0] - vertex[0], start[1] - vertex[1])
+    end_vec = (end[0] - vertex[0], end[1] - vertex[1])
+    if _vector_length(start_vec) <= 1e-9 or _vector_length(end_vec) <= 1e-9:
+        return None
+    cross = start_vec[0] * end_vec[1] - start_vec[1] * end_vec[0]
+    dot = start_vec[0] * end_vec[0] + start_vec[1] * end_vec[1]
+    angle = math.degrees(math.atan2(cross, dot))
+    if angle < 0:
+        angle += 360.0
+    return angle
+
+
+def _angle_difference(a: float, b: float) -> float:
+    diff = ((a - b + 180.0) % 360.0) - 180.0
+    return abs(diff)
 
 
 def _angle_arc_command(

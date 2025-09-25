@@ -152,6 +152,24 @@ def test_angle_with_ninety_degrees_uses_square_pic() -> None:
     assert "arc[start angle=" not in tikz
 
 
+def test_angle_with_ninety_degrees_reorders_rays_for_square() -> None:
+    program = Program(
+        [
+            Stmt(
+                "angle_at",
+                Span(1, 1),
+                {"at": "B", "rays": (("B", "A"), ("B", "C"))},
+                {"degrees": 90},
+            )
+        ]
+    )
+    coords = {"A": (0.0, 1.0), "B": (0.0, 0.0), "C": (1.0, 0.0)}
+
+    tikz = generate_tikz_code(program, coords)
+
+    assert "right angle = C--B--A" in tikz
+
+
 def test_right_angle_with_degrees_adds_label() -> None:
     program = Program(
         [
@@ -206,3 +224,21 @@ def test_numeric_times_sqrt_compacts_without_multiplication_sign() -> None:
 
     assert "3\\sqrt{5}" in tikz
     assert "3*\\sqrt{5}" not in tikz
+
+
+def test_angle_measurement_chooses_major_arc_when_needed() -> None:
+    program = Program(
+        [
+            Stmt(
+                "angle_at",
+                Span(1, 1),
+                {"at": "B", "rays": (("B", "C"), ("B", "A"))},
+                {"degrees": 270},
+            )
+        ]
+    )
+    coords = {"A": (0.0, 1.0), "B": (0.0, 0.0), "C": (1.0, 0.0)}
+
+    tikz = generate_tikz_code(program, coords)
+
+    assert "arc[start angle=90, end angle=360" in tikz
