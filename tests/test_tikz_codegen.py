@@ -89,8 +89,8 @@ def test_angle_measurement_pic_with_degrees() -> None:
 
     tikz = generate_tikz_code(program, coords)
 
-    assert "\\pic [draw" in tikz
-    assert "angle = C--B--A" in tikz
+    assert "\\draw[shift={(0,0)}, line cap=round" in tikz
+    assert "arc[start angle=" in tikz
     assert "\\node at (" in tikz
     assert "{$107^\\circ$};" in tikz
 
@@ -111,6 +111,25 @@ def test_right_angle_marked_with_square_pic() -> None:
     tikz = generate_tikz_code(program, coords)
 
     assert "right angle = A--C--B" in tikz
+    assert "angle eccentricity=1.12" in tikz
+
+
+def test_right_angle_without_mark_defaults_to_square() -> None:
+    program = Program(
+        [
+            Stmt(
+                "right_angle_at",
+                Span(1, 1),
+                {"at": "C", "rays": (("C", "A"), ("C", "B"))},
+                {},
+            )
+        ]
+    )
+    coords = {"A": (0.0, 0.0), "B": (1.0, 0.0), "C": (0.0, 1.0)}
+
+    tikz = generate_tikz_code(program, coords)
+
+    assert tikz.count("right angle = A--C--B") == 1
 
 
 def test_segment_length_uses_latex_for_sqrt() -> None:
@@ -129,3 +148,22 @@ def test_segment_length_uses_latex_for_sqrt() -> None:
     tikz = generate_tikz_code(program, coords)
 
     assert "\\sqrt{19}" in tikz
+
+
+def test_numeric_times_sqrt_compacts_without_multiplication_sign() -> None:
+    program = Program(
+        [
+            Stmt(
+                "segment",
+                Span(1, 1),
+                {"edge": ("A", "B")},
+                {"length": SymbolicNumber("3*sqrt(5)", value=3 * math.sqrt(5))},
+            )
+        ]
+    )
+    coords = {"A": (0.0, 0.0), "B": (1.0, 0.0)}
+
+    tikz = generate_tikz_code(program, coords)
+
+    assert "3\\sqrt{5}" in tikz
+    assert "3*\\sqrt{5}" not in tikz

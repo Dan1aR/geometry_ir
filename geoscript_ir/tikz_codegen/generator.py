@@ -1,6 +1,7 @@
 """Utilities to translate GeoScript programs into TikZ code."""
 
 import math
+import re
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
@@ -334,7 +335,9 @@ def _extract_angle_markings(program: Program) -> List[_AngleSpec]:
             if not isinstance(at, str) or not isinstance(rays, tuple) or len(rays) != 2:
                 continue
             mark = stmt.opts.get("mark") if stmt.opts else None
-            if not (isinstance(mark, str) and mark.lower() == "square"):
+            if mark not in (None, "") and not (
+                isinstance(mark, str) and mark.lower() == "square"
+            ):
                 continue
             start = _ray_endpoint(rays[0], at)
             end = _ray_endpoint(rays[1], at)
@@ -418,17 +421,15 @@ def _render_angle_markings(
         radius = _compute_angle_radius(vertex_pt, start_pt, end_pt)
         if spec.kind == "right":
             lines.append(
-                "  \\pic [draw, angle radius={radius}] {{right angle = {start}--{vertex}--{end}}};".format(
+                "  \\pic [draw, angle radius={radius}, angle eccentricity=1.12] {{right angle = {start}--{vertex}--{end}}};".format(
                     radius=_format_float(radius), start=start, vertex=vertex, end=end
                 )
             )
             continue
         label_text = _format_label_text(spec.label) if spec.label else ""
-        lines.append(
-            "  \\pic [draw, angle radius={radius}] {{angle = {start}--{vertex}--{end}}};".format(
-                radius=_format_float(radius), start=start, vertex=vertex, end=end
-            )
-        )
+        arc_cmd = _angle_arc_command(vertex_pt, start_pt, end_pt, radius)
+        if arc_cmd:
+            lines.append(arc_cmd)
         if label_text:
             label_pos = _angle_label_position(vertex_pt, start_pt, end_pt, radius)
             if label_pos:
@@ -459,7 +460,9 @@ def _infer_label_style(point: Tuple[float, float], centre: Tuple[float, float]) 
 
 def _latexify_math_text(text: str) -> str:
     converted, ok = _convert_sqrt_expressions(text)
-    return converted if ok else text
+    if not ok:
+        return text
+    return _simplify_numeric_times_sqrt(converted)
 
 
 def _convert_sqrt_expressions(text: str) -> Tuple[str, bool]:
@@ -490,6 +493,13 @@ def _convert_sqrt_expressions(text: str) -> Tuple[str, bool]:
         result.append(text[i])
         i += 1
     return ("".join(result), True if changed or result else True)
+
+
+_NUMERIC_TIMES_SQRT_RE = re.compile(r"(?<![\\w)])(-?\d+(?:\.\d+)?)\s*\*\s*(?=\\sqrt)")
+
+
+def _simplify_numeric_times_sqrt(text: str) -> str:
+    return _NUMERIC_TIMES_SQRT_RE.sub(r"\1", text)
 
 
 def _format_label_text(text: str) -> str:
@@ -563,10 +573,52 @@ def _angle_label_position(
     if norm <= 1e-9:
         return None
     bisector = (bisector[0] / norm, bisector[1] / norm)
-    offset = radius + max(0.2, radius * 0.25)
+    offset = radius + max(0.1, radius * 0.15)
     return (
         vertex[0] + bisector[0] * offset,
         vertex[1] + bisector[1] * offset,
+    )
+
+
+def _angle_arc_command(
+    vertex: Tuple[float, float],
+    start: Tuple[float, float],
+    end: Tuple[float, float],
+    radius: float,
+) -> Optional[str]:
+    start_vec = (start[0] - vertex[0], start[1] - vertex[1])
+    end_vec = (end[0] - vertex[0], end[1] - vertex[1])
+    start_dir = _normalise_vector(start_vec)
+    end_dir = _normalise_vector(end_vec)
+    if start_dir is None or end_dir is None:
+        return None
+    start_angle = math.degrees(math.atan2(start_dir[1], start_dir[0]))
+    end_angle = math.degrees(math.atan2(end_dir[1], end_dir[0]))
+    delta = (end_angle - start_angle) % 360.0
+    if delta <= 1e-3:
+        return None
+    end_angle = start_angle + delta
+    sx = _format_float(start_dir[0] * radius)
+    sy = _format_float(start_dir[1] * radius)
+    vx = _format_float(vertex[0])
+    vy = _format_float(vertex[1])
+    radius_str = _format_float(radius)
+    options = ", ".join(
+        [
+            f"shift={{({vx},{vy})}}",
+            "line cap=round",
+            "line width=0.6pt",
+        ]
+    )
+    return (
+        "  \\draw[{options}] ({sx}, {sy}) arc[start angle={sa}, end angle={ea}, radius={radius}];".format(
+            options=options,
+            sx=sx,
+            sy=sy,
+            sa=_format_float(start_angle),
+            ea=_format_float(end_angle),
+            radius=radius_str,
+        )
     )
 
 
