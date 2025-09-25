@@ -162,7 +162,7 @@ _PROMPT_CORE = dedent(
       points A, B, C, D, O, M
       trapezoid A-B-C-D [bases=A-D]
       segment C-D [length=12]
-      intersect (line A-C) with (line B-D) at O
+      intersect (segment A-C) with (segment B-D) at O
       perpendicular at O to C-D
       intersect (perpendicular at O to C-D) with (segment C-D) at M
       segment O-M [length=5]
@@ -181,6 +181,7 @@ _PROMPT_CORE = dedent(
       intersect (angle-bisector at C rays C-A C-B) with (segment A-B) at D
       intersect (median from C to A-B) with (segment A-B) at M
       target angle at C rays C-D C-M [label="?"]
+
     - Example 4
       Input: "Circle with center O has diameter AB. Points C and D lie on the circle. Find angle ACB."
       Output (lines to place inside the geoscript wrapper shown above):
