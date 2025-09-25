@@ -17,3 +17,9 @@ class Stmt:
 @dataclass
 class Program:
     stmts: List[Stmt] = field(default_factory=list)
+
+    @property
+    def source_stmts(self) -> List[Stmt]:
+        """Return only statements that originate from the source program."""
+
+        return [stmt for stmt in self.stmts if stmt.origin == 'source']
