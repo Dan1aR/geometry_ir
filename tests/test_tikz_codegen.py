@@ -1,4 +1,7 @@
+import math
+
 from geoscript_ir.ast import Program, Span, Stmt
+from geoscript_ir.numbers import SymbolicNumber
 from geoscript_ir.tikz_codegen import generate_tikz_code, generate_tikz_document, latex_escape_keep_math
 
 
@@ -88,7 +91,8 @@ def test_angle_measurement_pic_with_degrees() -> None:
 
     assert "\\pic [draw" in tikz
     assert "angle = C--B--A" in tikz
-    assert '"$107^\\circ$"' in tikz
+    assert "\\node at (" in tikz
+    assert "{$107^\\circ$};" in tikz
 
 
 def test_right_angle_marked_with_square_pic() -> None:
@@ -107,3 +111,21 @@ def test_right_angle_marked_with_square_pic() -> None:
     tikz = generate_tikz_code(program, coords)
 
     assert "right angle = A--C--B" in tikz
+
+
+def test_segment_length_uses_latex_for_sqrt() -> None:
+    program = Program(
+        [
+            Stmt(
+                "segment",
+                Span(1, 1),
+                {"edge": ("A", "B")},
+                {"length": SymbolicNumber("sqrt(19)", value=math.sqrt(19))},
+            )
+        ]
+    )
+    coords = {"A": (0.0, 0.0), "B": (3.0, 4.0)}
+
+    tikz = generate_tikz_code(program, coords)
+
+    assert "\\sqrt{19}" in tikz

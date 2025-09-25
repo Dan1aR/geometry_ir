@@ -414,7 +414,8 @@ def _render_angle_markings(
         vertex, start, end = spec.vertex, spec.start, spec.end
         if vertex not in coords or start not in coords or end not in coords:
             continue
-        radius = _compute_angle_radius(coords[vertex], coords[start], coords[end])
+        vertex_pt, start_pt, end_pt = coords[vertex], coords[start], coords[end]
+        radius = _compute_angle_radius(vertex_pt, start_pt, end_pt)
         if spec.kind == "right":
             lines.append(
                 "  \\pic [draw, angle radius={radius}] {{right angle = {start}--{vertex}--{end}}};".format(
@@ -423,14 +424,20 @@ def _render_angle_markings(
             )
             continue
         label_text = _format_label_text(spec.label) if spec.label else ""
-        label_part = ""
-        if label_text:
-            label_part = f', "{_escape_pic_label(label_text)}"'
         lines.append(
-            "  \\pic [draw, angle eccentricity=1.35, angle radius={radius}{label}] {{angle = {start}--{vertex}--{end}}};".format(
-                radius=_format_float(radius), label=label_part, start=start, vertex=vertex, end=end
+            "  \\pic [draw, angle radius={radius}] {{angle = {start}--{vertex}--{end}}};".format(
+                radius=_format_float(radius), start=start, vertex=vertex, end=end
             )
         )
+        if label_text:
+            label_pos = _angle_label_position(vertex_pt, start_pt, end_pt, radius)
+            if label_pos:
+                px, py = label_pos
+                lines.append(
+                    "  \\node at ({px}, {py}) {{{label}}};".format(
+                        px=_format_float(px), py=_format_float(py), label=label_text
+                    )
+                )
     return lines
 
 
@@ -450,13 +457,48 @@ def _infer_label_style(point: Tuple[float, float], centre: Tuple[float, float]) 
     return "labela" if dy >= 0 else "labelb"
 
 
+def _latexify_math_text(text: str) -> str:
+    converted, ok = _convert_sqrt_expressions(text)
+    return converted if ok else text
+
+
+def _convert_sqrt_expressions(text: str) -> Tuple[str, bool]:
+    result: List[str] = []
+    i = 0
+    changed = False
+    while i < len(text):
+        if text.startswith("sqrt(", i):
+            i += 5
+            depth = 1
+            inner_start = i
+            while i < len(text) and depth > 0:
+                ch = text[i]
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                i += 1
+            if depth != 0:
+                return text, False
+            inner_raw = text[inner_start : i - 1]
+            inner_converted, ok = _convert_sqrt_expressions(inner_raw)
+            if not ok:
+                return text, False
+            result.append(r"\sqrt{" + inner_converted + "}")
+            changed = True
+            continue
+        result.append(text[i])
+        i += 1
+    return ("".join(result), True if changed or result else True)
+
+
 def _format_label_text(text: str) -> str:
     stripped = text.strip()
     if not stripped:
         return ""
     if stripped.startswith("$") and stripped.endswith("$"):
         return stripped
-    return f"${stripped}$"
+    return f"${_latexify_math_text(stripped)}$"
 
 
 def _format_measurement_value(value: object) -> Optional[str]:
@@ -506,8 +548,37 @@ def _compute_angle_radius(
     return min(radius, min_dist * 0.9)
 
 
-def _escape_pic_label(text: str) -> str:
-    return text.replace('"', '\\"')
+def _angle_label_position(
+    vertex: Tuple[float, float],
+    start: Tuple[float, float],
+    end: Tuple[float, float],
+    radius: float,
+) -> Optional[Tuple[float, float]]:
+    dir1 = _normalise_vector((start[0] - vertex[0], start[1] - vertex[1]))
+    dir2 = _normalise_vector((end[0] - vertex[0], end[1] - vertex[1]))
+    if dir1 is None or dir2 is None:
+        return None
+    bisector = (dir1[0] + dir2[0], dir1[1] + dir2[1])
+    norm = _vector_length(bisector)
+    if norm <= 1e-9:
+        return None
+    bisector = (bisector[0] / norm, bisector[1] / norm)
+    offset = radius + max(0.2, radius * 0.25)
+    return (
+        vertex[0] + bisector[0] * offset,
+        vertex[1] + bisector[1] * offset,
+    )
+
+
+def _normalise_vector(vec: Tuple[float, float]) -> Optional[Tuple[float, float]]:
+    length = _vector_length(vec)
+    if length <= 1e-9:
+        return None
+    return (vec[0] / length, vec[1] / length)
+
+
+def _vector_length(vec: Tuple[float, float]) -> float:
+    return math.hypot(vec[0], vec[1])
 
 
 def _ray_endpoint(ray: object, vertex: str) -> Optional[str]:
