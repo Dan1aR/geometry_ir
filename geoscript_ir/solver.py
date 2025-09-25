@@ -1109,7 +1109,10 @@ def _evaluate(model: Model, x: np.ndarray) -> Tuple[np.ndarray, List[Tuple[Resid
 def solve(model: Model, options: SolveOptions = SolveOptions()) -> Solution:
     rng = np.random.default_rng(options.random_seed)
     warnings: List[str] = []
-    best_result: Optional[Tuple[float, np.ndarray, List[Tuple[ResidualSpec, np.ndarray]], bool]] = None
+    best_result: Optional[
+        Tuple[Tuple[int, float], float, np.ndarray, List[Tuple[ResidualSpec, np.ndarray]], bool]
+    ] = None
+    best_residual = math.inf
 
     base_attempts = max(1, options.reseed_attempts)
     # Allow a couple of extra retries when every run so far is clearly outside
@@ -1119,7 +1122,7 @@ def solve(model: Model, options: SolveOptions = SolveOptions()) -> Solution:
     fallback_limit = base_attempts + 2
     attempt = 0
     while attempt < base_attempts or (
-        attempt < fallback_limit and (best_result is None or best_result[0] > 1e-4)
+        attempt < fallback_limit and best_residual > 1e-4
     ):
         x0 = _initial_guess(model, rng, attempt)
 
@@ -1141,13 +1144,13 @@ def solve(model: Model, options: SolveOptions = SolveOptions()) -> Solution:
         max_res = float(np.max(np.abs(vals))) if vals.size else 0.0
         converged = bool(result.success and max_res <= options.tol)
 
-        if best_result is None or max_res < best_result[0]:
-            best_result = (max_res, result.x, breakdown, converged)
+        score = (0 if converged else 1, max_res)
+        if best_result is None or score < best_result[0]:
+            best_result = (score, max_res, result.x, breakdown, converged)
 
-        if converged:
-            break
+        best_residual = min(best_residual, max_res)
 
-        if attempt < base_attempts - 1:
+        if not converged and attempt < base_attempts - 1:
             warnings.append(f"reseed attempt {attempt + 2} after residual max {max_res:.3e}")
 
         attempt += 1
@@ -1155,7 +1158,7 @@ def solve(model: Model, options: SolveOptions = SolveOptions()) -> Solution:
     if best_result is None:
         raise RuntimeError("solver failed to evaluate residuals")
 
-    max_res, best_x, breakdown, converged = best_result
+    _, max_res, best_x, breakdown, converged = best_result
     if not converged:
         warnings.append(
             f"solver did not converge within tolerance {options.tol:.1e}; max residual {max_res:.3e}"
