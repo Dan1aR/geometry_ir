@@ -239,6 +239,24 @@ def test_diameter_desugars_to_point_on_segment_and_equal_radii():
     }
 
 
+def test_diameter_points_option_places_endpoints_on_circle():
+    diameter_stmt = stmt(
+        'diameter',
+        {'edge': ('A', 'B'), 'center': 'O'},
+        {'points_on_circle': True},
+    )
+
+    out = desugar(Program([diameter_stmt]))
+
+    generated = [s for s in out.stmts if s.origin == 'desugar(diameter)']
+    circle_point_on = [
+        s for s in generated if s.kind == 'point_on' and s.data['path'] == ('circle', 'O')
+    ]
+
+    assert len(circle_point_on) == 2
+    assert {s.data['point'] for s in circle_point_on} == {'A', 'B'}
+
+
 def test_circle_through_creates_center_and_equal_radii():
     circle = stmt('circle_through', {'ids': ['A', 'B', 'C', 'D']}, {'label': 'omega'})
 
