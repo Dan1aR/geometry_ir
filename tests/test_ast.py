@@ -12,4 +12,4 @@ def test_program_source_stmts_filters_generated_statements():
 
     program = Program([source_stmt, generated_stmt])
 
-    assert program.source_stmts == [source_stmt]
+    assert program.source_program == Program([source_stmt])
