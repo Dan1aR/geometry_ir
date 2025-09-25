@@ -21,6 +21,9 @@ PY_SRCS(
     geoscript_ir/solver.py
     geoscript_ir/validate.py
     geoscript_ir/numbers.py
+    geoscript_ir/tikz_codegen/__init__.py
+    geoscript_ir/tikz_codegen/generator.py
+    geoscript_ir/tikz_codegen/utils.py
     examples/solve_trapezoid.py
 )
 
