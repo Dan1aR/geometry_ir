@@ -441,10 +441,6 @@ def _extract_angle_markings(program: Program) -> List[_AngleSpec]:
             if not start or not end:
                 continue
             label: Optional[str] = "?"
-            if stmt.opts and "label" in stmt.opts:
-                raw_label = stmt.opts.get("label")
-                if isinstance(raw_label, str):
-                    label = raw_label
             angles.append(
                 _AngleSpec(
                     vertex=at,
