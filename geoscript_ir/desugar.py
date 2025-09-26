@@ -521,6 +521,29 @@ def desugar_variants(prog: Program) -> List[Program]:
                         source_keys,
                         generated=True,
                     )
+        elif s.kind == 'point_on':
+            if s.opts.get('mark') == 'midpoint':
+                point = s.data.get('point')
+                path = s.data.get('path')
+                if isinstance(point, str) and isinstance(path, (list, tuple)) and len(path) == 2:
+                    path_kind, payload = path
+                    if path_kind == 'segment' and isinstance(payload, (list, tuple)) and len(payload) == 2:
+                        start, end = payload
+                        if isinstance(start, str) and isinstance(end, str):
+                            seg1 = edge(point, start)
+                            seg2 = edge(point, end)
+                            for state in states:
+                                _append(
+                                    state,
+                                    Stmt(
+                                        'equal_segments',
+                                        s.span,
+                                        {'lhs': [seg1], 'rhs': [seg2]},
+                                        origin='desugar(midpoint)'
+                                    ),
+                                    source_keys,
+                                    generated=True,
+                                )
         elif s.kind == 'intersect':
             path1 = s.data['path1']
             path2 = s.data['path2']

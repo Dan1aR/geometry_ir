@@ -33,6 +33,27 @@ def test_desugar_skips_duplicate_equal_segments():
     assert eq[0].origin == 'source'
 
 
+def test_point_on_segment_midpoint_creates_equal_segments():
+    midpoint_stmt = stmt(
+        'point_on',
+        {'point': 'M', 'path': ('segment', ('B', 'C'))},
+        {'mark': 'midpoint'},
+    )
+
+    out = desugar(Program([midpoint_stmt]))
+
+    midpoint_generated = [
+        s
+        for s in out.stmts
+        if s.kind == 'equal_segments' and s.origin == 'desugar(midpoint)'
+    ]
+    assert len(midpoint_generated) == 1
+    assert midpoint_generated[0].data == {
+        'lhs': [('M', 'B')],
+        'rhs': [('M', 'C')],
+    }
+
+
 def test_polygon_desugars_into_segments():
     prog = Program([stmt('polygon', {'ids': ['A', 'B', 'C']})])
 
