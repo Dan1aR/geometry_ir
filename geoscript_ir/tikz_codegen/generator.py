@@ -77,6 +77,13 @@ class _AngleSpec:
     degrees: Optional[float] = None
 
 
+@dataclass
+class _TargetLengthSpec:
+    edge: Tuple[str, str]
+    label: str
+    style: Optional[str]
+
+
 def generate_tikz_document(
     program: Program,
     point_coords: Mapping[str, Tuple[float, float]],
@@ -126,6 +133,7 @@ def generate_tikz_code(
     circles = _extract_circles(program)
     labels = _extract_point_labels(program)
     sidelabels = _extract_sidelabels(program)
+    target_lengths = _extract_target_lengths(program)
     angles = _extract_angle_markings(program)
 
     tikz: List[str] = []
@@ -138,6 +146,15 @@ def generate_tikz_code(
             x, y = coords[name]
             tikz.append(f"  \\coordinate ({name}) at ({_format_float(x)}, {_format_float(y)});")
         tikz.append("")
+
+    existing_segment_keys: Set[Tuple[str, str]] = {
+        tuple(sorted(edge)) for edge in segments
+    }
+    for target_spec in target_lengths:
+        key = tuple(sorted(target_spec.edge))
+        if key not in existing_segment_keys:
+            segments.append(target_spec.edge)
+            existing_segment_keys.add(key)
 
     for edge in segments:
         a, b = edge
@@ -174,6 +191,15 @@ def generate_tikz_code(
         tikz.append("")
 
     sidelabel_edges = {tuple(sorted(edge)) for edge, _, _ in sidelabels}
+    for target_spec in target_lengths:
+        key = tuple(sorted(target_spec.edge))
+        if key in sidelabel_edges:
+            continue
+        label = target_spec.label.strip()
+        if not label:
+            continue
+        sidelabels.append((target_spec.edge, target_spec.label, target_spec.style))
+        sidelabel_edges.add(key)
     tikz.extend(
         _render_segment_lengths(segment_lengths.values(), sidelabel_edges, coords)
     )
@@ -236,6 +262,14 @@ def _extract_segments(
             if length_text:
                 orientation = seen.get(key, edge)
                 lengths[key] = _SegmentLengthSpec(edge=orientation, text=length_text)
+        elif stmt.kind == "diameter":
+            edge = tuple(stmt.data.get("edge", ()))
+            if len(edge) != 2:
+                continue
+            key = tuple(sorted(edge))
+            if key not in seen:
+                seen[key] = edge
+                order.append(edge)
     return order, lengths
 
 
@@ -313,6 +347,29 @@ def _extract_sidelabels(program: Program) -> List[Tuple[Tuple[str, str], str, Op
     return sidelabels
 
 
+def _extract_target_lengths(program: Program) -> List[_TargetLengthSpec]:
+    targets: List[_TargetLengthSpec] = []
+    for stmt in program.stmts:
+        if stmt.kind != "target_length":
+            continue
+        edge = tuple(stmt.data.get("edge", ()))
+        if len(edge) != 2:
+            continue
+        label_value: Optional[str] = None
+        if stmt.opts and "label" in stmt.opts:
+            raw_label = stmt.opts.get("label")
+            if isinstance(raw_label, str):
+                label_value = raw_label
+        label = label_value if label_value is not None else "?"
+        pos_style: Optional[str] = None
+        if stmt.opts and "pos" in stmt.opts:
+            raw_pos = stmt.opts.get("pos")
+            if isinstance(raw_pos, str):
+                pos_style = _SIDELABEL_POS_TO_STYLE.get(raw_pos.lower())
+        targets.append(_TargetLengthSpec(edge=edge, label=label, style=pos_style))
+    return targets
+
+
 def _extract_angle_markings(program: Program) -> List[_AngleSpec]:
     angles: List[_AngleSpec] = []
     for stmt in program.stmts:
@@ -376,6 +433,30 @@ def _extract_angle_markings(program: Program) -> List[_AngleSpec]:
                     kind="right",
                     label=label,
                     degrees=degrees_numeric,
+                )
+            )
+        elif stmt.kind == "target_angle":
+            at = stmt.data.get("at")
+            rays = stmt.data.get("rays", ())
+            if not isinstance(at, str) or not isinstance(rays, tuple) or len(rays) != 2:
+                continue
+            start = _ray_endpoint(rays[0], at)
+            end = _ray_endpoint(rays[1], at)
+            if not start or not end:
+                continue
+            label: Optional[str] = "?"
+            if stmt.opts and "label" in stmt.opts:
+                raw_label = stmt.opts.get("label")
+                if isinstance(raw_label, str):
+                    label = raw_label
+            angles.append(
+                _AngleSpec(
+                    vertex=at,
+                    start=start,
+                    end=end,
+                    kind="angle",
+                    label=label,
+                    degrees=None,
                 )
             )
     return angles
