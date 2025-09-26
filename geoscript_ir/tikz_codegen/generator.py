@@ -75,6 +75,7 @@ class _AngleSpec:
     kind: str  # 'angle' or 'right'
     label: Optional[str] = None
     degrees: Optional[float] = None
+    is_target: bool = False
 
 
 @dataclass
@@ -457,6 +458,7 @@ def _extract_angle_markings(program: Program) -> List[_AngleSpec]:
                     kind="angle",
                     label=label,
                     degrees=None,
+                    is_target=True,
                 )
             )
     return angles
@@ -543,6 +545,11 @@ def _render_angle_markings(
         end_pt = coords[end_name]
         if spec.degrees is not None:
             if _should_swap_angle_rays(vertex_pt, start_pt, end_pt, spec.degrees):
+                start_name, end_name = end_name, start_name
+                start_pt, end_pt = end_pt, start_pt
+        elif spec.is_target:
+            ccw = _counter_clockwise_angle(vertex_pt, start_pt, end_pt)
+            if ccw is not None and ccw > 180.0 + 1e-6:
                 start_name, end_name = end_name, start_name
                 start_pt, end_pt = end_pt, start_pt
         radius = _compute_angle_radius(vertex_pt, start_pt, end_pt)
