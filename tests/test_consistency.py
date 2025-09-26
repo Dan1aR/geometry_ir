@@ -119,3 +119,38 @@ def test_polygon_with_segments_has_no_warnings(kind, ids):
     warnings = check_consistency(prog)
     assert warnings == []
 
+
+def test_equal_segments_missing_segments_emits_warning():
+    text = """
+scene "Equality"
+points A, B, C
+equal-segments (A-B ; A-C)
+"""
+    prog = run_pipeline(text)
+    warnings = check_consistency(prog)
+    assert warnings
+    warning = warnings[0]
+    assert warning.kind == 'equal_segments'
+    assert 'A-B' in warning.message and 'A-C' in warning.message
+    assert any(
+        hotfix.kind == 'segment' and hotfix.data['edge'] == ('A', 'B')
+        for hotfix in warning.hotfixes
+    )
+    assert any(
+        hotfix.kind == 'segment' and hotfix.data['edge'] == ('A', 'C')
+        for hotfix in warning.hotfixes
+    )
+
+
+def test_equal_segments_with_segments_has_no_warnings():
+    text = """
+scene "Equality"
+points A, B, C
+segment A-B
+segment A-C
+equal-segments (A-B ; A-C)
+"""
+    prog = run_pipeline(text)
+    warnings = check_consistency(prog)
+    assert warnings == []
+
