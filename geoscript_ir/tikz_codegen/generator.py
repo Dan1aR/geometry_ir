@@ -722,7 +722,7 @@ def _compute_angle_radius(
     min_dist = min(dist1, dist2)
     if min_dist <= 1e-6:
         return 0.4
-    radius = max(min_dist * 0.35, 0.35)
+    radius = max(min_dist * 0.10, 0.10)
     return min(radius, min_dist * 0.9)
 
 
