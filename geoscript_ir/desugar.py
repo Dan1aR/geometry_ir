@@ -53,6 +53,16 @@ def _angle_bisector_vertex(path: object) -> Optional[str]:
     return at if isinstance(at, str) else None
 
 
+def _perpendicular_vertex(path: object) -> Optional[str]:
+    if not isinstance(path, (list, tuple)) or len(path) != 2:
+        return None
+    kind, payload = path
+    if kind != 'perpendicular' or not isinstance(payload, dict):
+        return None
+    at = payload.get('at')
+    return at if isinstance(at, str) else None
+
+
 @dataclass
 class _VariantState:
     program: Program = field(default_factory=Program)
@@ -564,7 +574,17 @@ def desugar_variants(prog: Program) -> List[Program]:
                         source_keys,
                         generated=True,
                     )
-                    for vertex in filter(None, (_angle_bisector_vertex(path1), _angle_bisector_vertex(path2))):
+                    for vertex in _distinct_ids(
+                        filter(
+                            None,
+                            (
+                                _angle_bisector_vertex(path1),
+                                _angle_bisector_vertex(path2),
+                                _perpendicular_vertex(path1),
+                                _perpendicular_vertex(path2),
+                            ),
+                        )
+                    ):
                         _append(
                             state,
                             Stmt('segment', s.span, {'edge': edge(vertex, point)}, origin='desugar(intersect)'),

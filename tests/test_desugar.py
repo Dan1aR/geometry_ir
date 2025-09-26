@@ -242,6 +242,24 @@ def test_intersect_generates_point_on_and_segments():
     assert {s.data['edge'] for s in segments} == {('A', 'D')}
 
 
+def test_intersect_perpendicular_generates_segment_to_anchor():
+    perp = ('perpendicular', {'at': 'D', 'to': ('A', 'C')})
+    segment = ('segment', ('A', 'C'))
+    inter = stmt('intersect', {'path1': perp, 'path2': segment, 'at': 'M', 'at2': None})
+
+    out = desugar(Program([inter]))
+
+    generated = [s for s in out.stmts if s.origin == 'desugar(intersect)']
+    point_on = [s for s in generated if s.kind == 'point_on']
+    assert len(point_on) == 2
+    assert all(s.data['point'] == 'M' for s in point_on)
+    assert any(s.data['path'] == perp for s in point_on)
+    assert any(s.data['path'] == segment for s in point_on)
+
+    segments = [s for s in generated if s.kind == 'segment']
+    assert {s.data['edge'] for s in segments} == {('D', 'M')}
+
+
 def test_diameter_desugars_to_point_on_segment_and_equal_radii():
     diameter_stmt = stmt('diameter', {'edge': ('A', 'B'), 'center': 'O'})
 
