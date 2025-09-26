@@ -356,12 +356,7 @@ def _extract_target_lengths(program: Program) -> List[_TargetLengthSpec]:
         edge = tuple(stmt.data.get("edge", ()))
         if len(edge) != 2:
             continue
-        label_value: Optional[str] = None
-        if stmt.opts and "label" in stmt.opts:
-            raw_label = stmt.opts.get("label")
-            if isinstance(raw_label, str):
-                label_value = raw_label
-        label = label_value if label_value is not None else "?"
+        label = "?"
         pos_style: Optional[str] = None
         if stmt.opts and "pos" in stmt.opts:
             raw_pos = stmt.opts.get("pos")
