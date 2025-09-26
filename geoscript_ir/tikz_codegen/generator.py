@@ -75,6 +75,7 @@ class _AngleSpec:
     kind: str  # 'angle' or 'right'
     label: Optional[str] = None
     degrees: Optional[float] = None
+    is_target: bool = False
 
 
 @dataclass
@@ -355,12 +356,7 @@ def _extract_target_lengths(program: Program) -> List[_TargetLengthSpec]:
         edge = tuple(stmt.data.get("edge", ()))
         if len(edge) != 2:
             continue
-        label_value: Optional[str] = None
-        if stmt.opts and "label" in stmt.opts:
-            raw_label = stmt.opts.get("label")
-            if isinstance(raw_label, str):
-                label_value = raw_label
-        label = label_value if label_value is not None else "?"
+        label = "?"
         pos_style: Optional[str] = None
         if stmt.opts and "pos" in stmt.opts:
             raw_pos = stmt.opts.get("pos")
@@ -445,10 +441,6 @@ def _extract_angle_markings(program: Program) -> List[_AngleSpec]:
             if not start or not end:
                 continue
             label: Optional[str] = "?"
-            if stmt.opts and "label" in stmt.opts:
-                raw_label = stmt.opts.get("label")
-                if isinstance(raw_label, str):
-                    label = raw_label
             angles.append(
                 _AngleSpec(
                     vertex=at,
@@ -457,6 +449,7 @@ def _extract_angle_markings(program: Program) -> List[_AngleSpec]:
                     kind="angle",
                     label=label,
                     degrees=None,
+                    is_target=True,
                 )
             )
     return angles
@@ -543,6 +536,11 @@ def _render_angle_markings(
         end_pt = coords[end_name]
         if spec.degrees is not None:
             if _should_swap_angle_rays(vertex_pt, start_pt, end_pt, spec.degrees):
+                start_name, end_name = end_name, start_name
+                start_pt, end_pt = end_pt, start_pt
+        elif spec.is_target:
+            ccw = _counter_clockwise_angle(vertex_pt, start_pt, end_pt)
+            if ccw is not None and ccw > 180.0 + 1e-6:
                 start_name, end_name = end_name, start_name
                 start_pt, end_pt = end_pt, start_pt
         radius = _compute_angle_radius(vertex_pt, start_pt, end_pt)
