@@ -1293,6 +1293,24 @@ def _evaluate(model: Model, x: np.ndarray) -> Tuple[np.ndarray, List[Tuple[Resid
     return np.zeros(0, dtype=float), breakdown
 
 
+def _describe_derived_point(ref: DerivedPointRef) -> Dict[str, object]:
+    """Return structured metadata describing a derived point reference."""
+
+    node = ref.dag.nodes[ref.node_id]
+    info: Dict[str, object] = {"node_kind": node.kind}
+    if node.kind == "perp_foot":
+        at, a, b = node.payload
+        info.update({"from": at, "to_edge": [a, b]})
+    elif node.kind == "perp_line":
+        # While perpendicular lines are currently only used as intermediates,
+        # include their anchors for completeness should we expose them later.
+        at, a, b = node.payload
+        info.update({"from": at, "to_edge": [a, b]})
+    else:
+        info["payload"] = list(node.payload)
+    return info
+
+
 def solve(model: Model, options: SolveOptions = SolveOptions()) -> Solution:
     rng = np.random.default_rng(options.random_seed)
     warnings: List[str] = []
@@ -1400,6 +1418,27 @@ def solve(model: Model, options: SolveOptions = SolveOptions()) -> Solution:
                 "source_kind": spec.source.kind if spec.source else None,
             }
         )
+
+    if model.derived_points:
+        for name in sorted(model.derived_points):
+            ref = model.derived_points[name]
+            coords_entry = coords.get(name)
+            if coords_entry is None:
+                values_list: List[float] = []
+                max_abs_val = 0.0
+            else:
+                values_list = [float(coords_entry[0]), float(coords_entry[1])]
+                max_abs_val = max(abs(v) for v in values_list)
+            breakdown_info.append(
+                {
+                    "key": f"derived_point({name})",
+                    "kind": "derived_point",
+                    "values": values_list,
+                    "max_abs": max_abs_val,
+                    "source_kind": None,
+                    "derived_from": _describe_derived_point(ref),
+                }
+            )
 
     return Solution(
         point_coords=coords,
