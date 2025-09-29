@@ -199,9 +199,6 @@ def _smooth_hinge(value: float) -> float:
     return 0.5 * (value + math.sqrt(value * value + _HINGE_EPS * _HINGE_EPS))
 
 
-_CURRENT_DAG: Optional[ConstructionDAG] = None
-
-
 def _quadrilateral_edges(x: np.ndarray, index: Dict[PointName, int], ids: Sequence[PointName]) -> List[np.ndarray]:
     points = [_vec(x, index, name) for name in ids]
     return [points[(i + 1) % 4] - points[i] for i in range(4)]
@@ -418,10 +415,13 @@ def _as_edge(value: object) -> Edge:
     raise ValueError(f"expected edge, got {value!r}")
 
 
-def _build_point_on(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
+def _build_point_on(
+    stmt: Stmt,
+    index: Dict[PointName, int],
+    dag: Optional[ConstructionDAG] = None,
+) -> List[ResidualSpec]:
     point = stmt.data["point"]
     path_kind, payload = stmt.data["path"]
-    dag = _CURRENT_DAG
 
     if path_kind in {"line", "segment", "ray"}:
         edge = _as_edge(payload)
@@ -947,21 +947,19 @@ def translate(program: Program) -> Model:
     index = {name: i for i, name in enumerate(order)}
     residuals: List[ResidualSpec] = []
 
-    global _CURRENT_DAG
-    _CURRENT_DAG = dag
-    try:
-        # build residuals from statements
-        for stmt in program.stmts:
-            builder = _RESIDUAL_BUILDERS.get(stmt.kind)
-            if not builder:
-                continue
-            try:
+    # build residuals from statements
+    for stmt in program.stmts:
+        builder = _RESIDUAL_BUILDERS.get(stmt.kind)
+        if not builder:
+            continue
+        try:
+            if builder is _build_point_on:
+                built = _build_point_on(stmt, index, dag)
+            else:
                 built = builder(stmt, index)
-            except ValueError as exc:
-                raise ResidualBuilderError(stmt, str(exc)) from exc
-            residuals.extend(built)
-    finally:
-        _CURRENT_DAG = None
+        except ValueError as exc:
+            raise ResidualBuilderError(stmt, str(exc)) from exc
+        residuals.extend(built)
 
     # global guards
     scene_scale = max(scale_samples) if scale_samples else 1.0
