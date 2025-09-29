@@ -19,6 +19,7 @@ import numpy as np
 from scipy.optimize import least_squares
 
 from .ast import Program, Stmt
+from .constructions import ConstructionDAG
 
 PointName = str
 Edge = Tuple[str, str]
@@ -41,6 +42,7 @@ class Model:
     residuals: List[ResidualSpec]
     gauges: List[str] = field(default_factory=list)
     scale: float = 1.0
+    dag: ConstructionDAG = field(default_factory=ConstructionDAG)
 
 
 @dataclass
@@ -195,6 +197,9 @@ def _normalized_cross(a: np.ndarray, b: np.ndarray) -> float:
 def _smooth_hinge(value: float) -> float:
     # differentiable approx of max(0, value)
     return 0.5 * (value + math.sqrt(value * value + _HINGE_EPS * _HINGE_EPS))
+
+
+_CURRENT_DAG: Optional[ConstructionDAG] = None
 
 
 def _quadrilateral_edges(x: np.ndarray, index: Dict[PointName, int], ids: Sequence[PointName]) -> List[np.ndarray]:
@@ -416,6 +421,7 @@ def _as_edge(value: object) -> Edge:
 def _build_point_on(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
     point = stmt.data["point"]
     path_kind, payload = stmt.data["path"]
+    dag = _CURRENT_DAG
 
     if path_kind in {"line", "segment", "ray"}:
         edge = _as_edge(payload)
@@ -524,13 +530,21 @@ def _build_point_on(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpe
             raise ValueError("perpendicular path requires an anchor point and a target edge")
         to_edge = _as_edge(to_edge_raw)
 
+        if dag is None:
+            raise ValueError("perpendicular path requires an active construction DAG")
+
+        node_id = dag.add_perpendicular(at, to_edge)
+
         def func(x: np.ndarray) -> np.ndarray:
-            origin = _vec(x, index, at)
+            line = dag.eval_line(node_id, x, index)
+            if line is None:
+                return np.array([0.0], dtype=float)
+            origin = line.p
+            d = line.d
             pt = _vec(x, index, point)
-            base = _vec(x, index, to_edge[0])
-            dir_vec = _vec(x, index, to_edge[1]) - base
-            disp = pt - origin
-            return np.array([float(np.dot(dir_vec, disp))], dtype=float)
+            diff = pt - origin
+            val = float(d[0] * diff[1] - d[1] * diff[0])
+            return np.array([val], dtype=float)
 
         key = f"point_on_perpendicular({point},{at};{_format_edge(to_edge)})"
         return [ResidualSpec(key=key, func=func, size=1, kind="point_on_perpendicular", source=stmt)]
@@ -705,6 +719,7 @@ _RESIDUAL_BUILDERS: Dict[str, Callable[[Stmt, Dict[PointName, int]], List[Residu
 def translate(program: Program) -> Model:
     """Translate a validated GeometryIR program into a numeric model."""
 
+    dag = ConstructionDAG()
     order: List[PointName] = []
     seen: Dict[PointName, int] = {}
     distinct_pairs: Set[Edge] = set()
@@ -780,6 +795,20 @@ def translate(program: Program) -> Model:
             if isinstance(to_edge, (list, tuple)):
                 handle_edge(to_edge)
             return
+
+    def _maybe_register_perp_path(path_value: object) -> None:
+        if not isinstance(path_value, (list, tuple)) or len(path_value) != 2:
+            return
+        path_kind, payload = path_value
+        if path_kind != "perpendicular" or not isinstance(payload, dict):
+            return
+        at = payload.get("at")
+        to_edge = payload.get("to")
+        if not isinstance(at, str) or not isinstance(to_edge, (list, tuple)) or len(to_edge) != 2:
+            return
+        a, b = to_edge[0], to_edge[1]
+        if isinstance(a, str) and isinstance(b, str):
+            dag.add_perpendicular(at, (a, b))
 
     # scan program
     for stmt in program.stmts:
@@ -858,10 +887,13 @@ def translate(program: Program) -> Model:
                 handle_edge(edge)
         if "path" in data:
             handle_path(data["path"])
+            _maybe_register_perp_path(data["path"])
         if "path1" in data:
             handle_path(data["path1"])
+            _maybe_register_perp_path(data["path1"])
         if "path2" in data:
             handle_path(data["path2"])
+            _maybe_register_perp_path(data["path2"])
         if "midpoint" in data:
             _register_point(order, seen, data["midpoint"])
         if "foot" in data:
@@ -915,16 +947,21 @@ def translate(program: Program) -> Model:
     index = {name: i for i, name in enumerate(order)}
     residuals: List[ResidualSpec] = []
 
-    # build residuals from statements
-    for stmt in program.stmts:
-        builder = _RESIDUAL_BUILDERS.get(stmt.kind)
-        if not builder:
-            continue
-        try:
-            built = builder(stmt, index)
-        except ValueError as exc:
-            raise ResidualBuilderError(stmt, str(exc)) from exc
-        residuals.extend(built)
+    global _CURRENT_DAG
+    _CURRENT_DAG = dag
+    try:
+        # build residuals from statements
+        for stmt in program.stmts:
+            builder = _RESIDUAL_BUILDERS.get(stmt.kind)
+            if not builder:
+                continue
+            try:
+                built = builder(stmt, index)
+            except ValueError as exc:
+                raise ResidualBuilderError(stmt, str(exc)) from exc
+            residuals.extend(built)
+    finally:
+        _CURRENT_DAG = None
 
     # global guards
     scene_scale = max(scale_samples) if scale_samples else 1.0
@@ -1027,7 +1064,14 @@ def translate(program: Program) -> Model:
             )
             gauges.append("unit_span=1")
 
-    return Model(points=order, index=index, residuals=residuals, gauges=gauges, scale=scene_scale)
+    return Model(
+        points=order,
+        index=index,
+        residuals=residuals,
+        gauges=gauges,
+        scale=scene_scale,
+        dag=dag,
+    )
 
 
 def _initial_guess(model: Model, rng: np.random.Generator, attempt: int) -> np.ndarray:
