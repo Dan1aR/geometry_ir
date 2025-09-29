@@ -35,12 +35,23 @@ class ResidualSpec:
 
 
 @dataclass
+class DerivedPointSpec:
+    name: PointName
+    dependencies: Tuple[PointName, ...]
+    compute: Callable[["PointResolver"], np.ndarray]
+    kind: str
+    source: Optional[Stmt] = None
+
+
+@dataclass
 class Model:
     points: List[PointName]
     index: Dict[PointName, int]
     residuals: List[ResidualSpec]
     gauges: List[str] = field(default_factory=list)
     scale: float = 1.0
+    derived_points: Dict[PointName, DerivedPointSpec] = field(default_factory=dict)
+    all_points: List[PointName] = field(default_factory=list)
 
 
 @dataclass
@@ -142,13 +153,59 @@ def _format_edge(edge: Edge) -> str:
     return f"{edge[0]}-{edge[1]}"
 
 
-def _vec(x: np.ndarray, index: Dict[PointName, int], p: PointName) -> np.ndarray:
-    base = index[p] * 2
-    return x[base : base + 2]
+class PointResolver:
+    """Resolve point coordinates using optimizer variables and derived specs."""
+
+    def __init__(
+        self,
+        x: np.ndarray,
+        index: Dict[PointName, int],
+        derived: Dict[PointName, DerivedPointSpec],
+    ) -> None:
+        self._x = x
+        self._index = index
+        self._derived = derived
+        self._cache: Dict[PointName, np.ndarray] = {}
+        self._evaluating: Set[PointName] = set()
+
+    def vec(self, name: PointName) -> np.ndarray:
+        cached = self._cache.get(name)
+        if cached is not None:
+            return cached
+        if name in self._index:
+            base = self._index[name] * 2
+            coord = self._x[base : base + 2]
+        elif name in self._derived:
+            if name in self._evaluating:
+                raise ValueError(f"circular derived point dependency detected at {name}")
+            self._evaluating.add(name)
+            try:
+                coord = np.asarray(self._derived[name].compute(self), dtype=float)
+            finally:
+                self._evaluating.remove(name)
+        else:
+            raise KeyError(f"unknown point '{name}'")
+        if coord.shape != (2,):
+            raise ValueError(f"point '{name}' resolved to invalid coordinate shape {coord.shape}")
+        self._cache[name] = coord
+        return coord
 
 
-def _edge_vec(x: np.ndarray, index: Dict[PointName, int], edge: Edge) -> np.ndarray:
-    return _vec(x, index, edge[1]) - _vec(x, index, edge[0])
+def _vec(resolver: PointResolver, p: PointName) -> np.ndarray:
+    return resolver.vec(p)
+
+
+def _edge_vec(resolver: PointResolver, edge: Edge) -> np.ndarray:
+    return _vec(resolver, edge[1]) - _vec(resolver, edge[0])
+
+
+@dataclass
+class ResidualContext:
+    index: Dict[PointName, int]
+    derived: Dict[PointName, DerivedPointSpec]
+
+    def resolver(self, x: np.ndarray) -> PointResolver:
+        return PointResolver(x, self.index, self.derived)
 
 
 def _norm_sq(vec: np.ndarray) -> float:
@@ -197,8 +254,217 @@ def _smooth_hinge(value: float) -> float:
     return 0.5 * (value + math.sqrt(value * value + _HINGE_EPS * _HINGE_EPS))
 
 
-def _quadrilateral_edges(x: np.ndarray, index: Dict[PointName, int], ids: Sequence[PointName]) -> List[np.ndarray]:
-    points = [_vec(x, index, name) for name in ids]
+def _normalize_vec(vec: np.ndarray) -> np.ndarray:
+    norm = _safe_norm(vec)
+    if norm <= _DENOM_EPS:
+        return vec
+    return vec / norm
+
+
+def _line_dependency_points(path_kind: str, payload: object) -> Set[PointName]:
+    deps: Set[PointName] = set()
+    if path_kind in {"line", "segment", "ray"}:
+        if isinstance(payload, (list, tuple)) and len(payload) == 2:
+            for name in payload:
+                if isinstance(name, str):
+                    deps.add(name)
+    elif path_kind == "perpendicular" and isinstance(payload, dict):
+        at = payload.get("at")
+        if isinstance(at, str):
+            deps.add(at)
+        to_edge = payload.get("to")
+        if isinstance(to_edge, (list, tuple)) and len(to_edge) == 2:
+            for name in to_edge:
+                if isinstance(name, str):
+                    deps.add(name)
+    elif path_kind == "median" and isinstance(payload, dict):
+        frm = payload.get("frm")
+        if isinstance(frm, str):
+            deps.add(frm)
+        to_edge = payload.get("to")
+        if isinstance(to_edge, (list, tuple)) and len(to_edge) == 2:
+            for name in to_edge:
+                if isinstance(name, str):
+                    deps.add(name)
+    elif path_kind == "altitude" and isinstance(payload, dict):
+        frm = payload.get("frm")
+        if isinstance(frm, str):
+            deps.add(frm)
+        to_edge = payload.get("to")
+        if isinstance(to_edge, (list, tuple)) and len(to_edge) == 2:
+            for name in to_edge:
+                if isinstance(name, str):
+                    deps.add(name)
+    elif path_kind == "angle-bisector" and isinstance(payload, dict):
+        at = payload.get("at")
+        if isinstance(at, str):
+            deps.add(at)
+        rays = payload.get("rays")
+        if isinstance(rays, (list, tuple)):
+            for ray in rays:
+                if isinstance(ray, (list, tuple)) and len(ray) == 2:
+                    for name in ray:
+                        if isinstance(name, str):
+                            deps.add(name)
+    return deps
+
+
+def _can_derive_line(path_kind: str, payload: object) -> bool:
+    if path_kind in {"line", "segment", "ray", "perpendicular", "median", "altitude", "angle-bisector"}:
+        return True
+    return False
+
+
+def _line_parameters(path_kind: str, payload: object, resolver: PointResolver) -> Tuple[np.ndarray, np.ndarray]:
+    default_dir = np.array([1.0, 0.0], dtype=float)
+    if path_kind in {"line", "segment", "ray"} and isinstance(payload, (list, tuple)) and len(payload) == 2:
+        a, b = payload
+        origin = _vec(resolver, a)
+        direction = _vec(resolver, b) - origin
+        if _safe_norm(direction) <= _DENOM_EPS:
+            direction = default_dir
+        return origin, direction
+    if path_kind == "perpendicular" and isinstance(payload, dict):
+        at = payload.get("at")
+        to_edge = payload.get("to")
+        if isinstance(at, str) and isinstance(to_edge, (list, tuple)) and len(to_edge) == 2:
+            origin = _vec(resolver, at)
+            base = _vec(resolver, to_edge[0])
+            dir_vec = _vec(resolver, to_edge[1]) - base
+            direction = np.array([-dir_vec[1], dir_vec[0]], dtype=float)
+            if _safe_norm(direction) <= _DENOM_EPS:
+                direction = default_dir
+            return origin, direction
+    if path_kind == "median" and isinstance(payload, dict):
+        frm = payload.get("frm")
+        to_edge = payload.get("to")
+        if isinstance(frm, str) and isinstance(to_edge, (list, tuple)) and len(to_edge) == 2:
+            origin = _vec(resolver, frm)
+            a = _vec(resolver, to_edge[0])
+            b = _vec(resolver, to_edge[1])
+            mid = 0.5 * (a + b)
+            direction = mid - origin
+            if _safe_norm(direction) <= _DENOM_EPS:
+                direction = default_dir
+            return origin, direction
+    if path_kind == "altitude" and isinstance(payload, dict):
+        frm = payload.get("frm")
+        to_edge = payload.get("to")
+        if isinstance(frm, str) and isinstance(to_edge, (list, tuple)) and len(to_edge) == 2:
+            origin = _vec(resolver, frm)
+            a = _vec(resolver, to_edge[0])
+            b = _vec(resolver, to_edge[1])
+            dir_vec = b - a
+            direction = np.array([-dir_vec[1], dir_vec[0]], dtype=float)
+            if _safe_norm(direction) <= _DENOM_EPS:
+                direction = default_dir
+            return origin, direction
+    if path_kind == "angle-bisector" and isinstance(payload, dict):
+        at = payload.get("at")
+        rays = payload.get("rays")
+        if isinstance(at, str) and isinstance(rays, (list, tuple)) and len(rays) == 2:
+            origin = _vec(resolver, at)
+            vectors: List[np.ndarray] = []
+            for ray in rays:
+                if isinstance(ray, (list, tuple)) and len(ray) == 2:
+                    start, end = ray
+                    vec = _vec(resolver, end) - _vec(resolver, start)
+                    vectors.append(_normalize_vec(vec))
+            if vectors:
+                direction = np.sum(vectors, axis=0)
+                if _safe_norm(direction) <= _DENOM_EPS:
+                    direction = vectors[0]
+                return origin, direction
+    # Fallback to a stable origin
+    return np.zeros(2, dtype=float), default_dir
+
+
+def _intersection_from_paths(
+    kind_a: str,
+    payload_a: object,
+    kind_b: str,
+    payload_b: object,
+    resolver: PointResolver,
+) -> np.ndarray:
+    origin_a, dir_a = _line_parameters(kind_a, payload_a, resolver)
+    origin_b, dir_b = _line_parameters(kind_b, payload_b, resolver)
+    denom = _cross_2d(dir_a, dir_b)
+    if abs(denom) <= _DENOM_EPS:
+        # Nearly parallel; fall back to averaging the two anchor points
+        return 0.5 * (origin_a + origin_b)
+    t = _cross_2d(origin_b - origin_a, dir_b) / denom
+    return origin_a + t * dir_a
+
+
+def _make_midpoint_spec(name: PointName, edge: Edge, stmt: Stmt) -> DerivedPointSpec:
+    deps = tuple(dep for dep in edge if isinstance(dep, str))
+
+    def compute(resolver: PointResolver, a=edge[0], b=edge[1]) -> np.ndarray:
+        pa = _vec(resolver, a)
+        pb = _vec(resolver, b)
+        return 0.5 * (pa + pb)
+
+    return DerivedPointSpec(name=name, dependencies=deps, compute=compute, kind="midpoint", source=stmt)
+
+
+def _make_foot_spec(name: PointName, vertex: PointName, edge: Edge, stmt: Stmt) -> DerivedPointSpec:
+    deps = tuple(dep for dep in (vertex, edge[0], edge[1]) if isinstance(dep, str))
+
+    def compute(
+        resolver: PointResolver,
+        v=vertex,
+        a=edge[0],
+        b=edge[1],
+    ) -> np.ndarray:
+        pa = _vec(resolver, a)
+        pb = _vec(resolver, b)
+        pv = _vec(resolver, v)
+        ab = pb - pa
+        denom = max(_norm_sq(ab), _DENOM_EPS)
+        t = float(np.dot(pv - pa, ab)) / denom
+        return pa + t * ab
+
+    return DerivedPointSpec(name=name, dependencies=deps, compute=compute, kind="foot", source=stmt)
+
+
+def _make_intersection_spec(
+    name: PointName,
+    kind_a: str,
+    payload_a: object,
+    kind_b: str,
+    payload_b: object,
+    source: Optional[Stmt],
+) -> Optional[DerivedPointSpec]:
+    if not (_can_derive_line(kind_a, payload_a) and _can_derive_line(kind_b, payload_b)):
+        return None
+    deps = tuple(sorted(_line_dependency_points(kind_a, payload_a) | _line_dependency_points(kind_b, payload_b)))
+
+    def compute(
+        resolver: PointResolver,
+        ka=kind_a,
+        pa=payload_a,
+        kb=kind_b,
+        pb=payload_b,
+    ) -> np.ndarray:
+        return _intersection_from_paths(ka, pa, kb, pb, resolver)
+
+    return DerivedPointSpec(name=name, dependencies=deps, compute=compute, kind="intersection", source=source)
+
+
+def _filter_derived_cycles(specs: Dict[PointName, DerivedPointSpec]) -> Dict[PointName, DerivedPointSpec]:
+    pending = dict(specs)
+    resolved: Dict[PointName, DerivedPointSpec] = {}
+    progress = True
+    while progress:
+        progress = False
+        for name, spec in list(pending.items()):
+            if all(dep not in pending for dep in spec.dependencies):
+                resolved[name] = spec
+                pending.pop(name)
+                progress = True
+    return resolved
+def _quadrilateral_edges(resolver: PointResolver, ids: Sequence[PointName]) -> List[np.ndarray]:
+    points = [_vec(resolver, name) for name in ids]
     return [points[(i + 1) % 4] - points[i] for i in range(4)]
 
 
@@ -214,13 +480,14 @@ def _quadrilateral_convexity_residuals(edges: Sequence[np.ndarray]) -> np.ndarra
     return np.asarray(residuals, dtype=float)
 
 
-def _build_turn_margin(ids: Sequence[PointName], index: Dict[PointName, int]) -> ResidualSpec:
+def _build_turn_margin(ids: Sequence[PointName], ctx: ResidualContext) -> ResidualSpec:
     unique = [pid for pid in ids]
     if len(unique) < 3:
         raise ValueError("turn margin requires at least three points")
 
     def func(x: np.ndarray) -> np.ndarray:
-        pts = [_vec(x, index, name) for name in unique]
+        resolver = ctx.resolver(x)
+        pts = [_vec(resolver, name) for name in unique]
         res: List[float] = []
         n = len(pts)
         for i in range(n):
@@ -247,7 +514,7 @@ def _polygon_area(pts: Sequence[np.ndarray]) -> float:
     return 0.5 * area
 
 
-def _build_area_floor(ids: Sequence[PointName], index: Dict[PointName, int], min_area: float) -> ResidualSpec:
+def _build_area_floor(ids: Sequence[PointName], ctx: ResidualContext, min_area: float) -> ResidualSpec:
     unique = [pid for pid in ids]
     if len(unique) < 3:
         raise ValueError("area floor requires at least three points")
@@ -255,7 +522,8 @@ def _build_area_floor(ids: Sequence[PointName], index: Dict[PointName, int], min
     abs_min_area = abs(min_area)
 
     def func(x: np.ndarray) -> np.ndarray:
-        pts = [_vec(x, index, name) for name in unique]
+        resolver = ctx.resolver(x)
+        pts = [_vec(resolver, name) for name in unique]
         area = abs(_polygon_area(pts))
         return np.array([_smooth_hinge(abs_min_area - area)], dtype=float)
 
@@ -263,13 +531,14 @@ def _build_area_floor(ids: Sequence[PointName], index: Dict[PointName, int], min
     return ResidualSpec(key=key, func=func, size=1, kind="area_floor", source=None)
 
 
-def _build_min_separation(pair: Edge, index: Dict[PointName, int], min_distance: float) -> ResidualSpec:
+def _build_min_separation(pair: Edge, ctx: ResidualContext, min_distance: float) -> ResidualSpec:
     if pair[0] == pair[1]:
         raise ValueError("min separation requires two distinct points")
     min_sq = float(min_distance * min_distance)
 
     def func(x: np.ndarray) -> np.ndarray:
-        diff = _vec(x, index, pair[1]) - _vec(x, index, pair[0])
+        resolver = ctx.resolver(x)
+        diff = _vec(resolver, pair[1]) - _vec(resolver, pair[0])
         dist_sq = _norm_sq(diff)
         return np.array([_smooth_hinge(min_sq - dist_sq)], dtype=float)
 
@@ -278,11 +547,12 @@ def _build_min_separation(pair: Edge, index: Dict[PointName, int], min_distance:
 
 
 # --- keep every edge above a floor ---
-def _build_edge_floor(edge: Edge, index: Dict[PointName, int], min_len: float) -> ResidualSpec:
+def _build_edge_floor(edge: Edge, ctx: ResidualContext, min_len: float) -> ResidualSpec:
     min_sq = float(min_len * min_len)
 
     def func(x: np.ndarray) -> np.ndarray:
-        v = _edge_vec(x, index, edge)
+        resolver = ctx.resolver(x)
+        v = _edge_vec(resolver, edge)
         return np.array([_smooth_hinge(min_sq - _norm_sq(v))], dtype=float)
 
     key = f"edge_floor({_format_edge(edge)})"
@@ -290,10 +560,11 @@ def _build_edge_floor(edge: Edge, index: Dict[PointName, int], min_len: float) -
 
 
 # --- require two edges not to be parallel (tiny margin) ---
-def _build_nonparallel(edge1: Edge, edge2: Edge, index: Dict[PointName, int]) -> ResidualSpec:
+def _build_nonparallel(edge1: Edge, edge2: Edge, ctx: ResidualContext) -> ResidualSpec:
     def func(x: np.ndarray) -> np.ndarray:
-        u = _edge_vec(x, index, edge1)
-        v = _edge_vec(x, index, edge2)
+        resolver = ctx.resolver(x)
+        u = _edge_vec(resolver, edge1)
+        v = _edge_vec(resolver, edge2)
         denom = max(_safe_norm(u) * _safe_norm(v), _DENOM_EPS)
         s = abs(_cross_2d(u, v)) / denom  # |sin(angle)|
         return np.array([_smooth_hinge(_TAU_NONPAR - s)], dtype=float)
@@ -308,7 +579,7 @@ def _format_numeric(value: float) -> str:
     return f"{value:g}"
 
 
-def _build_segment_length(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
+def _build_segment_length(stmt: Stmt, ctx: ResidualContext) -> List[ResidualSpec]:
     length = stmt.opts.get("length") or stmt.opts.get("distance") or stmt.opts.get("value")
     if length is None:
         return []
@@ -321,14 +592,15 @@ def _build_segment_length(stmt: Stmt, index: Dict[PointName, int]) -> List[Resid
         label = str(length)
 
     def func(x: np.ndarray) -> np.ndarray:
-        vec = _edge_vec(x, index, edge)
+        resolver = ctx.resolver(x)
+        vec = _edge_vec(resolver, edge)
         return np.array([_norm_sq(vec) - value**2], dtype=float)
 
     key = f"segment_length({_format_edge(edge)}={label})"
     return [ResidualSpec(key=key, func=func, size=1, kind="segment_length", source=stmt)]
 
 
-def _build_equal_segments(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
+def _build_equal_segments(stmt: Stmt, ctx: ResidualContext) -> List[ResidualSpec]:
     lhs: Sequence[Edge] = [tuple(e) for e in stmt.data.get("lhs", [])]
     rhs: Sequence[Edge] = [tuple(e) for e in stmt.data.get("rhs", [])]
     segments: List[Edge] = list(lhs) + list(rhs)
@@ -338,9 +610,10 @@ def _build_equal_segments(stmt: Stmt, index: Dict[PointName, int]) -> List[Resid
     others = segments[1:]
 
     def func(x: np.ndarray) -> np.ndarray:
-        ref_len = _norm_sq(_edge_vec(x, index, ref))
+        resolver = ctx.resolver(x)
+        ref_len = _norm_sq(_edge_vec(resolver, ref))
         vals = [
-            _norm_sq(_edge_vec(x, index, seg)) - ref_len
+            _norm_sq(_edge_vec(resolver, seg)) - ref_len
             for seg in others
         ]
         return np.asarray(vals, dtype=float)
@@ -349,7 +622,7 @@ def _build_equal_segments(stmt: Stmt, index: Dict[PointName, int]) -> List[Resid
     return [ResidualSpec(key=key, func=func, size=len(others), kind="equal_segments", source=stmt)]
 
 
-def _build_parallel_edges(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
+def _build_parallel_edges(stmt: Stmt, ctx: ResidualContext) -> List[ResidualSpec]:
     edges: Sequence[Edge] = [tuple(e) for e in stmt.data.get("edges", [])]
     if len(edges) <= 1:
         return []
@@ -357,9 +630,10 @@ def _build_parallel_edges(stmt: Stmt, index: Dict[PointName, int]) -> List[Resid
     others = edges[1:]
 
     def func(x: np.ndarray) -> np.ndarray:
-        ref_vec = _edge_vec(x, index, ref)
+        resolver = ctx.resolver(x)
+        ref_vec = _edge_vec(resolver, ref)
         vals = [
-            _cross_2d(ref_vec, _edge_vec(x, index, edge))
+            _cross_2d(ref_vec, _edge_vec(resolver, edge))
             for edge in others
         ]
         return np.asarray(vals, dtype=float)
@@ -368,22 +642,23 @@ def _build_parallel_edges(stmt: Stmt, index: Dict[PointName, int]) -> List[Resid
     return [ResidualSpec(key=key, func=func, size=len(others), kind="parallel_edges", source=stmt)]
 
 
-def _build_right_angle(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
+def _build_right_angle(stmt: Stmt, ctx: ResidualContext) -> List[ResidualSpec]:
     (ray1, ray2) = stmt.data["rays"]
     ray1 = tuple(ray1)
     ray2 = tuple(ray2)
     at = stmt.data["at"]
 
     def func(x: np.ndarray) -> np.ndarray:
-        u = _edge_vec(x, index, ray1)
-        v = _edge_vec(x, index, ray2)
+        resolver = ctx.resolver(x)
+        u = _edge_vec(resolver, ray1)
+        v = _edge_vec(resolver, ray2)
         return np.array([float(np.dot(u, v))], dtype=float)
 
     key = f"right_angle({at})"
     return [ResidualSpec(key=key, func=func, size=1, kind="right_angle", source=stmt)]
 
 
-def _build_angle(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
+def _build_angle(stmt: Stmt, ctx: ResidualContext) -> List[ResidualSpec]:
     measure = stmt.opts.get("measure") or stmt.opts.get("degrees")
     if measure is None:
         return []
@@ -396,8 +671,9 @@ def _build_angle(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
     cos_target = math.cos(math.radians(theta))
 
     def func(x: np.ndarray) -> np.ndarray:
-        u = _edge_vec(x, index, ray1)
-        v = _edge_vec(x, index, ray2)
+        resolver = ctx.resolver(x)
+        u = _edge_vec(resolver, ray1)
+        v = _edge_vec(resolver, ray2)
         nu = math.sqrt(max(_norm_sq(u), 1e-16))
         nv = math.sqrt(max(_norm_sq(v), 1e-16))
         cos_val = float(np.dot(u, v)) / (nu * nv)
@@ -413,7 +689,7 @@ def _as_edge(value: object) -> Edge:
     raise ValueError(f"expected edge, got {value!r}")
 
 
-def _build_point_on(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
+def _build_point_on(stmt: Stmt, ctx: ResidualContext) -> List[ResidualSpec]:
     point = stmt.data["point"]
     path_kind, payload = stmt.data["path"]
 
@@ -421,9 +697,10 @@ def _build_point_on(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpe
         edge = _as_edge(payload)
 
         def func(x: np.ndarray) -> np.ndarray:
-            base = _vec(x, index, edge[0])
-            dir_vec = _edge_vec(x, index, edge)
-            pt = _vec(x, index, point)
+            resolver = ctx.resolver(x)
+            base = _vec(resolver, edge[0])
+            dir_vec = _edge_vec(resolver, edge)
+            pt = _vec(resolver, point)
             return np.array([_cross_2d(dir_vec, pt - base)], dtype=float)
 
         residuals = [
@@ -439,9 +716,10 @@ def _build_point_on(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpe
         if path_kind in {"ray", "segment"}:
 
             def bounds_func(x: np.ndarray) -> np.ndarray:
-                base = _vec(x, index, edge[0])
-                dir_vec = _edge_vec(x, index, edge)
-                diff = _vec(x, index, point) - base
+                resolver = ctx.resolver(x)
+                base = _vec(resolver, edge[0])
+                dir_vec = _edge_vec(resolver, edge)
+                diff = _vec(resolver, point) - base
                 proj = float(np.dot(diff, dir_vec))
                 if path_kind == "ray":
                     return np.array([_smooth_hinge(-proj)], dtype=float)
@@ -474,7 +752,8 @@ def _build_point_on(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpe
             r_val = float(radius)
 
             def func(x: np.ndarray) -> np.ndarray:
-                vec = _vec(x, index, point) - _vec(x, index, center)
+                resolver = ctx.resolver(x)
+                vec = _vec(resolver, point) - _vec(resolver, center)
                 return np.array([_norm_sq(vec) - r_val**2], dtype=float)
 
             key = f"point_on_circle({point},{center})"
@@ -486,8 +765,9 @@ def _build_point_on(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpe
             raise ValueError("radius_point option must be a point name")
 
         def func(x: np.ndarray) -> np.ndarray:
-            vec = _vec(x, index, point) - _vec(x, index, center)
-            ref = _vec(x, index, radius_point) - _vec(x, index, center)
+            resolver = ctx.resolver(x)
+            vec = _vec(resolver, point) - _vec(resolver, center)
+            ref = _vec(resolver, radius_point) - _vec(resolver, center)
             return np.array([_norm_sq(vec) - _norm_sq(ref)], dtype=float)
 
         key = f"point_on_circle({point},{center})"
@@ -504,10 +784,11 @@ def _build_point_on(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpe
         arm2 = ray2[1]
 
         def func(x: np.ndarray) -> np.ndarray:
-            p = _vec(x, index, point)
-            v = _vec(x, index, at)
-            a = _vec(x, index, arm1)
-            b = _vec(x, index, arm2)
+            resolver = ctx.resolver(x)
+            p = _vec(resolver, point)
+            v = _vec(resolver, at)
+            a = _vec(resolver, arm1)
+            b = _vec(resolver, arm2)
             lhs = _norm_sq(p - a) * _norm_sq(v - b)
             rhs = _norm_sq(p - b) * _norm_sq(v - a)
             return np.array([lhs - rhs], dtype=float)
@@ -525,10 +806,11 @@ def _build_point_on(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpe
         to_edge = _as_edge(to_edge_raw)
 
         def func(x: np.ndarray) -> np.ndarray:
-            origin = _vec(x, index, at)
-            pt = _vec(x, index, point)
-            base = _vec(x, index, to_edge[0])
-            dir_vec = _vec(x, index, to_edge[1]) - base
+            resolver = ctx.resolver(x)
+            origin = _vec(resolver, at)
+            pt = _vec(resolver, point)
+            base = _vec(resolver, to_edge[0])
+            dir_vec = _vec(resolver, to_edge[1]) - base
             disp = pt - origin
             return np.array([float(np.dot(dir_vec, disp))], dtype=float)
 
@@ -543,10 +825,11 @@ def _build_point_on(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpe
         to_edge = _as_edge(to_edge_raw)
 
         def func(x: np.ndarray) -> np.ndarray:
-            vertex = _vec(x, index, frm)
-            pt = _vec(x, index, point)
-            a = _vec(x, index, to_edge[0])
-            b = _vec(x, index, to_edge[1])
+            resolver = ctx.resolver(x)
+            vertex = _vec(resolver, frm)
+            pt = _vec(resolver, point)
+            a = _vec(resolver, to_edge[0])
+            b = _vec(resolver, to_edge[1])
             mid = 0.5 * (a + b)
             return np.array([_cross_2d(pt - vertex, mid - vertex)], dtype=float)
 
@@ -561,10 +844,11 @@ def _build_point_on(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpe
         to_edge = _as_edge(to_edge_raw)
 
         def func(x: np.ndarray) -> np.ndarray:
-            vertex = _vec(x, index, frm)
-            pt = _vec(x, index, point)
-            base = _vec(x, index, to_edge[0])
-            dir_vec = _vec(x, index, to_edge[1]) - base
+            resolver = ctx.resolver(x)
+            vertex = _vec(resolver, frm)
+            pt = _vec(resolver, point)
+            base = _vec(resolver, to_edge[0])
+            dir_vec = _vec(resolver, to_edge[1]) - base
             disp = pt - vertex
             return np.array([float(np.dot(dir_vec, disp))], dtype=float)
 
@@ -582,7 +866,7 @@ def _build_point_on(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpe
     raise ValueError(f"Unsupported path kind for point_on: {path_kind}")
 
 
-def _build_collinear(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
+def _build_collinear(stmt: Stmt, ctx: ResidualContext) -> List[ResidualSpec]:
     pts: Sequence[PointName] = stmt.data.get("points", [])
     if len(pts) < 3:
         return []
@@ -590,10 +874,11 @@ def _build_collinear(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSp
     others = pts[1:]
 
     def func(x: np.ndarray) -> np.ndarray:
-        base = _vec(x, index, p0)
-        base_dir = _vec(x, index, others[0]) - base
+        resolver = ctx.resolver(x)
+        base = _vec(resolver, p0)
+        base_dir = _vec(resolver, others[0]) - base
         vals = [
-            _cross_2d(base_dir, _vec(x, index, pt) - base)
+            _cross_2d(base_dir, _vec(resolver, pt) - base)
             for pt in others[1:]
         ]
         return np.asarray(vals, dtype=float)
@@ -602,30 +887,32 @@ def _build_collinear(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSp
     return [ResidualSpec(key=key, func=func, size=len(others) - 1, kind="collinear", source=stmt)]
 
 
-def _build_midpoint(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
+def _build_midpoint(stmt: Stmt, ctx: ResidualContext) -> List[ResidualSpec]:
     midpoint = stmt.data["midpoint"]
     edge = tuple(stmt.data["edge"])
 
     def func(x: np.ndarray) -> np.ndarray:
-        mid = _vec(x, index, midpoint)
-        b = _vec(x, index, edge[0])
-        c = _vec(x, index, edge[1])
+        resolver = ctx.resolver(x)
+        mid = _vec(resolver, midpoint)
+        b = _vec(resolver, edge[0])
+        c = _vec(resolver, edge[1])
         return 2 * mid - (b + c)
 
     key = f"midpoint({midpoint},{_format_edge(edge)})"
     return [ResidualSpec(key=key, func=func, size=2, kind="midpoint", source=stmt)]
 
 
-def _build_foot(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
+def _build_foot(stmt: Stmt, ctx: ResidualContext) -> List[ResidualSpec]:
     foot = stmt.data["foot"]
     vertex = stmt.data["from"]
     edge = tuple(stmt.data["edge"])
 
     def func(x: np.ndarray) -> np.ndarray:
-        a = _vec(x, index, edge[0])
-        b = _vec(x, index, edge[1])
-        h = _vec(x, index, foot)
-        c = _vec(x, index, vertex)
+        resolver = ctx.resolver(x)
+        a = _vec(resolver, edge[0])
+        b = _vec(resolver, edge[1])
+        h = _vec(resolver, foot)
+        c = _vec(resolver, vertex)
         ab = b - a
         return np.array([
             _cross_2d(ab, h - a),
@@ -636,7 +923,7 @@ def _build_foot(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
     return [ResidualSpec(key=key, func=func, size=2, kind="foot", source=stmt)]
 
 
-def _build_distance(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
+def _build_distance(stmt: Stmt, ctx: ResidualContext) -> List[ResidualSpec]:
     raw = stmt.data.get("points") or stmt.data.get("edge")
     if raw is None:
         raise ValueError("distance constraint missing point pair")
@@ -649,14 +936,15 @@ def _build_distance(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpe
     dist = float(value)
 
     def func(x: np.ndarray) -> np.ndarray:
-        vec = _edge_vec(x, index, pts)  # type: ignore[arg-type]
+        resolver = ctx.resolver(x)
+        vec = _edge_vec(resolver, pts)  # type: ignore[arg-type]
         return np.array([_norm_sq(vec) - dist**2], dtype=float)
 
     key = f"distance({_format_edge(pts)})={dist}"
     return [ResidualSpec(key=key, func=func, size=1, kind="distance", source=stmt)]
 
 
-def _build_quadrilateral_family(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
+def _build_quadrilateral_family(stmt: Stmt, ctx: ResidualContext) -> List[ResidualSpec]:
     ids: Sequence[PointName] = stmt.data.get("ids", [])
     if len(ids) != 4:
         return []
@@ -665,7 +953,8 @@ def _build_quadrilateral_family(stmt: Stmt, index: Dict[PointName, int]) -> List
     specs: List[ResidualSpec] = []
 
     def convex_func(x: np.ndarray) -> np.ndarray:
-        edges = _quadrilateral_edges(x, index, ids)
+        resolver = ctx.resolver(x)
+        edges = _quadrilateral_edges(resolver, ids)
         return _quadrilateral_convexity_residuals(edges)
 
     specs.append(
@@ -681,7 +970,7 @@ def _build_quadrilateral_family(stmt: Stmt, index: Dict[PointName, int]) -> List
     return specs
 
 
-_RESIDUAL_BUILDERS: Dict[str, Callable[[Stmt, Dict[PointName, int]], List[ResidualSpec]]] = {
+_RESIDUAL_BUILDERS: Dict[str, Callable[[Stmt, ResidualContext], List[ResidualSpec]]] = {
     "segment": _build_segment_length,
     "equal_segments": _build_equal_segments,
     "parallel_edges": _build_parallel_edges,
@@ -715,6 +1004,9 @@ def translate(program: Program) -> Model:
     preferred_base_edge: Optional[Edge] = None  # NEW
     carrier_edges: Set[Edge] = set()  # NEW: edges used as carriers in constraints
     circle_radius_refs: Dict[PointName, List[PointName]] = {}
+    midpoint_candidates: Dict[PointName, Stmt] = {}
+    foot_candidates: Dict[PointName, Stmt] = {}
+    intersection_groups: Dict[PointName, List[Stmt]] = {}
 
     def register_scale(value: object) -> None:
         try:
@@ -790,6 +1082,17 @@ def translate(program: Program) -> Model:
 
         data = stmt.data
         opts = stmt.opts
+
+        if stmt.kind == "midpoint":
+            name = data.get("midpoint")
+            edge = data.get("edge")
+            if isinstance(name, str) and isinstance(edge, (list, tuple)) and len(edge) == 2:
+                midpoint_candidates[name] = stmt
+        if stmt.kind == "foot":
+            name = data.get("foot")
+            edge = data.get("edge")
+            if isinstance(name, str) and isinstance(edge, (list, tuple)) and len(edge) == 2:
+                foot_candidates[name] = stmt
 
         for key in ("length", "distance", "value", "radius"):
             if key in opts:
@@ -877,6 +1180,13 @@ def translate(program: Program) -> Model:
         if "from" in data and isinstance(data["from"], str):
             _register_point(order, seen, data["from"])
 
+        if (
+            stmt.kind == "point_on"
+            and stmt.origin == "desugar(intersect)"
+            and isinstance(data.get("point"), str)
+        ):
+            intersection_groups.setdefault(data["point"], []).append(stmt)
+
         if stmt.kind == "circle_center_radius_through":
             center = data.get("center")
             through = data.get("through")
@@ -900,6 +1210,63 @@ def translate(program: Program) -> Model:
             if radius_point and "radius_point" not in stmt.opts:
                 stmt.opts["radius_point"] = radius_point
 
+    derived_specs: Dict[PointName, DerivedPointSpec] = {}
+
+    for name, stmt in midpoint_candidates.items():
+        if name in derived_specs:
+            continue
+        edge = stmt.data.get("edge")
+        if isinstance(edge, (list, tuple)) and len(edge) == 2:
+            a, b = edge
+            if isinstance(a, str) and isinstance(b, str):
+                derived_specs[name] = _make_midpoint_spec(name, (a, b), stmt)
+
+    for name, stmt in foot_candidates.items():
+        if name in derived_specs:
+            continue
+        edge = stmt.data.get("edge")
+        vertex = stmt.data.get("from")
+        if (
+            isinstance(edge, (list, tuple))
+            and len(edge) == 2
+            and isinstance(vertex, str)
+            and isinstance(edge[0], str)
+            and isinstance(edge[1], str)
+        ):
+            derived_specs[name] = _make_foot_spec(name, vertex, (edge[0], edge[1]), stmt)
+
+    for name, stmts in intersection_groups.items():
+        if name in derived_specs:
+            continue
+        line_paths: List[Tuple[str, object, Stmt]] = []
+        for s in stmts:
+            path = s.data.get("path")
+            if isinstance(path, (list, tuple)) and len(path) == 2:
+                kind, payload = path
+                if isinstance(kind, str) and _can_derive_line(kind, payload):
+                    line_paths.append((kind, payload, s))
+        spec: Optional[DerivedPointSpec] = None
+        for i in range(len(line_paths)):
+            for j in range(i + 1, len(line_paths)):
+                kind_a, payload_a, src_a = line_paths[i]
+                kind_b, payload_b, _ = line_paths[j]
+                candidate = _make_intersection_spec(name, kind_a, payload_a, kind_b, payload_b, src_a)
+                if candidate is not None:
+                    spec = candidate
+                    break
+            if spec is not None:
+                break
+        if spec is not None:
+            derived_specs[name] = spec
+
+    derived_specs = _filter_derived_cycles(derived_specs)
+
+    all_points = list(order)
+    base_points = [p for p in all_points if p not in derived_specs]
+
+    if not base_points:
+        raise ValueError("program contains no free points to optimize")
+
     if not order:
         raise ValueError("program contains no points to solve for")
 
@@ -912,7 +1279,8 @@ def translate(program: Program) -> Model:
     if preferred_base_edge is not None:
         orientation_edge = preferred_base_edge
 
-    index = {name: i for i, name in enumerate(order)}
+    index = {name: i for i, name in enumerate(base_points)}
+    ctx = ResidualContext(index=index, derived=derived_specs)
     residuals: List[ResidualSpec] = []
 
     # build residuals from statements
@@ -921,7 +1289,7 @@ def translate(program: Program) -> Model:
         if not builder:
             continue
         try:
-            built = builder(stmt, index)
+            built = builder(stmt, ctx)
         except ValueError as exc:
             raise ResidualBuilderError(stmt, str(exc)) from exc
         residuals.extend(built)
@@ -933,7 +1301,7 @@ def translate(program: Program) -> Model:
     min_sep = _MIN_SEP_SCALE * scene_scale
     if min_sep > 0:
         for pair in sorted(distinct_pairs):
-            residuals.append(_build_min_separation(pair, index, min_sep))
+            residuals.append(_build_min_separation(pair, ctx, min_sep))
 
     # polygon-level guards + track polygon edges for de-dup
     polygon_edges_set: Set[Edge] = set()
@@ -944,13 +1312,13 @@ def translate(program: Program) -> Model:
             if len(ids) < 3:
                 continue
             # convex-ish turns + area floor
-            residuals.append(_build_turn_margin(ids, index))
-            residuals.append(_build_area_floor(ids, index, area_floor))
+            residuals.append(_build_turn_margin(ids, ctx))
+            residuals.append(_build_area_floor(ids, ctx, area_floor))
             # per-edge floors
             loop = list(ids)
             for i in range(len(loop)):
                 e = (loop[i], loop[(i + 1) % len(loop)])
-                residuals.append(_build_edge_floor(e, index, edge_floor))
+                residuals.append(_build_edge_floor(e, ctx, edge_floor))
                 # store both orientations for quick membership checks
                 polygon_edges_set.add(e if e[0] <= e[1] else (e[1], e[0]))
             # trapezoid: ensure legs not parallel if bases known
@@ -961,7 +1329,7 @@ def translate(program: Program) -> Model:
                 b, c = base2
                 leg1 = (a, b)
                 leg2 = (c, d)
-                residuals.append(_build_nonparallel(leg1, leg2, index))
+                residuals.append(_build_nonparallel(leg1, leg2, ctx))
 
     # add light floors to non-polygon "carrier" edges
     if carrier_edges:
@@ -969,7 +1337,7 @@ def translate(program: Program) -> Model:
         for e in sorted(carrier_edges):
             key = e if e[0] <= e[1] else (e[1], e[0])
             if key not in polygon_edges_set:
-                residuals.append(_build_edge_floor(e, index, carrier_floor))
+                residuals.append(_build_edge_floor(e, ctx, carrier_floor))
 
     # gauges
     gauges: List[str] = []
@@ -994,8 +1362,9 @@ def translate(program: Program) -> Model:
         a, b = orientation_edge
 
         def orient_func(x: np.ndarray) -> np.ndarray:
-            a_y = _vec(x, index, a)[1]
-            b_y = _vec(x, index, b)[1]
+            resolver = ctx.resolver(x)
+            a_y = _vec(resolver, a)[1]
+            b_y = _vec(resolver, b)[1]
             return np.array([b_y - a_y], dtype=float)
 
         residuals.append(
@@ -1012,8 +1381,9 @@ def translate(program: Program) -> Model:
         # NEW: if no numeric scale present, pin unit span on orientation edge
         if not scale_samples:
             def unit_span_func(x: np.ndarray) -> np.ndarray:
-                ax = _vec(x, index, a)[0]
-                bx = _vec(x, index, b)[0]
+                resolver = ctx.resolver(x)
+                ax = _vec(resolver, a)[0]
+                bx = _vec(resolver, b)[0]
                 return np.array([ (bx - ax) - 1.0 ], dtype=float)
 
             residuals.append(
@@ -1027,7 +1397,15 @@ def translate(program: Program) -> Model:
             )
             gauges.append("unit_span=1")
 
-    return Model(points=order, index=index, residuals=residuals, gauges=gauges, scale=scene_scale)
+    return Model(
+        points=base_points,
+        index=index,
+        residuals=residuals,
+        gauges=gauges,
+        scale=scene_scale,
+        derived_points=derived_specs,
+        all_points=all_points,
+    )
 
 
 def _initial_guess(model: Model, rng: np.random.Generator, attempt: int) -> np.ndarray:
@@ -1230,10 +1608,12 @@ def solve(model: Model, options: SolveOptions = SolveOptions()) -> Solution:
             f"solver did not converge within tolerance {options.tol:.1e}; max residual {max_res:.3e}"
         )
 
+    resolver = PointResolver(best_x, model.index, model.derived_points)
+    coord_names = model.all_points if model.all_points else model.points
     coords: Dict[PointName, Tuple[float, float]] = {}
-    for name in model.points:
-        idx = model.index[name] * 2
-        coords[name] = (float(best_x[idx]), float(best_x[idx + 1]))
+    for name in coord_names:
+        vec = resolver.vec(name)
+        coords[name] = (float(vec[0]), float(vec[1]))
 
     breakdown_info: List[Dict[str, object]] = []
     for spec, values in breakdown:
