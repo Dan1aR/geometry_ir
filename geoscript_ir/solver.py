@@ -180,7 +180,7 @@ _AREA_MIN_SCALE = 2e-2
 # effective (it still rejects perfectly parallel legs) without overwhelming the
 # actual geometric constraints.  The previous margin of half a degree was large
 # enough to conflict with legitimate isosceles trapezoids.
-_TAU_NONPAR = math.sin(math.radians(5e-4))
+_TAU_NONPAR = math.sin(math.radians(1e-1))
 
 
 def _safe_norm(vec: np.ndarray) -> float:
