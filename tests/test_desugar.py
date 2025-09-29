@@ -232,7 +232,7 @@ def test_intersect_generates_point_on_and_segments():
     assert point_on == []
 
     segments = [s for s in generated if s.kind == 'segment']
-    assert {s.data['edge'] for s in segments} == {('A', 'D')}
+    assert segments == []
 
 
 def test_intersect_perpendicular_generates_segment_to_anchor():
@@ -247,7 +247,7 @@ def test_intersect_perpendicular_generates_segment_to_anchor():
     assert point_on == []
 
     segments = [s for s in generated if s.kind == 'segment']
-    assert {s.data['edge'] for s in segments} == {('D', 'M')}
+    assert segments == []
 
 
 def test_diameter_desugars_to_point_on_segment_and_equal_radii():

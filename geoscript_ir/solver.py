@@ -857,9 +857,8 @@ def translate(program: Program) -> Model:
                     seen_ids.append(pid)
             if len(seen_ids) >= 3:
                 center_guess = f"O_{''.join(seen_ids[:3])}"
-                if center_guess in seen:
-                    center_vertex_map.setdefault(center_guess, (seen_ids[0], seen_ids[1], seen_ids[2]))
-                    center_reason.setdefault(center_guess, "circumcenter")
+                center_vertex_map.setdefault(center_guess, (seen_ids[0], seen_ids[1], seen_ids[2]))
+                center_reason.setdefault(center_guess, "circumcenter")
 
         if stmt.kind == "incircle":
             ids_raw = data.get("ids", [])
@@ -869,9 +868,8 @@ def translate(program: Program) -> Model:
                     seen_ids.append(pid)
             if len(seen_ids) >= 3:
                 center_guess = f"I_{''.join(seen_ids)}"
-                if center_guess in seen:
-                    center_vertex_map.setdefault(center_guess, (seen_ids[0], seen_ids[1], seen_ids[2]))
-                    center_reason.setdefault(center_guess, "incenter")
+                center_vertex_map.setdefault(center_guess, (seen_ids[0], seen_ids[1], seen_ids[2]))
+                center_reason.setdefault(center_guess, "incenter")
 
         # register points referenced by names/fields
         if "point" in data and isinstance(data["point"], str):

@@ -532,30 +532,7 @@ def desugar_variants(prog: Program) -> List[Program]:
                         generated=True,
                     )
         elif s.kind == 'intersect':
-            path1 = s.data['path1']
-            path2 = s.data['path2']
-            pts = [s.data.get('at'), s.data.get('at2')]
-            for state in states:
-                for point in pts:
-                    if not isinstance(point, str):
-                        continue
-                    for vertex in _distinct_ids(
-                        filter(
-                            None,
-                            (
-                                _angle_bisector_vertex(path1),
-                                _angle_bisector_vertex(path2),
-                                _perpendicular_vertex(path1),
-                                _perpendicular_vertex(path2),
-                            ),
-                        )
-                    ):
-                        _append(
-                            state,
-                            Stmt('segment', s.span, {'edge': edge(vertex, point)}, origin='desugar(intersect)'),
-                            source_keys,
-                            generated=True,
-                        )
+            pass
         elif s.kind == 'diameter':
             center = s.data['center']
             segment = s.data['edge']
