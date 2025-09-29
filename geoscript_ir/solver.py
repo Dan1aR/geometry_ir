@@ -11,7 +11,7 @@ Drop-in replacement:
 """
 
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple, Union
 import math
 import numbers
 
@@ -19,11 +19,13 @@ import numpy as np
 from scipy.optimize import least_squares
 
 from .ast import Program, Stmt
-from .constructions import ConstructionDAG
+from .constructions import ConstructionDAG, DerivedPointRef
 
 PointName = str
 Edge = Tuple[str, str]
 ResidualFunc = Callable[[np.ndarray], np.ndarray]
+IndexValue = Union[int, DerivedPointRef]
+IndexMap = Dict[PointName, IndexValue]
 
 
 @dataclass
@@ -38,11 +40,12 @@ class ResidualSpec:
 @dataclass
 class Model:
     points: List[PointName]
-    index: Dict[PointName, int]
+    index: IndexMap
     residuals: List[ResidualSpec]
     gauges: List[str] = field(default_factory=list)
     scale: float = 1.0
     dag: ConstructionDAG = field(default_factory=ConstructionDAG)
+    derived_points: Dict[PointName, DerivedPointRef] = field(default_factory=dict)
 
 
 @dataclass
@@ -144,12 +147,22 @@ def _format_edge(edge: Edge) -> str:
     return f"{edge[0]}-{edge[1]}"
 
 
-def _vec(x: np.ndarray, index: Dict[PointName, int], p: PointName) -> np.ndarray:
-    base = index[p] * 2
-    return x[base : base + 2]
+def _vec(x: np.ndarray, index: IndexMap, p: PointName) -> np.ndarray:
+    entry = index.get(p)
+    if entry is None:
+        raise KeyError(f"Point {p!r} not registered in index")
+    if isinstance(entry, int):
+        base = entry * 2
+        return x[base : base + 2]
+    if isinstance(entry, DerivedPointRef):
+        value = entry.eval(x, index)
+        if value is None:
+            return np.zeros(2, dtype=float)
+        return value
+    raise TypeError(f"Unsupported index entry for point {p!r}: {entry!r}")
 
 
-def _edge_vec(x: np.ndarray, index: Dict[PointName, int], edge: Edge) -> np.ndarray:
+def _edge_vec(x: np.ndarray, index: IndexMap, edge: Edge) -> np.ndarray:
     return _vec(x, index, edge[1]) - _vec(x, index, edge[0])
 
 
@@ -417,11 +430,16 @@ def _as_edge(value: object) -> Edge:
 
 def _build_point_on(
     stmt: Stmt,
-    index: Dict[PointName, int],
+    index: IndexMap,
     dag: Optional[ConstructionDAG] = None,
 ) -> List[ResidualSpec]:
     point = stmt.data["point"]
     path_kind, payload = stmt.data["path"]
+
+    entry = index.get(point)
+    if isinstance(entry, DerivedPointRef):
+        # Derived points obtain their coordinates directly from the construction DAG.
+        return []
 
     if path_kind in {"line", "segment", "ray"}:
         edge = _as_edge(payload)
@@ -730,6 +748,7 @@ def translate(program: Program) -> Model:
     preferred_base_edge: Optional[Edge] = None  # NEW
     carrier_edges: Set[Edge] = set()  # NEW: edges used as carriers in constraints
     circle_radius_refs: Dict[PointName, List[PointName]] = {}
+    derived_point_nodes: Dict[PointName, int] = {}
 
     def register_scale(value: object) -> None:
         try:
@@ -809,6 +828,72 @@ def translate(program: Program) -> Model:
         a, b = to_edge[0], to_edge[1]
         if isinstance(a, str) and isinstance(b, str):
             dag.add_perpendicular(at, (a, b))
+
+    def _parse_perpendicular(path_value: object) -> Optional[Tuple[PointName, Edge]]:
+        if not isinstance(path_value, (list, tuple)) or len(path_value) != 2:
+            return None
+        path_kind, payload = path_value
+        if path_kind != "perpendicular" or not isinstance(payload, dict):
+            return None
+        at = payload.get("at")
+        to_edge_raw = payload.get("to")
+        if not isinstance(at, str) or to_edge_raw is None:
+            return None
+        try:
+            edge = _as_edge(to_edge_raw)
+        except ValueError:
+            return None
+        a, b = edge
+        if not isinstance(a, str) or not isinstance(b, str):
+            return None
+        return at, (a, b)
+
+    def _parse_linear_edge(path_value: object) -> Optional[Edge]:
+        if not isinstance(path_value, (list, tuple)) or len(path_value) != 2:
+            return None
+        path_kind, payload = path_value
+        if path_kind not in {"line", "segment", "ray"}:
+            return None
+        if not isinstance(payload, (list, tuple)) or len(payload) != 2:
+            return None
+        a, b = payload
+        if not isinstance(a, str) or not isinstance(b, str):
+            return None
+        return (a, b)
+
+    def _maybe_register_perp_intersection(stmt: Stmt) -> None:
+        if stmt.kind != "intersect":
+            return
+        path1 = stmt.data.get("path1")
+        path2 = stmt.data.get("path2")
+        if path1 is None or path2 is None:
+            return
+
+        perp_info = _parse_perpendicular(path1)
+        linear_edge = _parse_linear_edge(path2)
+        if perp_info is None or linear_edge is None:
+            perp_info = _parse_perpendicular(path2)
+            linear_edge = _parse_linear_edge(path1)
+        if perp_info is None or linear_edge is None:
+            return
+
+        at, to_edge = perp_info
+        base_edge = linear_edge
+        norm_to_edge = (to_edge[0], to_edge[1]) if to_edge[0] <= to_edge[1] else (to_edge[1], to_edge[0])
+        norm_base_edge = (
+            base_edge[0],
+            base_edge[1],
+        ) if base_edge[0] <= base_edge[1] else (base_edge[1], base_edge[0])
+        if norm_to_edge != norm_base_edge:
+            return
+
+        node_id = dag.add_perpendicular_foot(at, to_edge)
+        dag.add_perpendicular(at, to_edge)
+
+        for key in ("at", "at2"):
+            point_name = stmt.data.get(key)
+            if isinstance(point_name, str):
+                derived_point_nodes[point_name] = node_id
 
     # scan program
     for stmt in program.stmts:
@@ -909,6 +994,9 @@ def translate(program: Program) -> Model:
         if "from" in data and isinstance(data["from"], str):
             _register_point(order, seen, data["from"])
 
+        if stmt.kind == "intersect":
+            _maybe_register_perp_intersection(stmt)
+
         if stmt.kind == "circle_center_radius_through":
             center = data.get("center")
             through = data.get("through")
@@ -932,6 +1020,10 @@ def translate(program: Program) -> Model:
             if radius_point and "radius_point" not in stmt.opts:
                 stmt.opts["radius_point"] = radius_point
 
+    if derived_point_nodes:
+        derived_names = set(derived_point_nodes)
+        order = [name for name in order if name not in derived_names]
+
     if not order:
         raise ValueError("program contains no points to solve for")
 
@@ -944,7 +1036,13 @@ def translate(program: Program) -> Model:
     if preferred_base_edge is not None:
         orientation_edge = preferred_base_edge
 
-    index = {name: i for i, name in enumerate(order)}
+    base_index: Dict[PointName, int] = {name: i for i, name in enumerate(order)}
+    index: IndexMap = dict(base_index)
+    derived_refs: Dict[PointName, DerivedPointRef] = {}
+    for name, node_id in derived_point_nodes.items():
+        ref = DerivedPointRef(dag=dag, node_id=node_id)
+        derived_refs[name] = ref
+        index[name] = ref
     residuals: List[ResidualSpec] = []
 
     # build residuals from statements
@@ -1069,6 +1167,7 @@ def translate(program: Program) -> Model:
         gauges=gauges,
         scale=scene_scale,
         dag=dag,
+        derived_points=derived_refs,
     )
 
 
@@ -1130,16 +1229,17 @@ def _initial_guess(model: Model, rng: np.random.Generator, attempt: int) -> np.n
     if n >= 2:
         protected_indices.add(1)
     for point, edges in segment_hints.items():
-        idx = model.index.get(point)
-        if idx is None or idx in protected_indices:
+        idx_entry = model.index.get(point)
+        if not isinstance(idx_entry, int) or idx_entry in protected_indices:
             continue
+        idx = idx_entry
         accum_x = 0.0
         accum_y = 0.0
         count = 0
         for a, b in edges:
             ia = model.index.get(a)
             ib = model.index.get(b)
-            if ia is None or ib is None:
+            if not isinstance(ia, int) or not isinstance(ib, int):
                 continue
             ax = guess[2 * ia]
             ay = guess[2 * ia + 1]
@@ -1274,8 +1374,20 @@ def solve(model: Model, options: SolveOptions = SolveOptions()) -> Solution:
 
     coords: Dict[PointName, Tuple[float, float]] = {}
     for name in model.points:
-        idx = model.index[name] * 2
+        idx_entry = model.index[name]
+        if not isinstance(idx_entry, int):
+            continue
+        idx = idx_entry * 2
         coords[name] = (float(best_x[idx]), float(best_x[idx + 1]))
+
+    if model.derived_points:
+        cache: Dict[int, np.ndarray] = {}
+        for name, ref in model.derived_points.items():
+            value = ref.eval(best_x, model.index, cache)
+            if value is None:
+                coords[name] = (math.nan, math.nan)
+            else:
+                coords[name] = (float(value[0]), float(value[1]))
 
     breakdown_info: List[Dict[str, object]] = []
     for spec, values in breakdown:
