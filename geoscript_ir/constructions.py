@@ -85,6 +85,22 @@ class ConstructionDAG:
         self._perp_foot_cache[key] = idx
         return idx
 
+    def __str__(self) -> str:  # pragma: no cover - debugging helper
+        """Return a human-friendly representation of the DAG for logging."""
+
+        if not self.nodes:
+            return "ConstructionDAG[∅]"
+
+        lines = ["ConstructionDAG["]
+        for idx, node in enumerate(self.nodes):
+            deps = ", ".join(node.deps)
+            payload = ", ".join(repr(value) for value in node.payload)
+            lines.append(
+                f"  {idx}: {node.kind}(deps=({deps}), payload=({payload}))"
+            )
+        lines.append("]")
+        return "\n".join(lines)
+
     def topo_order(self) -> List[int]:
         """Return node evaluation order (currently identity)."""
 
