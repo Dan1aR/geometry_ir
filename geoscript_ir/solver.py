@@ -19,6 +19,15 @@ import numpy as np
 from scipy.optimize import least_squares
 
 from .ast import Program, Stmt
+from .derive import (
+    bisector_line,
+    circumcenter as derive_circumcenter,
+    foot as derive_foot,
+    incenter as derive_incenter,
+    line_intersection as derive_line_intersection,
+    midpoint as derive_midpoint,
+    perp_line as derive_perp_line,
+)
 
 PointName = str
 Edge = Tuple[str, str]
@@ -41,6 +50,8 @@ class Model:
     residuals: List[ResidualSpec]
     gauges: List[str] = field(default_factory=list)
     scale: float = 1.0
+    pinned: Dict[PointName, Tuple[float, float]] = field(default_factory=dict)
+    warnings: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -142,8 +153,17 @@ def _format_edge(edge: Edge) -> str:
     return f"{edge[0]}-{edge[1]}"
 
 
+_PINNED_LOOKUP: Dict[PointName, Tuple[float, float]] = {}
+
+
 def _vec(x: np.ndarray, index: Dict[PointName, int], p: PointName) -> np.ndarray:
-    base = index[p] * 2
+    idx = index.get(p)
+    if idx is None:
+        pinned = _PINNED_LOOKUP.get(p)
+        if pinned is None:
+            raise KeyError(f"point {p!r} missing from index and pinned lookup")
+        return np.asarray(pinned, dtype=float)
+    base = idx * 2
     return x[base : base + 2]
 
 
@@ -715,6 +735,14 @@ def translate(program: Program) -> Model:
     preferred_base_edge: Optional[Edge] = None  # NEW
     carrier_edges: Set[Edge] = set()  # NEW: edges used as carriers in constraints
     circle_radius_refs: Dict[PointName, List[PointName]] = {}
+    pinned: Dict[PointName, Tuple[float, float]] = {}
+    pinned_sources: Dict[PointName, str] = {}
+    analytic_warnings: List[str] = []
+    warning_set: Set[str] = set()
+    known_coords: Dict[PointName, np.ndarray] = {}
+    center_vertex_map: Dict[PointName, Tuple[PointName, PointName, PointName]] = {}
+    center_reason: Dict[PointName, str] = {}
+    failed_centers: Set[PointName] = set()
 
     def register_scale(value: object) -> None:
         try:
@@ -821,6 +849,30 @@ def translate(program: Program) -> Model:
                         if preferred_base_edge is None:
                             preferred_base_edge = base_edge
 
+        if stmt.kind == "circumcircle":
+            ids_raw = data.get("ids", [])
+            seen_ids: List[PointName] = []
+            for pid in ids_raw:
+                if isinstance(pid, str) and pid not in seen_ids:
+                    seen_ids.append(pid)
+            if len(seen_ids) >= 3:
+                center_guess = f"O_{''.join(seen_ids[:3])}"
+                if center_guess in seen:
+                    center_vertex_map.setdefault(center_guess, (seen_ids[0], seen_ids[1], seen_ids[2]))
+                    center_reason.setdefault(center_guess, "circumcenter")
+
+        if stmt.kind == "incircle":
+            ids_raw = data.get("ids", [])
+            seen_ids: List[PointName] = []
+            for pid in ids_raw:
+                if isinstance(pid, str) and pid not in seen_ids:
+                    seen_ids.append(pid)
+            if len(seen_ids) >= 3:
+                center_guess = f"I_{''.join(seen_ids)}"
+                if center_guess in seen:
+                    center_vertex_map.setdefault(center_guess, (seen_ids[0], seen_ids[1], seen_ids[2]))
+                    center_reason.setdefault(center_guess, "incenter")
+
         # register points referenced by names/fields
         if "point" in data and isinstance(data["point"], str):
             _register_point(order, seen, data["point"])
@@ -900,7 +952,204 @@ def translate(program: Program) -> Model:
             if radius_point and "radius_point" not in stmt.opts:
                 stmt.opts["radius_point"] = radius_point
 
-    if not order:
+    def _warn(message: str) -> None:
+        if message and message not in warning_set:
+            warning_set.add(message)
+            analytic_warnings.append(message)
+
+    def _get_known_point(name: object) -> Optional[np.ndarray]:
+        if not isinstance(name, str):
+            return None
+        existing = known_coords.get(name)
+        if existing is not None:
+            return existing
+        pinned_val = pinned.get(name)
+        if pinned_val is not None:
+            arr = np.asarray(pinned_val, dtype=float)
+            known_coords[name] = arr
+            return arr
+        return None
+
+    def _record_point(name: object, coords: Optional[Sequence[float]], reason: str) -> None:
+        if not isinstance(name, str) or coords is None:
+            return
+        if name in pinned:
+            return
+        arr = np.asarray(coords, dtype=float)
+        if arr.shape != (2,):
+            return
+        pinned[name] = (float(arr[0]), float(arr[1]))
+        known_coords[name] = arr
+        pinned_sources[name] = reason
+
+    def _line_from_path(path: object) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        if not isinstance(path, (list, tuple)) or len(path) != 2:
+            return None
+        path_kind, payload = path
+        if path_kind in {"line", "segment", "ray"}:
+            try:
+                edge = _as_edge(payload)
+            except ValueError:
+                return None
+            a, b = edge
+            pa = _get_known_point(a)
+            pb = _get_known_point(b)
+            if pa is None or pb is None:
+                return None
+            direction = pb - pa
+            if float(np.dot(direction, direction)) <= _DENOM_EPS:
+                return None
+            return pa, direction
+        if path_kind == "perpendicular" and isinstance(payload, dict):
+            anchor_name = payload.get("at")
+            to_raw = payload.get("to")
+            if not isinstance(anchor_name, str) or to_raw is None:
+                return None
+            try:
+                edge = _as_edge(to_raw)
+            except ValueError:
+                return None
+            base = _get_known_point(edge[0])
+            end = _get_known_point(edge[1])
+            anchor = _get_known_point(anchor_name)
+            if base is None or end is None or anchor is None:
+                return None
+            result = derive_perp_line(anchor, base, end)
+            if result is None:
+                return None
+            p, d = result
+            return (np.asarray(p, dtype=float), np.asarray(d, dtype=float))
+        if path_kind == "altitude" and isinstance(payload, dict):
+            anchor_name = payload.get("frm")
+            to_raw = payload.get("to")
+            if not isinstance(anchor_name, str) or to_raw is None:
+                return None
+            try:
+                edge = _as_edge(to_raw)
+            except ValueError:
+                return None
+            base = _get_known_point(edge[0])
+            end = _get_known_point(edge[1])
+            anchor = _get_known_point(anchor_name)
+            if base is None or end is None or anchor is None:
+                return None
+            result = derive_perp_line(anchor, base, end)
+            if result is None:
+                return None
+            p, d = result
+            return (np.asarray(p, dtype=float), np.asarray(d, dtype=float))
+        if path_kind == "angle-bisector" and isinstance(payload, dict):
+            at = payload.get("at")
+            rays = payload.get("rays")
+            if not isinstance(at, str) or not isinstance(rays, (list, tuple)) or len(rays) != 2:
+                return None
+            try:
+                ray1 = _as_edge(rays[0])
+                ray2 = _as_edge(rays[1])
+            except ValueError:
+                return None
+            arm1 = _get_known_point(ray1[1])
+            arm2 = _get_known_point(ray2[1])
+            vertex = _get_known_point(at)
+            if arm1 is None or arm2 is None or vertex is None:
+                return None
+            result = bisector_line(vertex, arm1, arm2)
+            if result is None:
+                return None
+            p, d = result
+            return (np.asarray(p, dtype=float), np.asarray(d, dtype=float))
+        return None
+
+    def _try_pin_center(center: PointName) -> None:
+        if center in pinned or center in failed_centers:
+            return
+        vertices = center_vertex_map.get(center)
+        if not vertices:
+            return
+        pts: List[np.ndarray] = []
+        for name in vertices:
+            pt = _get_known_point(name)
+            if pt is None:
+                return
+            pts.append(pt)
+        if len(pts) < 3:
+            return
+        reason = center_reason.get(center, "center")
+        if reason == "circumcenter":
+            result = derive_circumcenter(pts[0], pts[1], pts[2])
+        else:
+            result = derive_incenter(pts[0], pts[1], pts[2])
+        if result is None:
+            failed_centers.add(center)
+            _warn(f"analytic construction skipped: {reason} {center}")
+            return
+        _record_point(center, result, reason)
+
+    def _attempt_pending_centers() -> None:
+        for center in list(center_vertex_map.keys()):
+            _try_pin_center(center)
+
+    for stmt in program.stmts:
+        kind = stmt.kind
+        data = stmt.data
+        if kind == "midpoint":
+            mid_name = data.get("midpoint")
+            edge_raw = data.get("edge")
+            try:
+                a, b = _as_edge(edge_raw)
+            except (TypeError, ValueError):
+                a = b = None  # type: ignore[assignment]
+            if isinstance(mid_name, str) and a is not None and b is not None:
+                pa = _get_known_point(a)
+                pb = _get_known_point(b)
+                if pa is not None and pb is not None:
+                    result = derive_midpoint(pa, pb)
+                    if result is not None:
+                        _record_point(mid_name, result, "midpoint")
+                    else:
+                        _warn(f"analytic construction skipped: midpoint {mid_name}")
+        elif kind == "foot":
+            foot_name = data.get("foot")
+            vertex = data.get("from")
+            edge_raw = data.get("edge")
+            try:
+                a, b = _as_edge(edge_raw)
+            except (TypeError, ValueError):
+                a = b = None  # type: ignore[assignment]
+            if (
+                isinstance(foot_name, str)
+                and isinstance(vertex, str)
+                and a is not None
+                and b is not None
+            ):
+                base = _get_known_point(a)
+                end = _get_known_point(b)
+                apex = _get_known_point(vertex)
+                if base is not None and end is not None and apex is not None:
+                    result = derive_foot(apex, base, end)
+                    if result is not None:
+                        _record_point(foot_name, result, "foot")
+                    else:
+                        _warn(f"analytic construction skipped: foot {foot_name}")
+        elif kind == "intersect":
+            at = data.get("at")
+            line1 = _line_from_path(data.get("path1"))
+            line2 = _line_from_path(data.get("path2"))
+            if isinstance(at, str) and line1 is not None and line2 is not None:
+                point = derive_line_intersection(line1, line2)
+                if point is not None:
+                    _record_point(at, point, "intersection")
+                else:
+                    _warn(f"analytic construction skipped: intersection {at}")
+        _attempt_pending_centers()
+
+    _attempt_pending_centers()
+
+    if pinned:
+        order = [name for name in order if name not in pinned]
+        seen = {name: i for i, name in enumerate(order)}
+
+    if not order and not pinned:
         raise ValueError("program contains no points to solve for")
 
     # Guard against collapsed layouts by separating every point pair
@@ -914,6 +1163,9 @@ def translate(program: Program) -> Model:
 
     index = {name: i for i, name in enumerate(order)}
     residuals: List[ResidualSpec] = []
+    pinned_intersections: Set[PointName] = {
+        name for name, reason in pinned_sources.items() if reason == "intersection"
+    }
 
     # build residuals from statements
     for stmt in program.stmts:
@@ -924,6 +1176,51 @@ def translate(program: Program) -> Model:
             built = builder(stmt, index)
         except ValueError as exc:
             raise ResidualBuilderError(stmt, str(exc)) from exc
+        if not built:
+            continue
+        if stmt.kind == "midpoint":
+            mid_name = stmt.data.get("midpoint")
+            if isinstance(mid_name, str) and mid_name in pinned:
+                continue
+        if stmt.kind == "foot":
+            foot_name = stmt.data.get("foot")
+            if isinstance(foot_name, str) and foot_name in pinned:
+                continue
+        if stmt.kind == "point_on":
+            point_name = stmt.data.get("point")
+            if isinstance(point_name, str) and point_name in pinned_intersections:
+                built = [
+                    spec
+                    for spec in built
+                    if spec.kind not in {"point_on_line", "point_on_segment", "point_on_ray"}
+                ]
+                if not built:
+                    continue
+        if stmt.kind == "equal_segments" and stmt.origin in {"desugar(circumcircle)", "desugar(incircle)"}:
+            edges: List[Edge] = []
+            for raw_edge in stmt.data.get("lhs", []):
+                try:
+                    edges.append(_as_edge(raw_edge))
+                except ValueError:
+                    continue
+            for raw_edge in stmt.data.get("rhs", []):
+                try:
+                    edges.append(_as_edge(raw_edge))
+                except ValueError:
+                    continue
+            if edges:
+                common: Set[PointName] = set(edges[0])
+                for e in edges[1:]:
+                    common &= {e[0], e[1]}
+                if common:
+                    skip = False
+                    for candidate in common:
+                        reason = pinned_sources.get(candidate)
+                        if candidate in pinned and reason in {"circumcenter", "incenter"}:
+                            skip = True
+                            break
+                    if skip:
+                        continue
         residuals.extend(built)
 
     # global guards
@@ -973,61 +1270,72 @@ def translate(program: Program) -> Model:
 
     # gauges
     gauges: List[str] = []
-    anchor_point = order[0]
+    if order:
+        anchor_point = order[0]
 
-    def anchor_func(x: np.ndarray) -> np.ndarray:
-        base = index[anchor_point] * 2
-        return x[base : base + 2]
-
-    residuals.append(
-        ResidualSpec(
-            key=f"gauge:anchor({anchor_point})",
-            func=anchor_func,
-            size=2,
-            kind="gauge",
-            source=None,
-        )
-    )
-    gauges.append(f"anchor={anchor_point}")
-
-    if orientation_edge is not None:
-        a, b = orientation_edge
-
-        def orient_func(x: np.ndarray) -> np.ndarray:
-            a_y = _vec(x, index, a)[1]
-            b_y = _vec(x, index, b)[1]
-            return np.array([b_y - a_y], dtype=float)
+        def anchor_func(x: np.ndarray) -> np.ndarray:
+            base = index[anchor_point] * 2
+            return x[base : base + 2]
 
         residuals.append(
             ResidualSpec(
-                key=f"gauge:orientation({_format_edge(orientation_edge)})",
-                func=orient_func,
-                size=1,
+                key=f"gauge:anchor({anchor_point})",
+                func=anchor_func,
+                size=2,
                 kind="gauge",
                 source=None,
             )
         )
-        gauges.append(f"orientation={_format_edge(orientation_edge)}")
+        gauges.append(f"anchor={anchor_point}")
 
-        # NEW: if no numeric scale present, pin unit span on orientation edge
-        if not scale_samples:
-            def unit_span_func(x: np.ndarray) -> np.ndarray:
-                ax = _vec(x, index, a)[0]
-                bx = _vec(x, index, b)[0]
-                return np.array([ (bx - ax) - 1.0 ], dtype=float)
+        if orientation_edge is not None:
+            a, b = orientation_edge
+            if a in index and b in index:
 
-            residuals.append(
-                ResidualSpec(
-                    key=f"gauge:unit_span({_format_edge(orientation_edge)})",
-                    func=unit_span_func,
-                    size=1,
-                    kind="gauge",
-                    source=None,
+                def orient_func(x: np.ndarray) -> np.ndarray:
+                    a_y = _vec(x, index, a)[1]
+                    b_y = _vec(x, index, b)[1]
+                    return np.array([b_y - a_y], dtype=float)
+
+                residuals.append(
+                    ResidualSpec(
+                        key=f"gauge:orientation({_format_edge(orientation_edge)})",
+                        func=orient_func,
+                        size=1,
+                        kind="gauge",
+                        source=None,
+                    )
                 )
-            )
-            gauges.append("unit_span=1")
+                gauges.append(f"orientation={_format_edge(orientation_edge)}")
 
-    return Model(points=order, index=index, residuals=residuals, gauges=gauges, scale=scene_scale)
+                # NEW: if no numeric scale present, pin unit span on orientation edge
+                if not scale_samples:
+
+                    def unit_span_func(x: np.ndarray) -> np.ndarray:
+                        ax = _vec(x, index, a)[0]
+                        bx = _vec(x, index, b)[0]
+                        return np.array([(bx - ax) - 1.0], dtype=float)
+
+                    residuals.append(
+                        ResidualSpec(
+                            key=f"gauge:unit_span({_format_edge(orientation_edge)})",
+                            func=unit_span_func,
+                            size=1,
+                            kind="gauge",
+                            source=None,
+                        )
+                    )
+                    gauges.append("unit_span=1")
+
+    return Model(
+        points=order,
+        index=index,
+        residuals=residuals,
+        gauges=gauges,
+        scale=scene_scale,
+        pinned=pinned,
+        warnings=analytic_warnings,
+    )
 
 
 def _initial_guess(model: Model, rng: np.random.Generator, attempt: int) -> np.ndarray:
@@ -1137,6 +1445,8 @@ def _initial_guess(model: Model, rng: np.random.Generator, attempt: int) -> np.n
 
 
 def _evaluate(model: Model, x: np.ndarray) -> Tuple[np.ndarray, List[Tuple[ResidualSpec, np.ndarray]]]:
+    global _PINNED_LOOKUP
+    _PINNED_LOOKUP = model.pinned
     blocks: List[np.ndarray] = []
     breakdown: List[Tuple[ResidualSpec, np.ndarray]] = []
     for spec in model.residuals:
@@ -1153,7 +1463,7 @@ def _evaluate(model: Model, x: np.ndarray) -> Tuple[np.ndarray, List[Tuple[Resid
 
 def solve(model: Model, options: SolveOptions = SolveOptions()) -> Solution:
     rng = np.random.default_rng(options.random_seed)
-    warnings: List[str] = []
+    warnings: List[str] = list(model.warnings)
     best_result: Optional[
         Tuple[Tuple[int, float], float, np.ndarray, List[Tuple[ResidualSpec, np.ndarray]], bool]
     ] = None
@@ -1230,7 +1540,9 @@ def solve(model: Model, options: SolveOptions = SolveOptions()) -> Solution:
             f"solver did not converge within tolerance {options.tol:.1e}; max residual {max_res:.3e}"
         )
 
-    coords: Dict[PointName, Tuple[float, float]] = {}
+    coords: Dict[PointName, Tuple[float, float]] = {
+        name: (float(pt[0]), float(pt[1])) for name, pt in model.pinned.items()
+    }
     for name in model.points:
         idx = model.index[name] * 2
         coords[name] = (float(best_x[idx]), float(best_x[idx + 1]))

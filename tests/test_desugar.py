@@ -47,11 +47,7 @@ def test_point_on_segment_midpoint_creates_equal_segments():
         for s in out.stmts
         if s.kind == 'equal_segments' and s.origin == 'desugar(midpoint)'
     ]
-    assert len(midpoint_generated) == 1
-    assert midpoint_generated[0].data == {
-        'lhs': [('M', 'B')],
-        'rhs': [('M', 'C')],
-    }
+    assert midpoint_generated == []
 
 
 def test_polygon_desugars_into_segments():
@@ -233,10 +229,7 @@ def test_intersect_generates_point_on_and_segments():
 
     generated = [s for s in out.stmts if s.origin == 'desugar(intersect)']
     point_on = [s for s in generated if s.kind == 'point_on']
-    assert len(point_on) == 2
-    assert all(s.data['point'] == 'D' for s in point_on)
-    assert any(s.data['path'] == bisector for s in point_on)
-    assert any(s.data['path'] == segment for s in point_on)
+    assert point_on == []
 
     segments = [s for s in generated if s.kind == 'segment']
     assert {s.data['edge'] for s in segments} == {('A', 'D')}
@@ -251,10 +244,7 @@ def test_intersect_perpendicular_generates_segment_to_anchor():
 
     generated = [s for s in out.stmts if s.origin == 'desugar(intersect)']
     point_on = [s for s in generated if s.kind == 'point_on']
-    assert len(point_on) == 2
-    assert all(s.data['point'] == 'M' for s in point_on)
-    assert any(s.data['path'] == perp for s in point_on)
-    assert any(s.data['path'] == segment for s in point_on)
+    assert point_on == []
 
     segments = [s for s in generated if s.kind == 'segment']
     assert {s.data['edge'] for s in segments} == {('D', 'M')}
