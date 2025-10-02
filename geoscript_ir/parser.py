@@ -75,6 +75,15 @@ def parse_pair(cur: Cursor):
     return (a, b), sp
 
 
+def parse_angle3(cur: Cursor):
+    a, sp = parse_id(cur)
+    cur.expect('DASH')
+    b, _ = parse_id(cur)
+    cur.expect('DASH')
+    c, _ = parse_id(cur)
+    return (a, b, c), sp
+
+
 def parse_edge(cur: Cursor):
     return parse_pair(cur)
 
@@ -229,16 +238,12 @@ def parse_path(cur: Cursor):
         return 'circle', center
     if kw == 'angle-bisector':
         cur.consume_keyword('angle-bisector')
-        cur.consume_keyword('at')
-        at, _ = parse_id(cur)
-        cur.consume_keyword('rays')
-        r1, _ = parse_pair(cur)
-        r2, _ = parse_pair(cur)
+        points, _ = parse_angle3(cur)
         external = False
         if cur.peek_keyword() == 'external':
             cur.consume_keyword('external')
             external = True
-        payload = {'at': at, 'rays': (r1, r2)}
+        payload = {'points': points}
         if external:
             payload['external'] = True
         return 'angle-bisector', payload
@@ -358,13 +363,9 @@ def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
         t1 = cur.expect('ID')
         kind = t1[1].lower()
         if kind == 'angle':
-            cur.consume_keyword('at')
-            at, sp = parse_id(cur)
-            cur.consume_keyword('rays')
-            r1, _ = parse_pair(cur)
-            r2, _ = parse_pair(cur)
+            points, sp = parse_angle3(cur)
             opts = parse_opts(cur)
-            stmt = Stmt('target_angle', sp, {'at': at, 'rays': (r1, r2)}, opts)
+            stmt = Stmt('target_angle', sp, {'points': points}, opts)
         elif kind == 'length':
             edge, sp = parse_pair(cur)
             opts = parse_opts(cur)
@@ -503,22 +504,14 @@ def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
         stmt = Stmt('median_from_to', sp, {'frm': frm, 'to': to, 'midpoint': midpoint}, opts)
     elif kw == 'angle':
         cur.consume_keyword('angle')
-        cur.consume_keyword('at')
-        at, sp = parse_id(cur)
-        cur.consume_keyword('rays')
-        r1, _ = parse_pair(cur)
-        r2, _ = parse_pair(cur)
+        points, sp = parse_angle3(cur)
         opts = parse_opts(cur)
-        stmt = Stmt('angle_at', sp, {'at': at, 'rays': (r1, r2)}, opts)
+        stmt = Stmt('angle_at', sp, {'points': points}, opts)
     elif kw == 'right-angle':
         cur.consume_keyword('right-angle')
-        cur.consume_keyword('at')
-        at, sp = parse_id(cur)
-        cur.consume_keyword('rays')
-        r1, _ = parse_pair(cur)
-        r2, _ = parse_pair(cur)
+        points, sp = parse_angle3(cur)
         opts = parse_opts(cur)
-        stmt = Stmt('right_angle_at', sp, {'at': at, 'rays': (r1, r2)}, opts)
+        stmt = Stmt('right_angle_at', sp, {'points': points}, opts)
     elif kw == 'equal-segments':
         cur.consume_keyword('equal-segments')
         lhs, sp = parse_edgelist_paren(cur, consume_lparen=True)

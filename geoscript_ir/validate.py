@@ -43,11 +43,13 @@ def validate(prog: Program) -> None:
                 raise ValidationError(f'[line {s.span.line}, col {s.span.col}] polygon needs at least 3 vertices')
             if len(set(ids)) != len(ids):
                 raise ValidationError(f'[line {s.span.line}, col {s.span.col}] polygon vertices must be distinct')
-        elif k in ('angle_at','right_angle_at'):
-            at = s.data['at']
-            (r1, r2) = s.data['rays']
-            if r1[0] != at or r2[0] != at:
-                raise ValidationError(f'[line {s.span.line}, col {s.span.col}] angle rays must start at {at}')
+        elif k in ('angle_at', 'right_angle_at', 'target_angle'):
+            points = s.data['points']
+            if len(points) != 3:
+                raise ValidationError(f'[line {s.span.line}, col {s.span.col}] angle requires three points')
+            a, b, c = points
+            if b == a or b == c:
+                raise ValidationError(f'[line {s.span.line}, col {s.span.col}] angle vertex must differ from endpoints')
         elif k == 'equal_segments':
             if not s.data['lhs'] or not s.data['rhs']:
                 raise ValidationError(f'[line {s.span.line}, col {s.span.col}] equal-segments needs both sides non-empty')

@@ -77,7 +77,7 @@ def test_triangle_isosceles_and_right_expansions():
 
     right_angles = [s for s in out.stmts if s.kind == 'right_angle_at' and s.origin == 'desugar(triangle)']
     assert len(right_angles) == 1
-    assert right_angles[0].data == {'at': 'B', 'rays': (('B', 'C'), ('B', 'A'))}
+    assert right_angles[0].data == {'points': ('C', 'B', 'A')}
     assert right_angles[0].opts == {'mark': 'square'}
 
 
@@ -135,7 +135,7 @@ def test_rectangle_right_angles_and_equal_sides_added():
     assert len(angles) == 4
     for data in (('A', ('A', 'B'), ('A', 'D')), ('B', ('B', 'C'), ('B', 'A')), ('C', ('C', 'D'), ('C', 'B')), ('D', ('D', 'A'), ('D', 'C'))):
         at, r1, r2 = data
-        assert any(s.data == {'at': at, 'rays': (r1, r2)} for s in angles)
+        assert any(s.data == {'points': (r1[1], at, r2[1])} for s in angles)
 
     equal_segments = [s for s in out.stmts if s.kind == 'equal_segments' and s.origin == 'desugar(rectangle)']
     assert len(equal_segments) == 2
@@ -187,12 +187,12 @@ def test_line_tangent_at_produces_right_angles():
         if s.kind == 'right_angle_at' and s.origin == 'desugar(line_tangent_at)'
     ]
     assert len(right_angles) == 1
-    assert right_angles[0].data == {'at': 'B', 'rays': (('B', 'O'), ('B', 'A'))}
+    assert right_angles[0].data == {'points': ('O', 'B', 'A')}
     assert right_angles[0].opts == {}
 
 
 def test_intersect_generates_point_on_and_segments():
-    bisector = ('angle-bisector', {'at': 'A', 'rays': (('A', 'B'), ('A', 'C'))})
+    bisector = ('angle-bisector', {'points': ('B', 'A', 'C')})
     segment = ('segment', ('B', 'C'))
     inter = stmt('intersect', {'path1': bisector, 'path2': segment, 'at': 'D', 'at2': None})
 

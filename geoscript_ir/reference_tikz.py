@@ -96,7 +96,7 @@ GEOSCRIPT_TO_TIKZ_PROMPT = dedent(
       the tangency mark at Z.
     - `parallel-edges (A-B; C-D)`: use paired arrow markings on the corresponding segments.
     - `equal-segments`: apply tick or double-tick styles consistently across each group.
-    - `angle at P` and `right-angle at P`: render with `\draw pic{angle = ...}` or
+    - `angle A-B-C` and `right-angle A-B-C`: render with `\draw pic{angle = ...}` or
       `\draw pic{right angle = ...}`. If an explicit degree measure appears in options, show it as
       math text (e.g. `"$30^{\circ}$"`). Obey rule toggles such as `mark_right_angles_as_square`.
 
@@ -225,10 +225,10 @@ GEOSCRIPT_TO_TIKZ_PROMPT = dedent(
     layout canonical=triangle_MNP scale=1
     points M, N, P, D, K, O
     triangle M-N-P
-    angle-bisector at M rays M-N M-P
-    intersect (angle-bisector at M rays M-N M-P) with (segment N-P) at D
-    angle-bisector at N rays N-M N-P
-    intersect (angle-bisector at N rays N-M N-P) with (segment M-P) at K
+    angle-bisector N-M-P
+    intersect (angle-bisector N-M-P) with (segment N-P) at D
+    angle-bisector M-N-P
+    intersect (angle-bisector M-N-P) with (segment M-P) at K
     intersect (line M-D) with (line N-K) at O
     target area (Find OK : ON)
     </geoscript>

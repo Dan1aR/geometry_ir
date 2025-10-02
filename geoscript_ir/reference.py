@@ -15,7 +15,7 @@ BNF = dedent(
               | 'sidelabel' Pair STRING Opts?
 
     Target    := 'target'
-                 ( 'angle' 'at' ID 'rays' Pair Pair
+                 ( 'angle' Angle3
                  | 'length' Pair
                  | 'point' ID
                  | 'circle' '(' STRING ')'
@@ -33,8 +33,8 @@ BNF = dedent(
                | 'perpendicular' 'at' ID 'to' Pair 'foot' ID Opts?
                | 'parallel' 'through' ID 'to' Pair Opts?
                | 'median'  'from' ID 'to' Pair 'midpoint' ID Opts?
-               | 'angle' 'at' ID 'rays' Pair Pair Opts?
-               | 'right-angle' 'at' ID 'rays' Pair Pair Opts?
+               | 'angle' Angle3 Opts?
+               | 'right-angle' Angle3 Opts?
                | 'equal-segments' '(' EdgeList ';' EdgeList ')' Opts?
                | 'parallel-edges' '(' Pair ';' Pair ')' Opts?
                | 'tangent' 'at' ID 'to' 'circle' 'center' ID Opts?
@@ -58,7 +58,7 @@ BNF = dedent(
                 | 'ray'     Pair
                 | 'segment' Pair
                 | 'circle' 'center' ID
-                | 'angle-bisector' 'at' ID 'rays' Pair Pair ('external')?
+                | 'angle-bisector' Angle3 ('external')?
                 | 'median'  'from' ID 'to' Pair
                 | 'perpendicular' 'at' ID 'to' Pair
 
@@ -66,6 +66,7 @@ BNF = dedent(
     IdList    := ID { ',' ID }
     IdChain   := ID '-' ID { '-' ID }
     Pair      := ID '-' ID
+    Angle3    := ID '-' ID '-' ID
 
     Opts      := '[' KeyVal { ' ' KeyVal } ']'
     KeyVal    := KEY '=' (VALUE | STRING)
@@ -138,9 +139,9 @@ _PROMPT_CORE = dedent(
       layout canonical=triangle_ABC scale=1
       points A, B, C, D, E
       triangle A-B-C
-      angle at A rays A-B A-C [degrees=38]
-      angle at B rays B-A B-C [degrees=110]
-      angle at C rays C-A C-B [degrees=32]
+      angle B-A-C [degrees=38]
+      angle A-B-C [degrees=110]
+      angle A-C-B [degrees=32]
       segment A-C
       point D on segment A-C
       point E on segment A-C
@@ -151,7 +152,7 @@ _PROMPT_CORE = dedent(
       segment E-C
       equal-segments (B-D ; D-A) [label="given"]
       equal-segments (B-E ; E-C) [label="given"]
-      target angle at B rays B-D B-E [label="?DBE"]
+      target angle D-B-E [label="?DBE"]
       </geoscript>
 
     - Example 2
@@ -174,12 +175,12 @@ _PROMPT_CORE = dedent(
       layout canonical=triangle_ABC scale=1.0
       points A, B, C, D, M
       triangle A-B-C
-      angle at C rays C-A C-B [degrees=90]
-      angle at B rays B-A B-C [degrees=21]
-      angle at A rays A-B A-C [degrees=69]
-      intersect (angle-bisector at C rays C-A C-B) with (segment A-B) at D
+      angle A-C-B [degrees=90]
+      angle A-B-C [degrees=21]
+      angle B-A-C [degrees=69]
+      intersect (angle-bisector A-C-B) with (segment A-B) at D
       median from C to A-B midpoint M
-      target angle at C rays C-D C-M [label="?"]
+      target angle D-C-M [label="?"]
 
     - Example 4
       Input: "Circle with center O has diameter AB. Points C and D lie on the circle. Find angle ACB."
@@ -192,7 +193,7 @@ _PROMPT_CORE = dedent(
       diameter A-B to circle center O
       point C on circle center O
       point D on circle center O
-      target angle at C rays C-A C-B [label="?ACB"]
+      target angle A-C-B [label="?ACB"]
     """
 ).strip()
 

@@ -37,7 +37,7 @@ def test_translate_adds_gauges_and_residuals():
         segment A-B [length=4]
         segment A-C [length=3]
         segment B-C [length=5]
-        right-angle at A rays A-B A-C
+        right-angle B-A-C
         """
     )
     assert model.points == ["A", "B", "C"]
@@ -93,7 +93,7 @@ def test_solver_right_triangle_solution_is_stable():
         segment A-B [length=4]
         segment A-C [length=3]
         segment B-C [length=5]
-        right-angle at A rays A-B A-C
+        right-angle B-A-C
         """
     )
     opts = SolveOptions(random_seed=1234, reseed_attempts=1)

@@ -369,10 +369,9 @@ def _build_parallel_edges(stmt: Stmt, index: Dict[PointName, int]) -> List[Resid
 
 
 def _build_right_angle(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
-    (ray1, ray2) = stmt.data["rays"]
-    ray1 = tuple(ray1)
-    ray2 = tuple(ray2)
-    at = stmt.data["at"]
+    a, at, c = stmt.data["points"]
+    ray1 = (at, a)
+    ray2 = (at, c)
 
     def func(x: np.ndarray) -> np.ndarray:
         u = _edge_vec(x, index, ray1)
@@ -388,10 +387,9 @@ def _build_angle(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
     if measure is None:
         return []
     theta = float(measure)
-    (ray1, ray2) = stmt.data["rays"]
-    ray1 = tuple(ray1)
-    ray2 = tuple(ray2)
-    at = stmt.data["at"]
+    a, at, c = stmt.data["points"]
+    ray1 = (at, a)
+    ray2 = (at, c)
 
     cos_target = math.cos(math.radians(theta))
 
@@ -494,12 +492,19 @@ def _build_point_on(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpe
         return [ResidualSpec(key=key, func=func, size=1, kind="point_on_circle", source=stmt)]
 
     if path_kind == "angle-bisector" and isinstance(payload, dict):
-        at = payload.get("at")
-        rays = payload.get("rays")
-        if not isinstance(at, str) or not isinstance(rays, (list, tuple)) or len(rays) != 2:
-            raise ValueError("angle-bisector path requires vertex and two rays")
-        ray1 = _as_edge(rays[0])
-        ray2 = _as_edge(rays[1])
+        points = payload.get("points")
+        if isinstance(points, (list, tuple)) and len(points) == 3:
+            arm1, at, arm2 = points
+            ray1 = (at, arm1)
+            ray2 = (at, arm2)
+        else:
+            at = payload.get("at")
+            rays = payload.get("rays")
+            if not isinstance(at, str) or not isinstance(rays, (list, tuple)) or len(rays) != 2:
+                raise ValueError("angle-bisector path requires vertex and two rays")
+            ray1 = _as_edge(rays[0])
+            ray2 = _as_edge(rays[1])
+        at = ray1[0]
         arm1 = ray1[1]
         arm2 = ray2[1]
         external = bool(payload.get("external"))
@@ -744,14 +749,21 @@ def translate(program: Program) -> Model:
             _register_point(order, seen, payload)
             return
         if kind == "angle-bisector" and isinstance(payload, dict):
-            at = payload.get("at")
-            if isinstance(at, str):
+            points = payload.get("points")
+            if isinstance(points, (list, tuple)) and len(points) == 3:
+                arm1, at, arm2 = points
                 _register_point(order, seen, at)
-            rays = payload.get("rays")
-            if isinstance(rays, (list, tuple)):
-                for ray in rays:
-                    if isinstance(ray, (list, tuple)):
-                        handle_edge(ray)
+                handle_edge((at, arm1))
+                handle_edge((at, arm2))
+            else:
+                at = payload.get("at")
+                if isinstance(at, str):
+                    _register_point(order, seen, at)
+                rays = payload.get("rays")
+                if isinstance(rays, (list, tuple)):
+                    for ray in rays:
+                        if isinstance(ray, (list, tuple)):
+                            handle_edge(ray)
             return
         if kind == "median" and isinstance(payload, dict):
             frm = payload.get("frm")

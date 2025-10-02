@@ -9,7 +9,7 @@ Annot     := 'label point' ID Opts?
           | 'sidelabel' Pair STRING Opts?
 
 Target    := 'target'
-             ( 'angle' 'at' ID 'rays' Pair Pair
+             ( 'angle' Angle3
              | 'length' Pair
              | 'point' ID
              | 'circle' '(' STRING ')'
@@ -27,8 +27,8 @@ Obj       := 'segment' Pair Opts?
            | 'perpendicular' 'at' ID 'to' Pair 'foot' ID Opts?
            | 'parallel' 'through' ID 'to' Pair Opts?
            | 'median'  'from' ID 'to' Pair 'midpoint' ID Opts?
-           | 'angle' 'at' ID 'rays' Pair Pair Opts?
-           | 'right-angle' 'at' ID 'rays' Pair Pair Opts?
+           | 'angle' Angle3 Opts?
+           | 'right-angle' Angle3 Opts?
            | 'equal-segments' '(' EdgeList ';' EdgeList ')' Opts?
            | 'parallel-edges' '(' Pair ';' Pair ')' Opts?
            | 'tangent' 'at' ID 'to' 'circle' 'center' ID Opts?
@@ -52,7 +52,7 @@ Path      := 'line'    Pair
             | 'ray'     Pair
             | 'segment' Pair
             | 'circle' 'center' ID
-            | 'angle-bisector' 'at' ID 'rays' Pair Pair ('external')?
+            | 'angle-bisector' Angle3 ('external')?
             | 'median'  'from' ID 'to' Pair
             | 'perpendicular' 'at' ID 'to' Pair
 
@@ -60,6 +60,7 @@ EdgeList  := Pair { ',' Pair }
 IdList    := ID { ',' ID }
 IdChain   := ID '-' ID { '-' ID }
 Pair      := ID '-' ID
+Angle3    := ID '-' ID '-' ID
 
 Opts      := '[' KeyVal { ' ' KeyVal } ']'
 KeyVal    := KEY '=' (VALUE | STRING)

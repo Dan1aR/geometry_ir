@@ -96,7 +96,14 @@ def check_consistency(prog: Program) -> List[ConsistencyWarning]:
     for stmt in prog.stmts:
         if stmt.kind in ('angle_at', 'right_angle_at', 'target_angle'):
             missing: List[Ray] = []
-            for ray in stmt.data['rays']:
+            points = stmt.data.get('points')
+            rays: Sequence[Ray]
+            if isinstance(points, (list, tuple)) and len(points) == 3:
+                a, b, c = points
+                rays = ((b, a), (b, c))
+            else:
+                rays = stmt.data.get('rays', [])  # fallback for legacy data
+            for ray in rays:
                 ray_norm = _normalize_edge(ray)
                 if ray_norm not in supported:
                     missing.append(ray_norm)

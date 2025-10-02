@@ -80,7 +80,7 @@ def test_angle_measurement_pic_with_degrees() -> None:
             Stmt(
                 "angle_at",
                 Span(1, 1),
-                {"at": "B", "rays": (("B", "C"), ("B", "A"))},
+                {"points": ("C", "B", "A")},
                 {"degrees": 107},
             )
         ]
@@ -101,7 +101,7 @@ def test_right_angle_marked_with_square_pic() -> None:
             Stmt(
                 "right_angle_at",
                 Span(1, 1),
-                {"at": "C", "rays": (("C", "A"), ("C", "B"))},
+                {"points": ("A", "C", "B")},
                 {"mark": "square"},
             )
         ]
@@ -120,7 +120,7 @@ def test_right_angle_without_mark_defaults_to_square() -> None:
             Stmt(
                 "right_angle_at",
                 Span(1, 1),
-                {"at": "C", "rays": (("C", "A"), ("C", "B"))},
+                {"points": ("A", "C", "B")},
                 {},
             )
         ]
@@ -138,7 +138,7 @@ def test_angle_with_ninety_degrees_uses_square_pic() -> None:
             Stmt(
                 "angle_at",
                 Span(1, 1),
-                {"at": "B", "rays": (("B", "C"), ("B", "A"))},
+                {"points": ("C", "B", "A")},
                 {"degrees": 90},
             )
         ]
@@ -158,7 +158,7 @@ def test_angle_with_ninety_degrees_reorders_rays_for_square() -> None:
             Stmt(
                 "angle_at",
                 Span(1, 1),
-                {"at": "B", "rays": (("B", "A"), ("B", "C"))},
+                {"points": ("A", "B", "C")},
                 {"degrees": 90},
             )
         ]
@@ -176,7 +176,7 @@ def test_right_angle_with_degrees_adds_label() -> None:
             Stmt(
                 "right_angle_at",
                 Span(1, 1),
-                {"at": "C", "rays": (("C", "A"), ("C", "B"))},
+                {"points": ("A", "C", "B")},
                 {"degrees": 90},
             )
         ]
@@ -232,7 +232,7 @@ def test_angle_measurement_chooses_major_arc_when_needed() -> None:
             Stmt(
                 "angle_at",
                 Span(1, 1),
-                {"at": "B", "rays": (("B", "C"), ("B", "A"))},
+                {"points": ("C", "B", "A")},
                 {"degrees": 270},
             )
         ]

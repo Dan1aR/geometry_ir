@@ -5,6 +5,10 @@ from typing import Tuple
 def edge_str(e: Tuple[str,str]) -> str:
     return f'{e[0]}-{e[1]}'
 
+def angle_str(points: Tuple[str, str, str]) -> str:
+    return f'{points[0]}-{points[1]}-{points[2]}'
+
+
 def path_str(path: Tuple[str, object]) -> str:
     kind, payload = path
     if kind in {'line', 'ray', 'segment'} and isinstance(payload, (list, tuple)):
@@ -12,12 +16,11 @@ def path_str(path: Tuple[str, object]) -> str:
     if kind == 'circle' and isinstance(payload, str):
         return f'circle center {payload}'
     if kind == 'angle-bisector' and isinstance(payload, dict):
-        at = payload.get('at', '')
-        r1, r2 = payload.get('rays', (None, None))
+        pts = payload.get('points')
         extra = ' external' if payload.get('external') else ''
-        if isinstance(r1, (list, tuple)) and isinstance(r2, (list, tuple)):
-            return f'angle-bisector at {at} rays {edge_str(r1)} {edge_str(r2)}{extra}'
-        return f'angle-bisector at {at}{extra}'
+        if isinstance(pts, (list, tuple)) and len(pts) == 3:
+            return f'angle-bisector {angle_str(tuple(pts))}{extra}'
+        return f'angle-bisector{extra}'
     if kind == 'perpendicular' and isinstance(payload, dict):
         at = payload.get('at', '')
         to_edge = payload.get('to')
@@ -85,16 +88,25 @@ def print_program(prog: Program, *, original_only: bool = False) -> str:
         elif s.kind == 'parallel_through':
             lines.append(f'parallel through {s.data["through"]} to {edge_str(s.data["to"])}')
         elif s.kind == 'angle_bisector_at':
-            r1, r2 = s.data['rays']; lines.append(f'angle-bisector at {s.data["at"]} rays {edge_str(r1)} {edge_str(r2)}{o}'); continue
+            points = s.data.get('points')
+            if isinstance(points, (list, tuple)) and len(points) == 3:
+                lines.append(f'angle-bisector {angle_str(tuple(points))}{o}')
+            else:
+                r1, r2 = s.data.get('rays', (None, None))
+                if r1 and r2:
+                    lines.append(f'angle-bisector at {s.data.get("at", "")} rays {edge_str(r1)} {edge_str(r2)}{o}')
+                else:
+                    lines.append(f'angle-bisector{o}')
+            continue
         elif s.kind == 'median_from_to':
             lines.append(
                 f'median from {s.data["frm"]} to {edge_str(s.data["to"])} '
                 f'midpoint {s.data["midpoint"]}'
             )
         elif s.kind == 'angle_at':
-            r1, r2 = s.data['rays']; lines.append(f'angle at {s.data["at"]} rays {edge_str(r1)} {edge_str(r2)}{o}'); continue
+            lines.append(f'angle {angle_str(tuple(s.data["points"]))}{o}'); continue
         elif s.kind == 'right_angle_at':
-            r1, r2 = s.data['rays']; lines.append(f'right-angle at {s.data["at"]} rays {edge_str(r1)} {edge_str(r2)}{o}'); continue
+            lines.append(f'right-angle {angle_str(tuple(s.data["points"]))}{o}'); continue
         elif s.kind == 'equal_segments':
             lhs = ', '.join(edge_str(e) for e in s.data['lhs'])
             rhs = ', '.join(edge_str(e) for e in s.data['rhs'])
@@ -124,7 +136,7 @@ def print_program(prog: Program, *, original_only: bool = False) -> str:
         elif s.kind == 'sidelabel':
             lines.append(f'sidelabel {edge_str(s.data["edge"])} "{s.data["text"]}"{o}'); continue
         elif s.kind == 'target_angle':
-            r1, r2 = s.data['rays']; lines.append(f'target angle at {s.data["at"]} rays {edge_str(r1)} {edge_str(r2)}{o}'); continue
+            lines.append(f'target angle {angle_str(tuple(s.data["points"]))}{o}'); continue
         elif s.kind == 'target_length':
             lines.append(f'target length {edge_str(s.data["edge"])}{o}'); continue
         elif s.kind == 'target_point':

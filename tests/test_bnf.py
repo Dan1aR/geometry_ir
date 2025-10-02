@@ -44,7 +44,7 @@ def test_annotations(text, kind, data, opts):
 @pytest.mark.parametrize(
     'text, kind, data, opts',
     [
-        ('target angle at A rays A-B A-C', 'target_angle', {'at': 'A', 'rays': (('A', 'B'), ('A', 'C'))}, {}),
+        ('target angle B-A-C', 'target_angle', {'points': ('B', 'A', 'C')}, {}),
         ('target length A-B', 'target_length', {'edge': ('A', 'B')}, {}),
         ('target point X', 'target_point', {'point': 'X'}, {}),
         ('target circle ("Find circle")', 'target_circle', {'text': 'Find circle'}, {}),
@@ -119,15 +119,15 @@ def test_targets(text, kind, data, opts):
             {},
         ),
         (
-            'angle at A rays A-B A-C',
+            'angle B-A-C',
             'angle_at',
-            {'at': 'A', 'rays': (('A', 'B'), ('A', 'C'))},
+            {'points': ('B', 'A', 'C')},
             {},
         ),
         (
-            'right-angle at A rays A-B A-C [mark=square]',
+            'right-angle B-A-C [mark=square]',
             'right_angle_at',
-            {'at': 'A', 'rays': (('A', 'B'), ('A', 'C'))},
+            {'points': ('B', 'A', 'C')},
             {'mark': 'square'},
         ),
         (
@@ -190,20 +190,20 @@ def test_placements():
     assert pt_on_line.data == {'point': 'Y', 'path': ('line', ('A', 'B'))}
     assert pt_on_line.opts == {'mark': 'midpoint'}
 
-    pt_on_angle = parse_single('point R on angle-bisector at A rays A-B A-C')
+    pt_on_angle = parse_single('point R on angle-bisector B-A-C')
     assert pt_on_angle.kind == 'point_on'
     assert pt_on_angle.data == {
         'point': 'R',
-        'path': ('angle-bisector', {'at': 'A', 'rays': (('A', 'B'), ('A', 'C'))}),
+        'path': ('angle-bisector', {'points': ('B', 'A', 'C')}),
     }
 
-    pt_on_angle_ext = parse_single('point S on angle-bisector at A rays A-B A-C external')
+    pt_on_angle_ext = parse_single('point S on angle-bisector B-A-C external')
     assert pt_on_angle_ext.kind == 'point_on'
     assert pt_on_angle_ext.data == {
         'point': 'S',
         'path': (
             'angle-bisector',
-            {'at': 'A', 'rays': (('A', 'B'), ('A', 'C')), 'external': True},
+            {'points': ('B', 'A', 'C'), 'external': True},
         ),
     }
 
@@ -232,10 +232,10 @@ def test_placements():
     }
     assert inter.opts == {'type': 'external'}
 
-    inter2 = parse_single('intersect (angle-bisector at A rays A-B A-C) with (segment B-C) at T')
+    inter2 = parse_single('intersect (angle-bisector B-A-C) with (segment B-C) at T')
     assert inter2.kind == 'intersect'
     assert inter2.data == {
-        'path1': ('angle-bisector', {'at': 'A', 'rays': (('A', 'B'), ('A', 'C'))}),
+        'path1': ('angle-bisector', {'points': ('B', 'A', 'C')}),
         'path2': ('segment', ('B', 'C')),
         'at': 'T',
         'at2': None,

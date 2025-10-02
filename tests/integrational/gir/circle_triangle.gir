@@ -17,4 +17,4 @@ segment M-P
 segment P-K
 equal-segments (M-P ; P-K)
 # Цель: угол POM
-target angle at O rays O-P O-M [label="?POM"]
+target angle P-O-M [label="?POM"]
