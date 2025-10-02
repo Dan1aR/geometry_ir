@@ -173,39 +173,6 @@ def test_rhombus_equal_segments_cover_all_sides():
     assert equal_segments[0].data == {'lhs': [('A', 'B')], 'rhs': [('B', 'C'), ('C', 'D'), ('D', 'A')]}
 
 
-def test_circle_tangent_edges_expand_to_intersections_and_right_angles():
-    circle = stmt(
-        'circle_center_tangent_sides',
-        {'center': 'O', 'tangent_edges': [('A', 'B'), ('C', 'D')]},
-        {'mark': 'incircle'},
-    )
-
-    out = desugar(Program([circle]))
-
-    intersects = [
-        s
-        for s in out.stmts
-        if s.kind == 'intersect' and s.origin == 'desugar(circle_center_tangent_sides)'
-    ]
-    assert {s.data['at'] for s in intersects} == {'T_AB', 'T_CD'}
-    for stmt_inter in intersects:
-        if stmt_inter.data['at'] == 'T_AB':
-            assert stmt_inter.data['path1'] == ('line', ('A', 'B'))
-        else:
-            assert stmt_inter.data['path1'] == ('line', ('C', 'D'))
-        assert stmt_inter.data['path2'] == ('circle', 'O')
-        assert stmt_inter.data['at2'] is None
-        assert stmt_inter.opts == {'mark': 'incircle'}
-
-    right_angles = [
-        s
-        for s in out.stmts
-        if s.kind == 'right_angle_at' and s.origin == 'desugar(circle_center_tangent_sides)'
-    ]
-    assert {s.data['at'] for s in right_angles} == {'T_AB', 'T_CD'}
-    assert all(s.opts == {} for s in right_angles)
-
-
 def test_line_tangent_at_produces_right_angles():
     tangent = stmt(
         'line_tangent_at',

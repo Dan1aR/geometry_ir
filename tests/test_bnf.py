@@ -83,12 +83,6 @@ def test_targets(text, kind, data, opts):
             {},
         ),
         (
-            'circle center O tangent (A-B, C-D)',
-            'circle_center_tangent_sides',
-            {'center': 'O', 'tangent_edges': [('A', 'B'), ('C', 'D')]},
-            {},
-        ),
-        (
             'circle through (A, B, C, D)',
             'circle_through',
             {'ids': ['A', 'B', 'C', 'D']},

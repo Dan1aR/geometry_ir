@@ -26,7 +26,7 @@ BNF = dedent(
     Obj       := 'segment' Pair Opts?
                | 'ray'     Pair Opts?
                | 'line'    Pair Opts?
-               | 'circle' 'center' ID ('radius-through' ID | 'tangent' '(' EdgeList ')' ) Opts?
+               | 'circle' 'center' ID 'radius-through' ID Opts?
                | 'circle' 'through' '(' IdList ')' Opts?
                | 'circumcircle' 'of' IdChain Opts?
                | 'incircle'    'of' IdChain Opts?
@@ -93,13 +93,13 @@ _PROMPT_CORE = dedent(
     2. Translate the givens into explicit GeoScript statements, mirroring the clean samples in tests/integrational/gir/*.gir.
        - Use one command per fact: segments, polygons, circles, parallels, right angles, tangents, equalities, etc.
        - Circles have two syntaxes:
-         * Known center ➜ `circle center O radius-through B` (optionally add tangency Opts). Put extra on-circle points with
-           separate `point X on circle center O` lines.
+         * Known center ➜ `circle center O radius-through B`. Put extra on-circle points with separate
+           `point X on circle center O` lines.
          * Unknown center ➜ `circle through (A, B, C)` (or other point counts). Do **not** mix `center` with `through (...)`.
        - Tangents must be explicit. RU cues like "касательная" and EN "tangent" map to:
          * Tangent segment from an external point ➜ declare the segment (`segment A-B`) **and** the tangency (`line A-B tangent to circle center O at B`).
          * Touchpoint-specified tangent line without the external point ➜ `tangent at B to circle center O`.
-         * A circle tangent to sides ➜ `circle center O tangent (A-B, C-D)`.
+         * A circle tangent to a line ➜ build the foot explicitly (`perpendicular at O to A-B foot H`) and use `circle center O radius-through H`.
          Anchor the touchpoints on the circle separately when the prompt implies it.
        - Keep constraints declarative: place points with `point ... on ...` or `intersect (...) with (...)`.
     3. Add annotations (labels, side texts) the prompt requires and finish with `target ...` lines capturing what to find.

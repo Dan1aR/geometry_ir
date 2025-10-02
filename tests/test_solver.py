@@ -339,17 +339,19 @@ def test_translate_registers_circle_helper_points():
     assert "O_ABC" in model.points
 
 
-def test_translate_registers_tangent_touchpoints():
+def test_translate_handles_explicit_circle_tangency_with_named_foot():
     model = _build_model(
         """
         scene "Circle tangency"
-        points A, B, O
+        points A, B, O, H
         segment A-B
-        circle center O tangent (A-B)
+        perpendicular at O to A-B foot H
+        circle center O radius-through H
         """
     )
 
-    assert "T_AB" in model.points
+    assert "H" in model.points
+    assert any(spec.key == "foot(O->H on A-B)" for spec in model.residuals)
 
 
 def test_translate_adds_min_separation_residual_for_segments():

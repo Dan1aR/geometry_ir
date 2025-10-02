@@ -834,9 +834,6 @@ def translate(program: Program) -> Model:
         if "rays" in data:
             for ray in data["rays"]:
                 handle_edge(ray)
-        if "tangent_edges" in data:
-            for edge in data["tangent_edges"]:
-                handle_edge(edge)
         if "path" in data:
             handle_path(data["path"])
         if "path1" in data:

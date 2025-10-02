@@ -435,16 +435,10 @@ def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
                 through, _ = parse_id(cur)
                 opts = parse_opts(cur)
                 stmt = Stmt('circle_center_radius_through', sp, {'center': center, 'through': through}, opts)
-            elif tail_kw == 'tangent':
-                cur.consume_keyword('tangent')
-                edges, _ = parse_edgelist_paren(cur, consume_lparen=True)
-                cur.expect('RPAREN')
-                opts = parse_opts(cur)
-                stmt = Stmt('circle_center_tangent_sides', sp, {'center': center, 'tangent_edges': edges}, opts)
             else:
                 t2 = cur.peek()
                 raise SyntaxError(
-                    f"[line {t2[2] if t2 else 0}, col {t2[3] if t2 else 0}] expected radius-through or tangent"
+                    f"[line {t2[2] if t2 else 0}, col {t2[3] if t2 else 0}] expected radius-through"
                 )
         elif sub_kw == 'through':
             cur.consume_keyword('through')

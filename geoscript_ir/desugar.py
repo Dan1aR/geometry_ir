@@ -368,35 +368,6 @@ def desugar_variants(prog: Program) -> List[Program]:
                         source_keys,
                         generated=True,
                     )
-        elif s.kind == 'circle_center_tangent_sides':
-            center = s.data['center']
-            for state in states:
-                for a, b in s.data['tangent_edges']:
-                    touch = _fresh_name(state, 'T', f'{a}{b}')
-                    _append(
-                        state,
-                        Stmt(
-                            'intersect',
-                            s.span,
-                            {'path1': ('line', edge(a, b)), 'path2': ('circle', center), 'at': touch, 'at2': None},
-                            dict(s.opts),
-                            origin='desugar(circle_center_tangent_sides)'
-                        ),
-                        source_keys,
-                        generated=True,
-                    )
-                    _append(
-                        state,
-                        Stmt(
-                            'right_angle_at',
-                            s.span,
-                            {'at': touch, 'rays': ((touch, center), (touch, a))},
-                            {},
-                            origin='desugar(circle_center_tangent_sides)'
-                        ),
-                        source_keys,
-                        generated=True,
-                    )
         elif s.kind == 'line_tangent_at':
             center = s.data['center']
             at = s.data['at']

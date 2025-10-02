@@ -77,9 +77,9 @@ GEOSCRIPT_TO_TIKZ_PROMPT = dedent(
     - `segment P-Q`: draw P--Q; `ray P-Q`: draw from P towards Q (extend with a factor like 4).
     - `line P-Q`: extend beyond both points using expressions such as `($(P)!-3!(Q)$)` to
       `($(P)!4!(Q)$)`.
-    - `circle center O radius-through P`: compute radius `|OP|` and draw with that radius.
-    - `circle center O tangent (...)`: ensure the radius equals the perpendicular distance to the
-      first referenced supporting object; draw tangency feet where specified.
+    - `circle center O radius-through P`: compute radius `|OP|` and draw with that radius. When the
+      GeoScript declares tangency via an explicit foot point (e.g. `perpendicular at O to A-B foot H`),
+      use that foot to position the radius.
     - `circumcircle` / `circle through (...)`: construct using polar placement; never label the
       circle with text, but keep the node names consistent.
     - `incircle`: locate the incenter through angle bisectors or provided points and draw the

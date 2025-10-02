@@ -20,7 +20,7 @@ Target    := 'target'
 Obj       := 'segment' Pair Opts?
            | 'ray'     Pair Opts?
            | 'line'    Pair Opts?
-           | 'circle' 'center' ID ('radius-through' ID | 'tangent' '(' EdgeList ')' ) Opts?
+           | 'circle' 'center' ID 'radius-through' ID Opts?
            | 'circle' 'through' '(' IdList ')' Opts?
            | 'circumcircle' 'of' IdChain Opts?
            | 'incircle'    'of' IdChain Opts?

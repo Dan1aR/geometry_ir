@@ -68,9 +68,6 @@ def print_program(prog: Program, *, original_only: bool = False) -> str:
             lines.append(f'line {edge_str(s.data["edge"])} tangent to circle center {s.data["center"]} at {s.data["at"]}{o}'); continue
         elif s.kind == 'circle_center_radius_through':
             lines.append(f'circle center {s.data["center"]} radius-through {s.data["through"]}{o}'); continue
-        elif s.kind == 'circle_center_tangent_sides':
-            es = ', '.join(edge_str(e) for e in s.data['tangent_edges'])
-            lines.append(f'circle center {s.data["center"]} tangent ({es}){o}'); continue
         elif s.kind == 'circle_through':
             ids = ', '.join(s.data['ids'])
             lines.append(f'circle through ({ids})')
