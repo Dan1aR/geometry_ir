@@ -10,7 +10,7 @@ angle at A rays A-B A-C [degrees=69]
 # Add angle bisector
 intersect (angle-bisector at C rays C-A C-B) with (segment A-B) at D
 
-# Add median
-intersect (median from C to A-B) with (segment A-B) at M
+# Add median with explicit midpoint
+median from C to A-B midpoint M
 
 target angle at C rays C-D C-M [label="?"]

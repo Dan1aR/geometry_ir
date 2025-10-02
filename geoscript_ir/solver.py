@@ -1026,25 +1026,44 @@ def _initial_guess(model: Model, rng: np.random.Generator, attempt: int) -> np.n
     seen_point_on: Set[int] = set()
     for spec in model.residuals:
         stmt = spec.source
-        if not stmt or stmt.kind != "point_on":
+        if not stmt:
             continue
-        stmt_id = id(stmt)
-        if stmt_id in seen_point_on:
-            continue
-        seen_point_on.add(stmt_id)
-        path = stmt.data.get("path")
-        if not isinstance(path, (list, tuple)) or len(path) != 2:
-            continue
-        path_kind, payload = path
-        if path_kind != "segment" or not isinstance(payload, (list, tuple)):
-            continue
-        if len(payload) != 2:
-            continue
-        a, b = payload
-        point = stmt.data.get("point")
-        if not isinstance(point, str) or not isinstance(a, str) or not isinstance(b, str):
-            continue
-        segment_hints.setdefault(point, []).append((a, b))
+        if stmt.kind == "point_on":
+            stmt_id = id(stmt)
+            if stmt_id in seen_point_on:
+                continue
+            seen_point_on.add(stmt_id)
+            path = stmt.data.get("path")
+            if not isinstance(path, (list, tuple)) or len(path) != 2:
+                continue
+            path_kind, payload = path
+            if path_kind != "segment" or not isinstance(payload, (list, tuple)):
+                continue
+            if len(payload) != 2:
+                continue
+            a, b = payload
+            point = stmt.data.get("point")
+            if not isinstance(point, str) or not isinstance(a, str) or not isinstance(b, str):
+                continue
+            segment_hints.setdefault(point, []).append((a, b))
+        elif stmt.kind in {"foot", "perpendicular_at", "midpoint", "median_from_to"}:
+            data = stmt.data
+            if stmt.kind in {"foot", "perpendicular_at"}:
+                point = data.get("foot")
+                edge_raw = data.get("edge") or data.get("to")
+            else:
+                point = data.get("midpoint")
+                edge_raw = data.get("edge") or data.get("to")
+            if not isinstance(point, str) or edge_raw is None:
+                continue
+            try:
+                edge = _as_edge(edge_raw)
+            except ValueError:
+                continue
+            a, b = edge
+            if not isinstance(a, str) or not isinstance(b, str):
+                continue
+            segment_hints.setdefault(point, []).append((a, b))
 
     base = max(model.scale, 1e-3)
     # Place first three points in a stable, non-degenerate pattern.
