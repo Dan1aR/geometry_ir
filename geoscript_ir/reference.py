@@ -15,7 +15,7 @@ BNF = dedent(
               | 'sidelabel' Pair STRING Opts?
 
     Target    := 'target'
-                 ( 'angle' 'at' ID 'rays' Pair Pair
+                 ( 'angle' Angle3
                  | 'length' Pair
                  | 'point' ID
                  | 'circle' '(' STRING ')'
@@ -26,17 +26,15 @@ BNF = dedent(
     Obj       := 'segment' Pair Opts?
                | 'ray'     Pair Opts?
                | 'line'    Pair Opts?
-               | 'circle' 'center' ID ('radius-through' ID | 'tangent' '(' EdgeList ')' ) Opts?
+               | 'circle' 'center' ID 'radius-through' ID Opts?
                | 'circle' 'through' '(' IdList ')' Opts?
                | 'circumcircle' 'of' IdChain Opts?
                | 'incircle'    'of' IdChain Opts?
-               | 'perpendicular' 'at' ID 'to' Pair Opts?
+               | 'perpendicular' 'at' ID 'to' Pair 'foot' ID Opts?
                | 'parallel' 'through' ID 'to' Pair Opts?
-               | 'angle-bisector' 'at' ID 'rays' Pair Pair Opts?
-               | 'median'  'from' ID 'to' Pair Opts?
-               | 'altitude' 'from' ID 'to' Pair Opts?
-               | 'angle' 'at' ID 'rays' Pair Pair Opts?
-               | 'right-angle' 'at' ID 'rays' Pair Pair Opts?
+               | 'median'  'from' ID 'to' Pair 'midpoint' ID Opts?
+               | 'angle' Angle3 Opts?
+               | 'right-angle' Angle3 Opts?
                | 'equal-segments' '(' EdgeList ';' EdgeList ')' Opts?
                | 'parallel-edges' '(' Pair ';' Pair ')' Opts?
                | 'tangent' 'at' ID 'to' 'circle' 'center' ID Opts?
@@ -53,20 +51,22 @@ BNF = dedent(
 
     Placement := 'point' ID 'on' Path
                | 'intersect' '(' Path ')' 'with' '(' Path ')' 'at' ID (',' ID)? Opts?
+               | 'midpoint' ID 'of' Pair Opts?
+               | 'foot' ID 'from' ID 'to' Pair Opts?
 
     Path      := 'line'    Pair
                 | 'ray'     Pair
                 | 'segment' Pair
                 | 'circle' 'center' ID
-                | 'angle-bisector' 'at' ID 'rays' Pair Pair
+                | 'angle-bisector' Angle3 ('external')?
                 | 'median'  'from' ID 'to' Pair
-                | 'altitude' 'from' ID 'to' Pair
                 | 'perpendicular' 'at' ID 'to' Pair
 
     EdgeList  := Pair { ',' Pair }
     IdList    := ID { ',' ID }
     IdChain   := ID '-' ID { '-' ID }
     Pair      := ID '-' ID
+    Angle3    := ID '-' ID '-' ID
 
     Opts      := '[' KeyVal { ' ' KeyVal } ']'
     KeyVal    := KEY '=' (VALUE | STRING)
@@ -94,13 +94,13 @@ _PROMPT_CORE = dedent(
     2. Translate the givens into explicit GeoScript statements, mirroring the clean samples in tests/integrational/gir/*.gir.
        - Use one command per fact: segments, polygons, circles, parallels, right angles, tangents, equalities, etc.
        - Circles have two syntaxes:
-         * Known center ➜ `circle center O radius-through B` (optionally add tangency Opts). Put extra on-circle points with
-           separate `point X on circle center O` lines.
+         * Known center ➜ `circle center O radius-through B`. Put extra on-circle points with separate
+           `point X on circle center O` lines.
          * Unknown center ➜ `circle through (A, B, C)` (or other point counts). Do **not** mix `center` with `through (...)`.
        - Tangents must be explicit. RU cues like "касательная" and EN "tangent" map to:
          * Tangent segment from an external point ➜ declare the segment (`segment A-B`) **and** the tangency (`line A-B tangent to circle center O at B`).
          * Touchpoint-specified tangent line without the external point ➜ `tangent at B to circle center O`.
-         * A circle tangent to sides ➜ `circle center O tangent (A-B, C-D)`.
+         * A circle tangent to a line ➜ build the foot explicitly (`perpendicular at O to A-B foot H`) and use `circle center O radius-through H`.
          Anchor the touchpoints on the circle separately when the prompt implies it.
        - Keep constraints declarative: place points with `point ... on ...` or `intersect (...) with (...)`.
     3. Add annotations (labels, side texts) the prompt requires and finish with `target ...` lines capturing what to find.
@@ -139,9 +139,9 @@ _PROMPT_CORE = dedent(
       layout canonical=triangle_ABC scale=1
       points A, B, C, D, E
       triangle A-B-C
-      angle at A rays A-B A-C [degrees=38]
-      angle at B rays B-A B-C [degrees=110]
-      angle at C rays C-A C-B [degrees=32]
+      angle B-A-C [degrees=38]
+      angle A-B-C [degrees=110]
+      angle A-C-B [degrees=32]
       segment A-C
       point D on segment A-C
       point E on segment A-C
@@ -152,7 +152,7 @@ _PROMPT_CORE = dedent(
       segment E-C
       equal-segments (B-D ; D-A) [label="given"]
       equal-segments (B-E ; E-C) [label="given"]
-      target angle at B rays B-D B-E [label="?DBE"]
+      target angle D-B-E [label="?DBE"]
       </geoscript>
 
     - Example 2
@@ -164,8 +164,7 @@ _PROMPT_CORE = dedent(
       trapezoid A-B-C-D [bases=A-D]
       segment C-D [length=12]
       intersect (segment A-C) with (segment B-D) at O
-      perpendicular at O to C-D
-      intersect (perpendicular at O to C-D) with (segment C-D) at M
+      foot M from O to C-D
       segment O-M [length=5]
       target area ("Find area of triangle AOB")
 
@@ -176,12 +175,12 @@ _PROMPT_CORE = dedent(
       layout canonical=triangle_ABC scale=1.0
       points A, B, C, D, M
       triangle A-B-C
-      angle at C rays C-A C-B [degrees=90]
-      angle at B rays B-A B-C [degrees=21]
-      angle at A rays A-B A-C [degrees=69]
-      intersect (angle-bisector at C rays C-A C-B) with (segment A-B) at D
-      intersect (median from C to A-B) with (segment A-B) at M
-      target angle at C rays C-D C-M [label="?"]
+      angle A-C-B [degrees=90]
+      angle A-B-C [degrees=21]
+      angle B-A-C [degrees=69]
+      intersect (angle-bisector A-C-B) with (segment A-B) at D
+      median from C to A-B midpoint M
+      target angle D-C-M [label="?"]
 
     - Example 4
       Input: "Circle with center O has diameter AB. Points C and D lie on the circle. Find angle ACB."
@@ -194,7 +193,7 @@ _PROMPT_CORE = dedent(
       diameter A-B to circle center O
       point C on circle center O
       point D on circle center O
-      target angle at C rays C-A C-B [label="?ACB"]
+      target angle A-C-B [label="?ACB"]
     """
 ).strip()
 

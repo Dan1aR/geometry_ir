@@ -72,10 +72,9 @@
 
 * **Точка на биссектрисе угла**
 
-  * **key**: `point_on_angle_bisector(P,V;V-A,V-B)`; **kind**: `point_on_angle_bisector`; **size**: 1
-  * **формула** (эквивалент равенства углов через расстояния):
-    `‖P−A‖²‖V−B‖² − ‖P−B‖²‖V−A‖² = 0`
-  * **зачем**: позиционировать на биссектрисе без тригонометрии.
+  * **key**: `point_on_angle_bisector(P,V;V-A,V-B)` (добавляется `;external` для внешней биссектрисы); **kind**: `point_on_angle_bisector`; **size**: 1
+  * **формула**: `normalized_cross(P−V, u ± v) = 0`, где `u = (A−V)/‖A−V‖`, `v = (B−V)/‖B−V‖`; сумма соответствует внутренней, разность — внешней биссектрисе.
+  * **зачем**: позиционировать на нужной биссектрисе без двусмысленностей и с явным выбором внешней/внутренней.
 
 * **Точка на перпендикуляре из заданной точки к ребру**
 
@@ -88,12 +87,6 @@
   * **key**: `point_on_median(P,V;A-B)`; **kind**: `point_on_median`; **size**: 1
   * **формула**: `cross(P−V, mid(A,B) − V) = 0`
   * **зачем**: провести медиану из вершины к середине противоположной стороны.
-
-* **Точка на высоте треугольника**
-
-  * **key**: `point_on_altitude(P,V;A-B)`; **kind**: `point_on_altitude`; **size**: 1
-  * **формула**: `( (B−A) · (P−V) ) = 0`
-  * **зачем**: зафиксировать высоту (перпендикуляр к стороне через вершину).
 
 * **Коллинеарность точек**
 
@@ -226,6 +219,6 @@
 
 ## Итоговая карта видов residuals
 
-* **Геометрия**: `segment_length`, `equal_segments`, `parallel_edges`, `right_angle`, `angle`, `point_on_line/segment/ray(+bounds)`, `point_on_circle`, `point_on_angle_bisector`, `point_on_perpendicular`, `point_on_median`, `point_on_altitude`, `collinear`, `midpoint`, `foot`, `distance`, `convexity` (для семейства четырёхугольников).
+* **Геометрия**: `segment_length`, `equal_segments`, `parallel_edges`, `right_angle`, `angle`, `point_on_line/segment/ray(+bounds)`, `point_on_circle`, `point_on_angle_bisector`, `point_on_perpendicular`, `point_on_median`, `collinear`, `midpoint`, `foot`, `distance`, `convexity` (для семейства четырёхугольников).
 * **Глобальные guard’ы**: `min_separation`, `edge_floor` (полигоны и carrier), `area_floor`, `turn_margin`, `nonparallel` (ноги трапеции).
 * **Gauge’и**: `gauge:anchor`, `gauge:orientation`, `gauge:unit_span` (условный).

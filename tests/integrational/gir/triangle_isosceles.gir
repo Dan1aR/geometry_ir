@@ -8,11 +8,11 @@ rules [no_solving=true allow_auxiliary=false no_unicode_degree=true mark_right_a
 triangle A-B-C [isosceles=atB]
 
 # Given: ∠C = 50°
-angle at C rays C-A C-B [degrees=50]
+angle A-C-B [degrees=50]
 
 # AD is the angle bisector at A, meeting BC at D
 segment B-C
-intersect( angle-bisector at A rays A-B A-C ) with ( segment B-C ) at D
+intersect( angle-bisector B-A-C ) with ( segment B-C ) at D
 
 # Target: ∠ADC
-target angle at D rays D-A D-C [label="?ADC"]
+target angle A-D-C [label="?ADC"]

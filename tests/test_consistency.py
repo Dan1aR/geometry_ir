@@ -14,7 +14,7 @@ def test_angle_without_support_emits_warning():
     text = """
 scene "Angle"
 points A, B, C
-angle at A rays A-B A-C
+angle B-A-C
 """
     prog = run_pipeline(text)
     warnings = check_consistency(prog)
@@ -38,7 +38,7 @@ scene "Angle"
 points A, B, C
 segment A-B
 segment A-C
-angle at A rays A-B A-C
+angle B-A-C
 """
     prog = run_pipeline(text)
     warnings = check_consistency(prog)

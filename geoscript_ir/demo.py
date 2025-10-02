@@ -6,8 +6,8 @@ layout canonical=generic_auto scale=1
 trapezoid A-B-C-D [bases=A-D isosceles=true]
 circle through (A, B, C, D)
 points E
-angle at E rays E-A E-B
-target angle at A rays A-B A-D
+angle A-E-B
+target angle B-A-D
 rules no_solving=true
 """
 

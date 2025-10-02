@@ -38,8 +38,9 @@ def canonical_stmt_key(stmt: Stmt):
     if stmt.kind == 'parallel_edges':
         return ('parallel_edges', normalize_edge_list(stmt.data['edges']))
     if stmt.kind == 'right_angle_at':
-        rays = normalize_edge_list(stmt.data['rays'])
-        return ('right_angle_at', stmt.data['at'], rays)
+        a, b, c = stmt.data['points']
+        rays = normalize_edge_list(((b, a), (b, c)))
+        return ('right_angle_at', b, rays)
     return None
 
 
@@ -49,8 +50,10 @@ def _angle_bisector_vertex(path: object) -> Optional[str]:
     kind, payload = path
     if kind != 'angle-bisector' or not isinstance(payload, dict):
         return None
-    at = payload.get('at')
-    return at if isinstance(at, str) else None
+    pts = payload.get('points')
+    if isinstance(pts, (list, tuple)) and len(pts) == 3:
+        return pts[1]
+    return None
 
 
 def _perpendicular_vertex(path: object) -> Optional[str]:
@@ -180,7 +183,7 @@ def desugar_variants(prog: Program) -> List[Program]:
                         Stmt(
                             'right_angle_at',
                             s.span,
-                            {'at': A, 'rays': ((A, B), (A, C))},
+                            {'points': (B, A, C)},
                             {'mark': 'square'},
                             origin='desugar(triangle)'
                         ),
@@ -292,25 +295,25 @@ def desugar_variants(prog: Program) -> List[Program]:
                 for state in states:
                     _append(
                         state,
-                        Stmt('right_angle_at', s.span, {'at': A, 'rays': ((A, B), (A, D))}, {'mark': 'square'}, origin='desugar(rectangle)'),
+                        Stmt('right_angle_at', s.span, {'points': (B, A, D)}, {'mark': 'square'}, origin='desugar(rectangle)'),
                         source_keys,
                         generated=True,
                     )
                     _append(
                         state,
-                        Stmt('right_angle_at', s.span, {'at': B, 'rays': ((B, C), (B, A))}, {'mark': 'square'}, origin='desugar(rectangle)'),
+                        Stmt('right_angle_at', s.span, {'points': (C, B, A)}, {'mark': 'square'}, origin='desugar(rectangle)'),
                         source_keys,
                         generated=True,
                     )
                     _append(
                         state,
-                        Stmt('right_angle_at', s.span, {'at': C, 'rays': ((C, D), (C, B))}, {'mark': 'square'}, origin='desugar(rectangle)'),
+                        Stmt('right_angle_at', s.span, {'points': (D, C, B)}, {'mark': 'square'}, origin='desugar(rectangle)'),
                         source_keys,
                         generated=True,
                     )
                     _append(
                         state,
-                        Stmt('right_angle_at', s.span, {'at': D, 'rays': ((D, A), (D, C))}, {'mark': 'square'}, origin='desugar(rectangle)'),
+                        Stmt('right_angle_at', s.span, {'points': (A, D, C)}, {'mark': 'square'}, origin='desugar(rectangle)'),
                         source_keys,
                         generated=True,
                     )
@@ -331,25 +334,25 @@ def desugar_variants(prog: Program) -> List[Program]:
                 for state in states:
                     _append(
                         state,
-                        Stmt('right_angle_at', s.span, {'at': A, 'rays': ((A, B), (A, D))}, {'mark': 'square'}, origin='desugar(square)'),
+                        Stmt('right_angle_at', s.span, {'points': (B, A, D)}, {'mark': 'square'}, origin='desugar(square)'),
                         source_keys,
                         generated=True,
                     )
                     _append(
                         state,
-                        Stmt('right_angle_at', s.span, {'at': B, 'rays': ((B, C), (B, A))}, {'mark': 'square'}, origin='desugar(square)'),
+                        Stmt('right_angle_at', s.span, {'points': (C, B, A)}, {'mark': 'square'}, origin='desugar(square)'),
                         source_keys,
                         generated=True,
                     )
                     _append(
                         state,
-                        Stmt('right_angle_at', s.span, {'at': C, 'rays': ((C, D), (C, B))}, {'mark': 'square'}, origin='desugar(square)'),
+                        Stmt('right_angle_at', s.span, {'points': (D, C, B)}, {'mark': 'square'}, origin='desugar(square)'),
                         source_keys,
                         generated=True,
                     )
                     _append(
                         state,
-                        Stmt('right_angle_at', s.span, {'at': D, 'rays': ((D, A), (D, C))}, {'mark': 'square'}, origin='desugar(square)'),
+                        Stmt('right_angle_at', s.span, {'points': (A, D, C)}, {'mark': 'square'}, origin='desugar(square)'),
                         source_keys,
                         generated=True,
                     )
@@ -368,35 +371,6 @@ def desugar_variants(prog: Program) -> List[Program]:
                         source_keys,
                         generated=True,
                     )
-        elif s.kind == 'circle_center_tangent_sides':
-            center = s.data['center']
-            for state in states:
-                for a, b in s.data['tangent_edges']:
-                    touch = _fresh_name(state, 'T', f'{a}{b}')
-                    _append(
-                        state,
-                        Stmt(
-                            'intersect',
-                            s.span,
-                            {'path1': ('line', edge(a, b)), 'path2': ('circle', center), 'at': touch, 'at2': None},
-                            dict(s.opts),
-                            origin='desugar(circle_center_tangent_sides)'
-                        ),
-                        source_keys,
-                        generated=True,
-                    )
-                    _append(
-                        state,
-                        Stmt(
-                            'right_angle_at',
-                            s.span,
-                            {'at': touch, 'rays': ((touch, center), (touch, a))},
-                            {},
-                            origin='desugar(circle_center_tangent_sides)'
-                        ),
-                        source_keys,
-                        generated=True,
-                    )
         elif s.kind == 'line_tangent_at':
             center = s.data['center']
             at = s.data['at']
@@ -412,7 +386,7 @@ def desugar_variants(prog: Program) -> List[Program]:
                         Stmt(
                             'right_angle_at',
                             s.span,
-                            {'at': at, 'rays': ((at, center), (at, other))},
+                            {'points': (center, at, other)},
                             {},
                             origin='desugar(line_tangent_at)'
                         ),

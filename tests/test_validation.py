@@ -14,7 +14,7 @@ def test_validate_accepts_valid_program():
             stmt('triangle', {'ids': ['A', 'B', 'C']}, {'isosceles': 'atA', 'right': 'atB'}),
             stmt('trapezoid', {'ids': ['A', 'B', 'C', 'D']}, {'bases': 'A-B', 'isosceles': True}),
             stmt('polygon', {'ids': ['E', 'F', 'G']}),
-            stmt('angle_at', {'at': 'A', 'rays': (('A', 'B'), ('A', 'C'))}),
+            stmt('angle_at', {'points': ('B', 'A', 'C')}),
             stmt('equal_segments', {'lhs': [('A', 'B')], 'rhs': [('C', 'D')]}),
             stmt('circle_through', {'ids': ['A', 'B', 'E']}),
             stmt('diameter', {'edge': ('A', 'B'), 'center': 'O'}),
@@ -82,13 +82,13 @@ def test_polygon_vertices_must_be_unique():
     assert 'polygon vertices must be distinct' in str(exc.value)
 
 
-def test_angle_rays_must_start_at_vertex():
-    prog = Program([stmt('angle_at', {'at': 'A', 'rays': (('B', 'A'), ('A', 'C'))})])
+def test_angle_vertex_must_differ_from_endpoints():
+    prog = Program([stmt('angle_at', {'points': ('A', 'A', 'C')})])
 
     with pytest.raises(ValidationError) as exc:
         validate(prog)
 
-    assert 'angle rays must start at A' in str(exc.value)
+    assert 'angle vertex must differ from endpoints' in str(exc.value)
 
 
 @pytest.mark.parametrize(

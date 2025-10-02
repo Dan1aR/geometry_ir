@@ -35,7 +35,7 @@ layout canonical=generic_auto scale=1
 points A, B, C, D
 trapezoid A-B-C-D [bases=A-D isosceles=true]
 circle through (A, B, C, D)
-target angle at A rays A-B A-D
+target angle B-A-D
 rules no_solving=true
 ```
 
@@ -47,7 +47,7 @@ layout canonical=generic_auto scale=1
 points A, B, C, D
 trapezoid A-B-C-D [bases=A-D isosceles=true]
 circle through (A, B, C, D)
-target angle at A rays A-B A-D
+target angle B-A-D
 rules no_solving=true
 segment A-B
 segment B-C
@@ -105,7 +105,7 @@ points A, B, C
 segment A-B [length=4]
 segment A-C [length=3]
 segment B-C [length=5]
-right-angle at A rays A-B A-C
+right-angle B-A-C
 """
 
 program = parse_program(text)

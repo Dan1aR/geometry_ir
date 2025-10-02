@@ -11,4 +11,4 @@ segment A-B
 segment A-C
 line A-B tangent to circle center O at B
 line A-C tangent to circle center O at C
-target angle at A rays A-B A-C [label="?BAC"]
+target angle B-A-C [label="?BAC"]

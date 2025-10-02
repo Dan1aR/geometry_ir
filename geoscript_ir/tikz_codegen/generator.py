@@ -370,13 +370,11 @@ def _extract_angle_markings(program: Program) -> List[_AngleSpec]:
     angles: List[_AngleSpec] = []
     for stmt in program.stmts:
         if stmt.kind == "angle_at":
-            at = stmt.data.get("at")
-            rays = stmt.data.get("rays", ())
-            if not isinstance(at, str) or not isinstance(rays, tuple) or len(rays) != 2:
+            points = stmt.data.get("points")
+            if not isinstance(points, (list, tuple)) or len(points) != 3:
                 continue
-            start = _ray_endpoint(rays[0], at)
-            end = _ray_endpoint(rays[1], at)
-            if not start or not end:
+            start, at, end = points[0], points[1], points[2]
+            if not all(isinstance(p, str) for p in (start, at, end)):
                 continue
             degrees_value = stmt.opts.get("degrees") if stmt.opts else None
             label, numeric = (
@@ -407,13 +405,11 @@ def _extract_angle_markings(program: Program) -> List[_AngleSpec]:
                     )
                 )
         elif stmt.kind == "right_angle_at":
-            at = stmt.data.get("at")
-            rays = stmt.data.get("rays", ())
-            if not isinstance(at, str) or not isinstance(rays, tuple) or len(rays) != 2:
+            points = stmt.data.get("points")
+            if not isinstance(points, (list, tuple)) or len(points) != 3:
                 continue
-            start = _ray_endpoint(rays[0], at)
-            end = _ray_endpoint(rays[1], at)
-            if not start or not end:
+            start, at, end = points[0], points[1], points[2]
+            if not all(isinstance(p, str) for p in (start, at, end)):
                 continue
             label: Optional[str] = None
             degrees_numeric: Optional[float] = None
@@ -432,13 +428,11 @@ def _extract_angle_markings(program: Program) -> List[_AngleSpec]:
                 )
             )
         elif stmt.kind == "target_angle":
-            at = stmt.data.get("at")
-            rays = stmt.data.get("rays", ())
-            if not isinstance(at, str) or not isinstance(rays, tuple) or len(rays) != 2:
+            points = stmt.data.get("points")
+            if not isinstance(points, (list, tuple)) or len(points) != 3:
                 continue
-            start = _ray_endpoint(rays[0], at)
-            end = _ray_endpoint(rays[1], at)
-            if not start or not end:
+            start, at, end = points[0], points[1], points[2]
+            if not all(isinstance(p, str) for p in (start, at, end)):
                 continue
             label: Optional[str] = "?"
             angles.append(
@@ -843,17 +837,6 @@ def _normalise_vector(vec: Tuple[float, float]) -> Optional[Tuple[float, float]]
 
 def _vector_length(vec: Tuple[float, float]) -> float:
     return math.hypot(vec[0], vec[1])
-
-
-def _ray_endpoint(ray: object, vertex: str) -> Optional[str]:
-    if not isinstance(ray, Sequence) or len(ray) != 2:
-        return None
-    start, end = ray
-    if not isinstance(start, str) or not isinstance(end, str):
-        return None
-    if start != vertex:
-        return None
-    return end
 
 
 def _distance(a: Tuple[float, float], b: Tuple[float, float]) -> float:

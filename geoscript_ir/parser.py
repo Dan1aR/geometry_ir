@@ -75,6 +75,15 @@ def parse_pair(cur: Cursor):
     return (a, b), sp
 
 
+def parse_angle3(cur: Cursor):
+    a, sp = parse_id(cur)
+    cur.expect('DASH')
+    b, _ = parse_id(cur)
+    cur.expect('DASH')
+    c, _ = parse_id(cur)
+    return (a, b, c), sp
+
+
 def parse_edge(cur: Cursor):
     return parse_pair(cur)
 
@@ -229,24 +238,22 @@ def parse_path(cur: Cursor):
         return 'circle', center
     if kw == 'angle-bisector':
         cur.consume_keyword('angle-bisector')
+        points, _ = parse_angle3(cur)
+        external = False
+        if cur.peek_keyword() == 'external':
+            cur.consume_keyword('external')
+            external = True
+        payload = {'points': points}
+        if external:
+            payload['external'] = True
+        return 'angle-bisector', payload
+    if kw == 'perpendicular':
+        cur.consume_keyword('perpendicular')
         cur.consume_keyword('at')
-        at, _ = parse_id(cur)
-        cur.consume_keyword('rays')
-        r1, _ = parse_pair(cur)
-        r2, _ = parse_pair(cur)
-        return 'angle-bisector', {'at': at, 'rays': (r1, r2)}
-    if kw in {'perpendicular', 'altitude'}:
-        cur.consume_keyword(kw)
-        if kw == 'perpendicular':
-            cur.consume_keyword('at')
-            point_key = 'at'
-        else:
-            cur.consume_keyword('from')
-            point_key = 'frm'
         point_id, _ = parse_id(cur)
         cur.consume_keyword('to')
         to, _ = parse_pair(cur)
-        return kw, {point_key: point_id, 'to': to}
+        return 'perpendicular', {'at': point_id, 'to': to}
     if kw == 'median':
         cur.consume_keyword('median')
         cur.consume_keyword('from')
@@ -356,13 +363,9 @@ def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
         t1 = cur.expect('ID')
         kind = t1[1].lower()
         if kind == 'angle':
-            cur.consume_keyword('at')
-            at, sp = parse_id(cur)
-            cur.consume_keyword('rays')
-            r1, _ = parse_pair(cur)
-            r2, _ = parse_pair(cur)
+            points, sp = parse_angle3(cur)
             opts = parse_opts(cur)
-            stmt = Stmt('target_angle', sp, {'at': at, 'rays': (r1, r2)}, opts)
+            stmt = Stmt('target_angle', sp, {'points': points}, opts)
         elif kind == 'length':
             edge, sp = parse_pair(cur)
             opts = parse_opts(cur)
@@ -433,16 +436,10 @@ def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
                 through, _ = parse_id(cur)
                 opts = parse_opts(cur)
                 stmt = Stmt('circle_center_radius_through', sp, {'center': center, 'through': through}, opts)
-            elif tail_kw == 'tangent':
-                cur.consume_keyword('tangent')
-                edges, _ = parse_edgelist_paren(cur, consume_lparen=True)
-                cur.expect('RPAREN')
-                opts = parse_opts(cur)
-                stmt = Stmt('circle_center_tangent_sides', sp, {'center': center, 'tangent_edges': edges}, opts)
             else:
                 t2 = cur.peek()
                 raise SyntaxError(
-                    f"[line {t2[2] if t2 else 0}, col {t2[3] if t2 else 0}] expected radius-through or tangent"
+                    f"[line {t2[2] if t2 else 0}, col {t2[3] if t2 else 0}] expected radius-through"
                 )
         elif sub_kw == 'through':
             cur.consume_keyword('through')
@@ -474,8 +471,10 @@ def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
         at, sp = parse_id(cur)
         cur.consume_keyword('to')
         to, _ = parse_pair(cur)
+        cur.consume_keyword('foot')
+        foot, _ = parse_id(cur)
         opts = parse_opts(cur)
-        stmt = Stmt('perpendicular_at', sp, {'at': at, 'to': to}, opts)
+        stmt = Stmt('perpendicular_at', sp, {'at': at, 'to': to, 'foot': foot}, opts)
     elif kw == 'parallel-edges':
         cur.consume_keyword('parallel-edges')
         cur.expect('LPAREN')
@@ -493,49 +492,26 @@ def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
         to, _ = parse_pair(cur)
         opts = parse_opts(cur)
         stmt = Stmt('parallel_through', sp, {'through': through, 'to': to}, opts)
-    elif kw == 'angle-bisector':
-        cur.consume_keyword('angle-bisector')
-        cur.consume_keyword('at')
-        at, sp = parse_id(cur)
-        cur.consume_keyword('rays')
-        r1, _ = parse_pair(cur)
-        r2, _ = parse_pair(cur)
-        opts = parse_opts(cur)
-        stmt = Stmt('angle_bisector_at', sp, {'at': at, 'rays': (r1, r2)}, opts)
     elif kw == 'median':
         cur.consume_keyword('median')
         cur.consume_keyword('from')
         frm, sp = parse_id(cur)
         cur.consume_keyword('to')
         to, _ = parse_pair(cur)
+        cur.consume_keyword('midpoint')
+        midpoint, _ = parse_id(cur)
         opts = parse_opts(cur)
-        stmt = Stmt('median_from_to', sp, {'frm': frm, 'to': to}, opts)
-    elif kw == 'altitude':
-        cur.consume_keyword('altitude')
-        cur.consume_keyword('from')
-        frm, sp = parse_id(cur)
-        cur.consume_keyword('to')
-        to, _ = parse_pair(cur)
-        opts = parse_opts(cur)
-        stmt = Stmt('altitude_from_to', sp, {'frm': frm, 'to': to}, opts)
+        stmt = Stmt('median_from_to', sp, {'frm': frm, 'to': to, 'midpoint': midpoint}, opts)
     elif kw == 'angle':
         cur.consume_keyword('angle')
-        cur.consume_keyword('at')
-        at, sp = parse_id(cur)
-        cur.consume_keyword('rays')
-        r1, _ = parse_pair(cur)
-        r2, _ = parse_pair(cur)
+        points, sp = parse_angle3(cur)
         opts = parse_opts(cur)
-        stmt = Stmt('angle_at', sp, {'at': at, 'rays': (r1, r2)}, opts)
+        stmt = Stmt('angle_at', sp, {'points': points}, opts)
     elif kw == 'right-angle':
         cur.consume_keyword('right-angle')
-        cur.consume_keyword('at')
-        at, sp = parse_id(cur)
-        cur.consume_keyword('rays')
-        r1, _ = parse_pair(cur)
-        r2, _ = parse_pair(cur)
+        points, sp = parse_angle3(cur)
         opts = parse_opts(cur)
-        stmt = Stmt('right_angle_at', sp, {'at': at, 'rays': (r1, r2)}, opts)
+        stmt = Stmt('right_angle_at', sp, {'points': points}, opts)
     elif kw == 'equal-segments':
         cur.consume_keyword('equal-segments')
         lhs, sp = parse_edgelist_paren(cur, consume_lparen=True)
@@ -612,6 +588,22 @@ def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
             at2, _ = parse_id(cur)
         opts = parse_opts(cur)
         stmt = Stmt('intersect', sp, {'path1': path1, 'path2': path2, 'at': at, 'at2': at2}, opts)
+    elif kw == 'midpoint':
+        cur.consume_keyword('midpoint')
+        midpoint, sp = parse_id(cur)
+        cur.consume_keyword('of')
+        edge, _ = parse_pair(cur)
+        opts = parse_opts(cur)
+        stmt = Stmt('midpoint', sp, {'midpoint': midpoint, 'edge': edge}, opts)
+    elif kw == 'foot':
+        cur.consume_keyword('foot')
+        foot, sp = parse_id(cur)
+        cur.consume_keyword('from')
+        frm, _ = parse_id(cur)
+        cur.consume_keyword('to')
+        edge, _ = parse_pair(cur)
+        opts = parse_opts(cur)
+        stmt = Stmt('foot', sp, {'foot': foot, 'from': frm, 'edge': edge}, opts)
     elif kw == 'rules':
         cur.consume_keyword('rules')
         opts: Dict[str, Any] = {}

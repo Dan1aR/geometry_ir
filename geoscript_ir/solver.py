@@ -369,10 +369,9 @@ def _build_parallel_edges(stmt: Stmt, index: Dict[PointName, int]) -> List[Resid
 
 
 def _build_right_angle(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
-    (ray1, ray2) = stmt.data["rays"]
-    ray1 = tuple(ray1)
-    ray2 = tuple(ray2)
-    at = stmt.data["at"]
+    a, at, c = stmt.data["points"]
+    ray1 = (at, a)
+    ray2 = (at, c)
 
     def func(x: np.ndarray) -> np.ndarray:
         u = _edge_vec(x, index, ray1)
@@ -388,10 +387,9 @@ def _build_angle(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
     if measure is None:
         return []
     theta = float(measure)
-    (ray1, ray2) = stmt.data["rays"]
-    ray1 = tuple(ray1)
-    ray2 = tuple(ray2)
-    at = stmt.data["at"]
+    a, at, c = stmt.data["points"]
+    ray1 = (at, a)
+    ray2 = (at, c)
 
     cos_target = math.cos(math.radians(theta))
 
@@ -494,26 +492,40 @@ def _build_point_on(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpe
         return [ResidualSpec(key=key, func=func, size=1, kind="point_on_circle", source=stmt)]
 
     if path_kind == "angle-bisector" and isinstance(payload, dict):
-        at = payload.get("at")
-        rays = payload.get("rays")
-        if not isinstance(at, str) or not isinstance(rays, (list, tuple)) or len(rays) != 2:
-            raise ValueError("angle-bisector path requires vertex and two rays")
-        ray1 = _as_edge(rays[0])
-        ray2 = _as_edge(rays[1])
+        points = payload.get("points")
+        if isinstance(points, (list, tuple)) and len(points) == 3:
+            arm1, at, arm2 = points
+            ray1 = (at, arm1)
+            ray2 = (at, arm2)
+        else:
+            at = payload.get("at")
+            rays = payload.get("rays")
+            if not isinstance(at, str) or not isinstance(rays, (list, tuple)) or len(rays) != 2:
+                raise ValueError("angle-bisector path requires vertex and two rays")
+            ray1 = _as_edge(rays[0])
+            ray2 = _as_edge(rays[1])
+        at = ray1[0]
         arm1 = ray1[1]
         arm2 = ray2[1]
+        external = bool(payload.get("external"))
 
         def func(x: np.ndarray) -> np.ndarray:
             p = _vec(x, index, point)
-            v = _vec(x, index, at)
+            vertex = _vec(x, index, at)
             a = _vec(x, index, arm1)
             b = _vec(x, index, arm2)
-            lhs = _norm_sq(p - a) * _norm_sq(v - b)
-            rhs = _norm_sq(p - b) * _norm_sq(v - a)
-            return np.array([lhs - rhs], dtype=float)
+            vec1 = a - vertex
+            vec2 = b - vertex
+            u = vec1 / _safe_norm(vec1)
+            v = vec2 / _safe_norm(vec2)
+            base_dir = u - v if external else u + v
+            return np.array([
+                _normalized_cross(p - vertex, base_dir)
+            ], dtype=float)
 
+        extra = ";external" if external else ""
         key = (
-            f"point_on_angle_bisector({point},{at};{_format_edge(ray1)},{_format_edge(ray2)})"
+            f"point_on_angle_bisector({point},{at};{_format_edge(ray1)},{_format_edge(ray2)}){extra}"
         )
         return [ResidualSpec(key=key, func=func, size=1, kind="point_on_angle_bisector", source=stmt)]
 
@@ -553,32 +565,6 @@ def _build_point_on(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpe
         key = f"point_on_median({point},{frm};{_format_edge(to_edge)})"
         return [ResidualSpec(key=key, func=func, size=1, kind="point_on_median", source=stmt)]
 
-    if path_kind == "altitude" and isinstance(payload, dict):
-        frm = payload.get("frm")
-        to_edge_raw = payload.get("to")
-        if not isinstance(frm, str) or to_edge_raw is None:
-            raise ValueError("altitude path requires a vertex and a target edge")
-        to_edge = _as_edge(to_edge_raw)
-
-        def func(x: np.ndarray) -> np.ndarray:
-            vertex = _vec(x, index, frm)
-            pt = _vec(x, index, point)
-            base = _vec(x, index, to_edge[0])
-            dir_vec = _vec(x, index, to_edge[1]) - base
-            disp = pt - vertex
-            return np.array([float(np.dot(dir_vec, disp))], dtype=float)
-
-        key = f"point_on_altitude({point},{frm};{_format_edge(to_edge)})"
-        return [
-            ResidualSpec(
-                key=key,
-                func=func,
-                size=1,
-                kind="point_on_altitude",
-                source=stmt,
-            )
-        ]
-
     raise ValueError(f"Unsupported path kind for point_on: {path_kind}")
 
 
@@ -604,7 +590,10 @@ def _build_collinear(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSp
 
 def _build_midpoint(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
     midpoint = stmt.data["midpoint"]
-    edge = tuple(stmt.data["edge"])
+    edge_raw = stmt.data.get("edge") or stmt.data.get("to")
+    if edge_raw is None:
+        raise ValueError("midpoint constraint requires an edge")
+    edge = _as_edge(edge_raw)
 
     def func(x: np.ndarray) -> np.ndarray:
         mid = _vec(x, index, midpoint)
@@ -618,8 +607,11 @@ def _build_midpoint(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpe
 
 def _build_foot(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
     foot = stmt.data["foot"]
-    vertex = stmt.data["from"]
-    edge = tuple(stmt.data["edge"])
+    vertex = stmt.data.get("from") or stmt.data.get("at")
+    edge_raw = stmt.data.get("edge") or stmt.data.get("to")
+    if vertex is None or edge_raw is None:
+        raise ValueError("foot constraint requires a source point and an edge")
+    edge = _as_edge(edge_raw)
 
     def func(x: np.ndarray) -> np.ndarray:
         a = _vec(x, index, edge[0])
@@ -691,6 +683,8 @@ _RESIDUAL_BUILDERS: Dict[str, Callable[[Stmt, Dict[PointName, int]], List[Residu
     "collinear": _build_collinear,
     "midpoint": _build_midpoint,
     "foot": _build_foot,
+    "median_from_to": _build_midpoint,
+    "perpendicular_at": _build_foot,
     "distance": _build_distance,
 
     "quadrilateral": _build_quadrilateral_family,
@@ -755,24 +749,23 @@ def translate(program: Program) -> Model:
             _register_point(order, seen, payload)
             return
         if kind == "angle-bisector" and isinstance(payload, dict):
-            at = payload.get("at")
-            if isinstance(at, str):
+            points = payload.get("points")
+            if isinstance(points, (list, tuple)) and len(points) == 3:
+                arm1, at, arm2 = points
                 _register_point(order, seen, at)
-            rays = payload.get("rays")
-            if isinstance(rays, (list, tuple)):
-                for ray in rays:
-                    if isinstance(ray, (list, tuple)):
-                        handle_edge(ray)
+                handle_edge((at, arm1))
+                handle_edge((at, arm2))
+            else:
+                at = payload.get("at")
+                if isinstance(at, str):
+                    _register_point(order, seen, at)
+                rays = payload.get("rays")
+                if isinstance(rays, (list, tuple)):
+                    for ray in rays:
+                        if isinstance(ray, (list, tuple)):
+                            handle_edge(ray)
             return
         if kind == "median" and isinstance(payload, dict):
-            frm = payload.get("frm")
-            if isinstance(frm, str):
-                _register_point(order, seen, frm)
-            to_edge = payload.get("to")
-            if isinstance(to_edge, (list, tuple)):
-                handle_edge(to_edge)
-            return
-        if kind == "altitude" and isinstance(payload, dict):
             frm = payload.get("frm")
             if isinstance(frm, str):
                 _register_point(order, seen, frm)
@@ -853,9 +846,6 @@ def translate(program: Program) -> Model:
         if "rays" in data:
             for ray in data["rays"]:
                 handle_edge(ray)
-        if "tangent_edges" in data:
-            for edge in data["tangent_edges"]:
-                handle_edge(edge)
         if "path" in data:
             handle_path(data["path"])
         if "path1" in data:
@@ -1045,25 +1035,44 @@ def _initial_guess(model: Model, rng: np.random.Generator, attempt: int) -> np.n
     seen_point_on: Set[int] = set()
     for spec in model.residuals:
         stmt = spec.source
-        if not stmt or stmt.kind != "point_on":
+        if not stmt:
             continue
-        stmt_id = id(stmt)
-        if stmt_id in seen_point_on:
-            continue
-        seen_point_on.add(stmt_id)
-        path = stmt.data.get("path")
-        if not isinstance(path, (list, tuple)) or len(path) != 2:
-            continue
-        path_kind, payload = path
-        if path_kind != "segment" or not isinstance(payload, (list, tuple)):
-            continue
-        if len(payload) != 2:
-            continue
-        a, b = payload
-        point = stmt.data.get("point")
-        if not isinstance(point, str) or not isinstance(a, str) or not isinstance(b, str):
-            continue
-        segment_hints.setdefault(point, []).append((a, b))
+        if stmt.kind == "point_on":
+            stmt_id = id(stmt)
+            if stmt_id in seen_point_on:
+                continue
+            seen_point_on.add(stmt_id)
+            path = stmt.data.get("path")
+            if not isinstance(path, (list, tuple)) or len(path) != 2:
+                continue
+            path_kind, payload = path
+            if path_kind != "segment" or not isinstance(payload, (list, tuple)):
+                continue
+            if len(payload) != 2:
+                continue
+            a, b = payload
+            point = stmt.data.get("point")
+            if not isinstance(point, str) or not isinstance(a, str) or not isinstance(b, str):
+                continue
+            segment_hints.setdefault(point, []).append((a, b))
+        elif stmt.kind in {"foot", "perpendicular_at", "midpoint", "median_from_to"}:
+            data = stmt.data
+            if stmt.kind in {"foot", "perpendicular_at"}:
+                point = data.get("foot")
+                edge_raw = data.get("edge") or data.get("to")
+            else:
+                point = data.get("midpoint")
+                edge_raw = data.get("edge") or data.get("to")
+            if not isinstance(point, str) or edge_raw is None:
+                continue
+            try:
+                edge = _as_edge(edge_raw)
+            except ValueError:
+                continue
+            a, b = edge
+            if not isinstance(a, str) or not isinstance(b, str):
+                continue
+            segment_hints.setdefault(point, []).append((a, b))
 
     base = max(model.scale, 1e-3)
     # Place first three points in a stable, non-degenerate pattern.
