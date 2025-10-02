@@ -234,19 +234,21 @@ def parse_path(cur: Cursor):
         cur.consume_keyword('rays')
         r1, _ = parse_pair(cur)
         r2, _ = parse_pair(cur)
-        return 'angle-bisector', {'at': at, 'rays': (r1, r2)}
-    if kw in {'perpendicular', 'altitude'}:
-        cur.consume_keyword(kw)
-        if kw == 'perpendicular':
-            cur.consume_keyword('at')
-            point_key = 'at'
-        else:
-            cur.consume_keyword('from')
-            point_key = 'frm'
+        external = False
+        if cur.peek_keyword() == 'external':
+            cur.consume_keyword('external')
+            external = True
+        payload = {'at': at, 'rays': (r1, r2)}
+        if external:
+            payload['external'] = True
+        return 'angle-bisector', payload
+    if kw == 'perpendicular':
+        cur.consume_keyword('perpendicular')
+        cur.consume_keyword('at')
         point_id, _ = parse_id(cur)
         cur.consume_keyword('to')
         to, _ = parse_pair(cur)
-        return kw, {point_key: point_id, 'to': to}
+        return 'perpendicular', {'at': point_id, 'to': to}
     if kw == 'median':
         cur.consume_keyword('median')
         cur.consume_keyword('from')
@@ -474,8 +476,10 @@ def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
         at, sp = parse_id(cur)
         cur.consume_keyword('to')
         to, _ = parse_pair(cur)
+        cur.consume_keyword('foot')
+        foot, _ = parse_id(cur)
         opts = parse_opts(cur)
-        stmt = Stmt('perpendicular_at', sp, {'at': at, 'to': to}, opts)
+        stmt = Stmt('perpendicular_at', sp, {'at': at, 'to': to, 'foot': foot}, opts)
     elif kw == 'parallel-edges':
         cur.consume_keyword('parallel-edges')
         cur.expect('LPAREN')
@@ -493,31 +497,16 @@ def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
         to, _ = parse_pair(cur)
         opts = parse_opts(cur)
         stmt = Stmt('parallel_through', sp, {'through': through, 'to': to}, opts)
-    elif kw == 'angle-bisector':
-        cur.consume_keyword('angle-bisector')
-        cur.consume_keyword('at')
-        at, sp = parse_id(cur)
-        cur.consume_keyword('rays')
-        r1, _ = parse_pair(cur)
-        r2, _ = parse_pair(cur)
-        opts = parse_opts(cur)
-        stmt = Stmt('angle_bisector_at', sp, {'at': at, 'rays': (r1, r2)}, opts)
     elif kw == 'median':
         cur.consume_keyword('median')
         cur.consume_keyword('from')
         frm, sp = parse_id(cur)
         cur.consume_keyword('to')
         to, _ = parse_pair(cur)
+        cur.consume_keyword('midpoint')
+        midpoint, _ = parse_id(cur)
         opts = parse_opts(cur)
-        stmt = Stmt('median_from_to', sp, {'frm': frm, 'to': to}, opts)
-    elif kw == 'altitude':
-        cur.consume_keyword('altitude')
-        cur.consume_keyword('from')
-        frm, sp = parse_id(cur)
-        cur.consume_keyword('to')
-        to, _ = parse_pair(cur)
-        opts = parse_opts(cur)
-        stmt = Stmt('altitude_from_to', sp, {'frm': frm, 'to': to}, opts)
+        stmt = Stmt('median_from_to', sp, {'frm': frm, 'to': to, 'midpoint': midpoint}, opts)
     elif kw == 'angle':
         cur.consume_keyword('angle')
         cur.consume_keyword('at')
@@ -612,6 +601,22 @@ def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
             at2, _ = parse_id(cur)
         opts = parse_opts(cur)
         stmt = Stmt('intersect', sp, {'path1': path1, 'path2': path2, 'at': at, 'at2': at2}, opts)
+    elif kw == 'midpoint':
+        cur.consume_keyword('midpoint')
+        midpoint, sp = parse_id(cur)
+        cur.consume_keyword('of')
+        edge, _ = parse_pair(cur)
+        opts = parse_opts(cur)
+        stmt = Stmt('midpoint', sp, {'midpoint': midpoint, 'edge': edge}, opts)
+    elif kw == 'foot':
+        cur.consume_keyword('foot')
+        foot, sp = parse_id(cur)
+        cur.consume_keyword('from')
+        frm, _ = parse_id(cur)
+        cur.consume_keyword('to')
+        edge, _ = parse_pair(cur)
+        opts = parse_opts(cur)
+        stmt = Stmt('foot', sp, {'foot': foot, 'from': frm, 'edge': edge}, opts)
     elif kw == 'rules':
         cur.consume_keyword('rules')
         opts: Dict[str, Any] = {}

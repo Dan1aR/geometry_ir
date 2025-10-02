@@ -19,7 +19,7 @@ GEOSCRIPT_TO_TIKZ_PROMPT = dedent(
       * Geometry primitives: `segment`, `ray`, `line`, `circle ...`, `polygon ...`,
         `triangle ...`, `quadrilateral ...`, `trapezoid ...`, `parallelogram ...`, `rectangle ...`,
         `square ...`, `rhombus ...`.
-      * Constructions: `perpendicular`, `parallel`, `angle-bisector`, `median`, `altitude`,
+      * Constructions: `perpendicular`, `parallel`, `angle-bisector`, `median`,
         `tangent ...`, `line X-Y tangent ...`, `parallel-edges (...)`, `equal-segments (...)`, and
         `angle` / `right-angle` marks.
       * Placement commands such as `point P on ...` and `intersect (...) with (...) at ...`.
@@ -84,8 +84,9 @@ GEOSCRIPT_TO_TIKZ_PROMPT = dedent(
       circle with text, but keep the node names consistent.
     - `incircle`: locate the incenter through angle bisectors or provided points and draw the
       inscribed circle using its foot on a side.
-    - `perpendicular`, `parallel`, `median`, `altitude`, `angle-bisector`: draw helper lines or
-      segments as given. For medians/altitudes, compute the foot or midpoint with intersections.
+    - `perpendicular`, `parallel`, `median`, `angle-bisector`: draw helper lines or
+      segments as given. For medians, use the named midpoint; perpendiculars specify the foot
+      explicitly via their target point.
       When an `angle-bisector` is declared, the bisector ray/segment must emanate from the vertex
       through the specified constructed point, and you must mark the two adjacent angles with
       matching `pic{angle=...}` arcs (e.g. a single arc on each side, both using the same style) so

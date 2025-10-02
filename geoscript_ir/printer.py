@@ -14,21 +14,16 @@ def path_str(path: Tuple[str, object]) -> str:
     if kind == 'angle-bisector' and isinstance(payload, dict):
         at = payload.get('at', '')
         r1, r2 = payload.get('rays', (None, None))
+        extra = ' external' if payload.get('external') else ''
         if isinstance(r1, (list, tuple)) and isinstance(r2, (list, tuple)):
-            return f'angle-bisector at {at} rays {edge_str(r1)} {edge_str(r2)}'
-        return f'angle-bisector at {at}'
+            return f'angle-bisector at {at} rays {edge_str(r1)} {edge_str(r2)}{extra}'
+        return f'angle-bisector at {at}{extra}'
     if kind == 'perpendicular' and isinstance(payload, dict):
         at = payload.get('at', '')
         to_edge = payload.get('to')
         if isinstance(to_edge, (list, tuple)):
             return f'perpendicular at {at} to {edge_str(to_edge)}'
         return f'perpendicular at {at}'
-    if kind == 'altitude' and isinstance(payload, dict):
-        frm = payload.get('frm', '')
-        to_edge = payload.get('to')
-        if isinstance(to_edge, (list, tuple)):
-            return f'altitude from {frm} to {edge_str(to_edge)}'
-        return f'altitude from {frm}'
     if kind == 'median' and isinstance(payload, dict):
         frm = payload.get('frm', '')
         to_edge = payload.get('to')
@@ -86,15 +81,19 @@ def print_program(prog: Program, *, original_only: bool = False) -> str:
             chain = '-'.join(s.data['ids'])
             lines.append(f'incircle of {chain}')
         elif s.kind == 'perpendicular_at':
-            lines.append(f'perpendicular at {s.data["at"]} to {edge_str(s.data["to"])}')
+            lines.append(
+                f'perpendicular at {s.data["at"]} to {edge_str(s.data["to"])} '
+                f'foot {s.data["foot"]}'
+            )
         elif s.kind == 'parallel_through':
             lines.append(f'parallel through {s.data["through"]} to {edge_str(s.data["to"])}')
         elif s.kind == 'angle_bisector_at':
             r1, r2 = s.data['rays']; lines.append(f'angle-bisector at {s.data["at"]} rays {edge_str(r1)} {edge_str(r2)}{o}'); continue
         elif s.kind == 'median_from_to':
-            lines.append(f'median from {s.data["frm"]} to {edge_str(s.data["to"])}')
-        elif s.kind == 'altitude_from_to':
-            lines.append(f'altitude from {s.data["frm"]} to {edge_str(s.data["to"])}')
+            lines.append(
+                f'median from {s.data["frm"]} to {edge_str(s.data["to"])} '
+                f'midpoint {s.data["midpoint"]}'
+            )
         elif s.kind == 'angle_at':
             r1, r2 = s.data['rays']; lines.append(f'angle at {s.data["at"]} rays {edge_str(r1)} {edge_str(r2)}{o}'); continue
         elif s.kind == 'right_angle_at':

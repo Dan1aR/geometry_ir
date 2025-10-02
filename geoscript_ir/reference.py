@@ -30,11 +30,9 @@ BNF = dedent(
                | 'circle' 'through' '(' IdList ')' Opts?
                | 'circumcircle' 'of' IdChain Opts?
                | 'incircle'    'of' IdChain Opts?
-               | 'perpendicular' 'at' ID 'to' Pair Opts?
+               | 'perpendicular' 'at' ID 'to' Pair 'foot' ID Opts?
                | 'parallel' 'through' ID 'to' Pair Opts?
-               | 'angle-bisector' 'at' ID 'rays' Pair Pair Opts?
-               | 'median'  'from' ID 'to' Pair Opts?
-               | 'altitude' 'from' ID 'to' Pair Opts?
+               | 'median'  'from' ID 'to' Pair 'midpoint' ID Opts?
                | 'angle' 'at' ID 'rays' Pair Pair Opts?
                | 'right-angle' 'at' ID 'rays' Pair Pair Opts?
                | 'equal-segments' '(' EdgeList ';' EdgeList ')' Opts?
@@ -53,14 +51,15 @@ BNF = dedent(
 
     Placement := 'point' ID 'on' Path
                | 'intersect' '(' Path ')' 'with' '(' Path ')' 'at' ID (',' ID)? Opts?
+               | 'midpoint' ID 'of' Pair Opts?
+               | 'foot' ID 'from' ID 'to' Pair Opts?
 
     Path      := 'line'    Pair
                 | 'ray'     Pair
                 | 'segment' Pair
                 | 'circle' 'center' ID
-                | 'angle-bisector' 'at' ID 'rays' Pair Pair
+                | 'angle-bisector' 'at' ID 'rays' Pair Pair ('external')?
                 | 'median'  'from' ID 'to' Pair
-                | 'altitude' 'from' ID 'to' Pair
                 | 'perpendicular' 'at' ID 'to' Pair
 
     EdgeList  := Pair { ',' Pair }

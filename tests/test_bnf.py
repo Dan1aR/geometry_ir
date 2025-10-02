@@ -107,9 +107,9 @@ def test_targets(text, kind, data, opts):
             {},
         ),
         (
-            'perpendicular at A to B-C',
+            'perpendicular at A to B-C foot H',
             'perpendicular_at',
-            {'at': 'A', 'to': ('B', 'C')},
+            {'at': 'A', 'to': ('B', 'C'), 'foot': 'H'},
             {},
         ),
         (
@@ -119,21 +119,9 @@ def test_targets(text, kind, data, opts):
             {'mark': True},
         ),
         (
-            'angle-bisector at A rays A-B A-C',
-            'angle_bisector_at',
-            {'at': 'A', 'rays': (('A', 'B'), ('A', 'C'))},
-            {},
-        ),
-        (
-            'median from A to B-C',
+            'median from A to B-C midpoint M',
             'median_from_to',
-            {'frm': 'A', 'to': ('B', 'C')},
-            {},
-        ),
-        (
-            'altitude from A to B-C',
-            'altitude_from_to',
-            {'frm': 'A', 'to': ('B', 'C')},
+            {'frm': 'A', 'to': ('B', 'C'), 'midpoint': 'M'},
             {},
         ),
         (
@@ -215,6 +203,16 @@ def test_placements():
         'path': ('angle-bisector', {'at': 'A', 'rays': (('A', 'B'), ('A', 'C'))}),
     }
 
+    pt_on_angle_ext = parse_single('point S on angle-bisector at A rays A-B A-C external')
+    assert pt_on_angle_ext.kind == 'point_on'
+    assert pt_on_angle_ext.data == {
+        'point': 'S',
+        'path': (
+            'angle-bisector',
+            {'at': 'A', 'rays': (('A', 'B'), ('A', 'C')), 'external': True},
+        ),
+    }
+
     pt_on_perp = parse_single('point M on perpendicular at O to C-D [length=5]')
     assert pt_on_perp.kind == 'point_on'
     assert pt_on_perp.data == {
@@ -228,13 +226,6 @@ def test_placements():
     assert pt_on_median.data == {
         'point': 'T',
         'path': ('median', {'frm': 'C', 'to': ('A', 'B')}),
-    }
-
-    pt_on_altitude = parse_single('point H on altitude from A to B-C')
-    assert pt_on_altitude.kind == 'point_on'
-    assert pt_on_altitude.data == {
-        'point': 'H',
-        'path': ('altitude', {'frm': 'A', 'to': ('B', 'C')}),
     }
 
     inter = parse_single('intersect (line A-B) with (circle center O) at P, Q [type=external]')
@@ -265,15 +256,26 @@ def test_placements():
         'at2': None,
     }
 
-    inter4 = parse_single('intersect (altitude from A to B-C) with (segment B-C) at H')
+    inter4 = parse_single('intersect (median from A to B-C) with (segment B-C) at M')
     assert inter4.kind == 'intersect'
     assert inter4.data == {
-        'path1': ('altitude', {'frm': 'A', 'to': ('B', 'C')}),
+        'path1': ('median', {'frm': 'A', 'to': ('B', 'C')}),
         'path2': ('segment', ('B', 'C')),
-        'at': 'H',
+        'at': 'M',
         'at2': None,
     }
 
+
+def test_midpoint_and_foot_statements():
+    midpoint_stmt = parse_single('midpoint M of A-B [color=red]')
+    assert midpoint_stmt.kind == 'midpoint'
+    assert midpoint_stmt.data == {'midpoint': 'M', 'edge': ('A', 'B')}
+    assert midpoint_stmt.opts == {'color': 'red'}
+
+    foot_stmt = parse_single('foot H from P to A-B')
+    assert foot_stmt.kind == 'foot'
+    assert foot_stmt.data == {'foot': 'H', 'from': 'P', 'edge': ('A', 'B')}
+    assert foot_stmt.opts == {}
 
 
 @pytest.mark.parametrize(
