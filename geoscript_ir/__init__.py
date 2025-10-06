@@ -19,7 +19,7 @@ from .solver import (
     normalize_point_coords,
     score_solution
 )
-from .ddc import derive_and_check
+from .ddc import derive_and_check, evaluate_ddc, DDCCheckResult
 
 __all__ = [
     'parse_program',
@@ -41,6 +41,8 @@ __all__ = [
     'VariantSolveResult',
     'normalize_point_coords',
     'derive_and_check',
+    'evaluate_ddc',
+    'DDCCheckResult',
     'Program',
     'Stmt',
     'Span',

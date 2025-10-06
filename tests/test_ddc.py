@@ -1,7 +1,7 @@
 import math
 
 from geoscript_ir.ast import Program, Span, Stmt
-from geoscript_ir.ddc import derive_and_check
+from geoscript_ir.ddc import DDCCheckResult, derive_and_check, evaluate_ddc
 from geoscript_ir.solver import Solution
 
 
@@ -82,3 +82,33 @@ def test_ddc_derives_midpoint_and_foot_and_detects_ambiguity():
     assert intersection["chosen_by"] == "closest-to-solver"
     assert len(intersection["candidates"]) == 2
     assert any(abs(pt[1] - 4.0) < 1e-9 for pt in intersection["candidates"])
+
+
+def test_evaluate_ddc_maps_status_to_result():
+    program = build_program()
+    solution = build_solution()
+    report = derive_and_check(program, solution)
+
+    disallowed = evaluate_ddc(report)
+    assert isinstance(disallowed, DDCCheckResult)
+    assert not disallowed.passed
+    assert disallowed.severity == "error"
+    assert "ambiguous" in disallowed.message
+
+    allowed = evaluate_ddc(report, allow_ambiguous=True)
+    assert allowed.passed
+    assert allowed.severity == "warning"
+    assert allowed.ambiguous_points
+
+    mismatch_solution = Solution(
+        point_coords={**solution.point_coords, "D": (0.0, 0.0)},
+        success=True,
+        max_residual=0.0,
+        residual_breakdown=[],
+        warnings=[],
+    )
+    mismatch_report = derive_and_check(program, mismatch_solution)
+    mismatch_result = evaluate_ddc(mismatch_report, allow_ambiguous=True)
+    assert not mismatch_result.passed
+    assert mismatch_result.severity == "error"
+    assert mismatch_result.mismatches

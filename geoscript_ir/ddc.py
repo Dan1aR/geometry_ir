@@ -61,6 +61,25 @@ class DerivationReport(TypedDict, total=False):
 
 
 @dataclass
+class DDCCheckResult:
+    """Outcome of evaluating a :func:`derive_and_check` report."""
+
+    status: Literal["ok", "mismatch", "ambiguous", "partial"]
+    severity: Literal["ok", "warning", "error"]
+    message: str
+    mismatches: Dict[str, DerivedPointReport]
+    ambiguous_points: Dict[str, DerivedPointReport]
+    partial_points: Dict[str, DerivedPointReport]
+    allow_ambiguous: bool = False
+
+    @property
+    def passed(self) -> bool:
+        """Return ``True`` when the DDC evaluation should be treated as passing."""
+
+        return self.severity != "error"
+
+
+@dataclass
 class CircleInfo:
     center: str
     through: str
@@ -958,4 +977,91 @@ def derive_and_check(
             edges=edges,
             topo_order=topo_order,
         ),
+    )
+
+
+def evaluate_ddc(
+    report: DerivationReport, *, allow_ambiguous: bool = False
+) -> DDCCheckResult:
+    """Interpret a :func:`derive_and_check` report according to the spec.
+
+    The evaluation maps the raw DDC status into pass/warn/fail semantics and
+    aggregates useful diagnostics for callers (primarily integration tests).
+    """
+
+    status = report.get("status", "partial")
+    summary = report.get("summary", "")
+    points = report.get("points", {}) or {}
+
+    def _copy_reports(names: Iterable[str]) -> Dict[str, DerivedPointReport]:
+        return {name: dict(points[name]) for name in names}
+
+    mismatches = _copy_reports(
+        name for name, info in points.items() if info.get("match") == "no"
+    )
+    partial_points = _copy_reports(
+        name
+        for name, info in points.items()
+        if not info.get("candidates")
+    )
+    ambiguous_points = _copy_reports(
+        name
+        for name, info in points.items()
+        if len(info.get("candidates", []) or []) > 1 and info.get("match") == "yes"
+    )
+
+    severity: Literal["ok", "warning", "error"] = "ok"
+    details: List[str] = []
+
+    if status == "ok":
+        severity = "ok"
+    elif status == "partial":
+        severity = "warning"
+    elif status == "ambiguous":
+        severity = "warning" if allow_ambiguous else "error"
+    elif status == "mismatch":
+        severity = "error"
+    else:
+        severity = "error"
+        details.append(f"unknown status {status!r}")
+
+    if mismatches:
+        severity = "error"
+        mismatch_info = ", ".join(
+            f"{name} (dist={points[name].get('dist', float('nan')):.3g})"
+            for name in sorted(mismatches)
+        )
+        details.append(f"mismatched points: {mismatch_info}")
+
+    if ambiguous_points and not allow_ambiguous:
+        severity = "error"
+        details.append(
+            "ambiguous points without allowance: "
+            + ", ".join(sorted(ambiguous_points))
+        )
+    elif ambiguous_points:
+        details.append(
+            "ambiguous points: " + ", ".join(sorted(ambiguous_points))
+        )
+
+    if partial_points:
+        if severity == "ok":
+            severity = "warning"
+        details.append(
+            "not derivable: " + ", ".join(sorted(partial_points))
+        )
+
+    message_parts = [summary] if summary else []
+    if details:
+        message_parts.append(" | ".join(details))
+    message = " | ".join(message_parts)
+
+    return DDCCheckResult(
+        status=status,
+        severity=severity,
+        message=message,
+        mismatches=mismatches,
+        ambiguous_points=ambiguous_points,
+        partial_points=partial_points,
+        allow_ambiguous=allow_ambiguous,
     )
