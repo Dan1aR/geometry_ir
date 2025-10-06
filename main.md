@@ -431,7 +431,276 @@ Renderers and agents may use the following canonical seeds:
 * `triangle_ABO`: `A=(0,0)`, `B=(4,0)`, `O` above AB
 * `generic` / `generic_auto`: balanced unit-scale layout with non-degenerate orientation
 
+
 ---
+
+## 16) Deterministic Derivation & Cross‑Check (DDC)
+
+**Goal.** Even when LSQ “converges,” the chosen branch (mirror, wrong intersection, etc.) can be geometrically incorrect.
+The **DDC** module deterministically **derives** coordinates for all points that are *uniquely computable* from other points and objects, **without** optimizing, then **compares** them to the solver’s output. It catches wrong branches, flipped orders, and inconsistent placements early.
+
+### 16.1 Public API
+
+```python
+def derive_and_check(program: Program, solution: Solution, *, tol=None) -> DerivationReport: ...
+```
+
+* **Input**
+
+  * `program`: validated & desugared GeoScript IR (`Program`).
+  * `solution`: numeric result from the solver (`Solution.point_coords: Dict[str, (x,y)]`).
+  * `tol` (optional): absolute distance tolerance for matches. If `None`, use `tol = 1e-6 * scene_scale`, where `scene_scale` is the diagonal of the solution’s bounding box (or the declared `layout.scale` if provided).
+
+* **Output**: `DerivationReport`
+
+  ```python
+  class DerivationReport(TypedDict):
+      status: Literal["ok","mismatch","ambiguous","partial"]
+      summary: str
+      points: Dict[str, DerivedPointReport]
+      unused_facts: List[str]         # ids/labels of facts not consumed by any derivation
+      graph: DerivationGraphExport    # nodes, edges, topo order (for visualization/debug)
+  ```
+
+  ```python
+  class DerivedPointReport(TypedDict):
+      rule: str                        # e.g. "foot(H; X→AB)", "intersect(line, circle)"
+      inputs: List[str]                # dependency ids (points/paths)
+      candidates: List[Tuple[float,float]]
+      chosen_by: Literal["unique","opts","ray/segment filter","closest-to-solver","undetermined"]
+      match: Literal["yes","no"]
+      dist: float                      # min distance from solver coordinate to any candidate
+      notes: List[str]                 # degeneracy warnings, filters applied
+  ```
+
+  Overall `status` rules:
+
+  * `ok` if every derivable point matches within `tol`.
+  * `partial` if some points are not derivable (no rule or missing inputs) but all derived ones match.
+  * `ambiguous` if a point has >1 valid candidates and the solver picked one; report still `ok` unless a mismatch occurs, but mark ambiguity.
+  * `mismatch` if any derived point does **not** match solver within `tol`.
+
+---
+
+### 16.2 Workflow
+
+1. **Prep**
+
+   * Use the **desugared** program (so high‑level shapes are already expanded to canonical facts).
+   * Build a typed catalog of **objects** (lines/rays/segments, circles) and **facts** (e.g., “H is foot from X to AB”).
+
+2. **Build the Derivation Graph**
+
+   * Nodes are **points** (both given & to‑be‑derived).
+   * Directed edges represent **dependencies** required to compute a point (e.g., `H ← {A,B,X}` for a foot from `X` to `AB`).
+   * Include **path nodes** when a rule depends on a path (e.g., `line(A,B)`), but the graph is *topologically sorted on points*: path nodes don’t participate in ordering; they are recomputed on demand from their defining points.
+   * If multiple rules can derive the same point, create parallel candidate nodes; the evaluator will reconcile them (they must agree within `tol` or we raise a consistency warning).
+
+3. **Topological Sort**
+
+   * **Base points**: those that **cannot** be uniquely derived from any rule given current knowledge (they must be provided by the solver). These appear at layer 0.
+   * Higher layers contain points derivable from earlier layers. Cycles are broken by leaving involved points as base (no derivation).
+
+4. **Evaluate (derive coordinates)**
+
+   * For each point in topo order, execute its **derivation rule(s)** (see §16.4).
+   * A rule may produce **1** or **2** candidates; for 2‑candidate rules, apply **filters**:
+
+     * hard filters: ray/segment membership, `diameter` reflection, declared ordering constraints that are *hard* (e.g., “on segment”, “between”).
+     * soft selectors from **options**: `choose=near|far` (w.r.t. `anchor=P`), `choose=left|right` (w.r.t. oriented `ref=A-B`), `choose=cw|ccw` (around `anchor`, optionally `ref`), see §4.
+   * If >1 candidates remain, leave them all and set `chosen_by="closest-to-solver"` **only** for the comparison step (we do not collapse the set permanently).
+
+5. **Compare against solver coordinates**
+
+   * For each derived point `P`, compute `dist = min_{c∈candidates} ‖c - P_solved‖`.
+   * `match="yes"` iff `dist ≤ tol`.
+   * If no candidates (rule not applicable), mark as **not derivable** and exclude from pass/fail.
+
+6. **Report & diagnostics**
+
+   * Produce a human‑readable summary with per‑point info, a list of **unused facts** (good for catching under‑modeling), and a compact **graph export** (JSON) for visualization.
+
+---
+
+### 16.3 Geometry primitives used by DDC
+
+To compute candidates deterministically, DDC needs exact parameterizations of basic objects. All formulas below use vectors in ℝ²; `⊥` denotes a 90° rotation (e.g., `R⊥(x,y)=(−y,x)`), and `·`, `×` are dot/cross (2D scalar cross).
+
+* **Line(A,B)**: `ℓ(t) = A + t·(B−A)`.
+* **Ray(A,B)**: same, with constraint `t ≥ 0`.
+* **Segment(A,B)**: same, with `t ∈ [0,1]`.
+* **Circle center O radius-through R**: `center=O`, `r = ‖R−O‖`.
+* **Circle through (A,B,C)**: `center = intersect(PerpBisector(AB), PerpBisector(AC))`, `r = ‖center−A‖`.
+
+**Path helpers** (used internally to form `Path` instances):
+
+* `PerpBisector(A,B)`: passes through `M=(A+B)/2`, direction `(B−A)⊥`.
+* `ParallelThrough(P; A,B)`: line through `P` with direction `B−A`.
+* `PerpendicularAt(T; A,B)`: line through `T` with direction `(B−A)⊥`.
+* `AngleBisector(U,V,W, external=False)`: at `V`, bisects oriented angle `(VU, VW)`; `external` flips direction.
+
+---
+
+### 16.4 Derivation rule library
+
+Each rule is implemented as:
+
+```python
+@dataclass
+class Rule:
+    name: str
+    inputs: Set[Symbol]   # required known points/paths
+    produces: Symbol      # point being derived
+    multiplicity: Literal[1,2]
+    solver: Callable[..., List[Point]]  # returns candidate coordinates
+    filters: List[Callable[..., None]]  # optional hard filters (segment/ray membership, etc.)
+    soft_selectors: List[str]           # uses program opts: choose/anchor/ref
+```
+
+**Core rules (unique)**
+
+1. **Midpoint** — `midpoint M of A-B`
+   `M = (A + B) / 2`.
+
+2. **Foot of perpendicular** — `foot H from X to A-B`
+   Let `u = B−A`, `t = ((X−A)·u) / (u·u)`, `H = A + t·u`.
+
+3. **Diameter reflection** — `diameter A-B to circle center O`
+   If one endpoint known and `O` known, derive the other: `B = 2O − A` (or `A = 2O − B`).
+
+4. **Incenter (triangle)** — from `incircle of A-B-C`
+   `I = intersect(bisector at A, bisector at B)`, using normalized direction bisectors.
+
+5. **Circumcenter (triangle)** — from `circumcircle of A-B-C` or `circle through (A,B,C)`
+   `O = intersect(PerpBisector(AB), PerpBisector(AC))`.
+
+**Intersection rules (may be 1 or 2 candidates)**
+
+6. **Intersect(line, line)** — solve 2×2 linear system; unique unless parallel/collinear.
+
+7. **Intersect(line, ray/segment)** — compute line–line intersection, then **hard filter** by parameter range on ray/segment.
+
+8. **Intersect(ray/segment, ray/segment)** — idem.
+
+9. **Intersect(line, circle)** — quadratic in `t` on line param; **0/1/2** candidates; ray/segment filters apply.
+
+10. **Intersect(circle, circle)** — classic two‑circle intersection; 0/1/2 candidates.
+
+11. **Angle‑bisector with line/ray/segment** — parametric line of bisector with filters.
+
+**Tangency rules**
+
+12. **Tangent from external point to known circle** —
+    From `line A-P tangent to circle center O at P` derive `P`.
+    Let `d = A−O`, `D2 = ‖d‖²`, `r = radius`. If `D2 ≤ r²` → no real tangent.
+    Tangency points:
+
+    ```
+    k = r^2 / D2
+    h = r*sqrt(D2 - r^2) / D2
+    P± = O + k*d ± h * d⊥
+    ```
+
+    **Multiplicity 2**; apply `choose=...` soft selectors and ray/segment filters if present.
+
+13. **Point on circle + perpendicular at touchpoint** —
+    For `tangent at T to circle center O`, if the tangent line’s second point is known and `T` unknown but constrained to a line/ray/segment, intersect that carrier with the circle(s) as above and filter by perpendicularity.
+
+**Equal‑angles / collinear / concyclic (used as filters/guards)**
+
+* `collinear(P1,...,Pn)` — used to *reduce* candidate sets by checking cross( P1P2, P1Pi ) ≈ 0.
+* `concyclic(P1,...,Pn)` — used to validate a constructed circle and prune candidates.
+* `equal-angles(...)` — used to reject wrong branch if angle equality is present.
+
+> The initial library above is sufficient to cover 95% of olympiad‑style derivations we encode today. Rules are **pluggable**; you can register more without changing the framework.
+
+---
+
+### 16.5 Hard vs. soft selection
+
+* **Hard filters** (eliminate candidates):
+
+  * Ray/segment membership (`t ≥ 0`, `0 ≤ t ≤ 1`).
+  * Perpendicular/parallel requirements (e.g., `OT ⟂ AB` at tangency).
+  * “Between” statements (e.g., `point A on segment B-C`).
+
+* **Soft selectors** (bias only; do not eliminate unless inconsistent with all):
+
+  * `choose=near|far anchor=Q`
+  * `choose=left|right ref=A-B`
+  * `choose=cw|ccw anchor=Q [ref=A-B]`
+
+> If after applying **hard filters** more than one candidate remains and **no soft selector** is present, the point is **ambiguous**; DDC keeps all candidates and marks the point `ambiguous` (comparison may still succeed if solver picked any one of them).
+
+---
+
+### 16.6 Comparison policy & tolerances
+
+* Compute `scene_scale = max(1.0, diag(bounding_box(points)))`.
+* Default `tol = 1e-6 * scene_scale` (configurable).
+* A point *matches* if its solver coordinate is within `tol` of any candidate.
+* If multiple rules derive the same point, all must agree (pairwise distance ≤ `tol`) or the point is flagged `mismatch (conflicting rules)`.
+
+---
+
+### 16.7 Unused facts & coverage
+
+* Any derivation‑eligible fact that **does not** participate in producing any candidate for any point is recorded in `unused_facts`.
+  Common causes:
+
+  * Under‑modeled programs (e.g., never using `equal-angles` that could disambiguate a branch).
+  * Typos/IDs that don’t connect to the main graph.
+  * Dead constraints (e.g., circle defined but no one uses it).
+
+---
+
+### 16.8 Failure modes & messages
+
+* **Degenerate inputs** (parallel lines, concentric circles, `‖A−O‖ ≤ r` for tangency): emit a precise message alongside the rule name and the offending quantities.
+* **Ambiguous** (multiple candidates survive hard filters and no soft selector): mark point `ambiguous`, include all candidates.
+* **Mismatch** (solver point not within `tol` of any candidate): report the min distance and the candidate set.
+
+---
+
+### 16.9 CLI (optional)
+
+```
+geoscript-ir check path/to/problem.gs --dump-graph graph.json --tol 1e-7
+```
+
+* Prints a one‑line status and a table per point.
+* Writes a JSON export of the derivation graph plus candidate coordinates.
+
+---
+
+### 16.10 Worked example (the tangent/tangent issue)
+
+For
+
+```
+circle center O radius-through B
+line A-B tangent to circle center O at B
+line A-C tangent to circle center O at C
+angle O-A-B [degrees=30]
+segment A-B [length=5]
+```
+
+* **Derivable**: `C` from `(A, O, r)` via Rule 12 (two candidates).
+* With no side selector, DDC marks `C` **ambiguous** but still **ok** if the solver’s `C` equals one of the candidates.
+* If you add `point C on ray A-B [choose=ccw anchor=A]` (or `choose=left ref=A-B`), DDC treats `C` as **unique** (only one candidate survives), and any mirror solution becomes a **mismatch**.
+
+---
+
+### 16.11 Implementation notes
+
+* Keep all computations in double precision; guard divisions by near‑zero with small eps (e.g., `1e-14 * scene_scale`).
+* Never mutate solver coordinates; DDC is **read‑only** on the solution.
+* The rule engine is deliberately small; each rule is < 30 lines and pure (no side effects).
+* Unit tests: for every rule, craft fixtures with (a) normal, (b) degenerate, (c) ambiguous inputs; verify candidate counts and coordinates.
+
+---
+
+This module gives us a **deterministic oracle** for points that *should* be determined by the givens. When the solver converges to a wrong branch or mirror, DDC will flag it immediately, with an actionable trace (“which point, derived by which rule, from which inputs, disagreed by how much”).
 
 ### Notes for implementers
 
