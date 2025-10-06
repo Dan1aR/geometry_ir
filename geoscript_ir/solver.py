@@ -804,6 +804,67 @@ def _build_quadrilateral_family(stmt: Stmt, index: Dict[PointName, int]) -> List
     return specs
 
 
+def _build_line_tangent_at(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
+    edge_raw = stmt.data.get("edge")
+    center = stmt.data.get("center")
+    at = stmt.data.get("at")
+    radius_point = stmt.opts.get("radius_point")
+    if edge_raw is None or center is None or at is None or radius_point is None:
+        return []
+    edge = _as_edge(edge_raw)
+    if len(edge) != 2:
+        return []
+
+    def func(x: np.ndarray) -> np.ndarray:
+        c = _vec(x, index, center)
+        t = _vec(x, index, at)
+        a = _vec(x, index, edge[0])
+        b = _vec(x, index, edge[1])
+        direction = b - a
+        r = _vec(x, index, radius_point)
+        residuals = np.zeros(3, dtype=float)
+        residuals[0] = _cross_2d(direction, t - a)
+        residuals[1] = float(np.dot(direction, t - c))
+        residuals[2] = float(_norm_sq(t - c) - _norm_sq(r - c))
+        return residuals
+
+    key = f"line_tangent({center};{_format_edge(edge)}@{at})"
+    return [
+        ResidualSpec(
+            key=key,
+            func=func,
+            size=3,
+            kind="line_tangent_at",
+            source=stmt,
+        )
+    ]
+
+
+def _build_tangent_at(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
+    center = stmt.data.get("center")
+    at = stmt.data.get("at")
+    radius_point = stmt.opts.get("radius_point")
+    if center is None or at is None or radius_point is None:
+        return []
+
+    def func(x: np.ndarray) -> np.ndarray:
+        c = _vec(x, index, center)
+        t = _vec(x, index, at)
+        r = _vec(x, index, radius_point)
+        return np.array([_norm_sq(t - c) - _norm_sq(r - c)], dtype=float)
+
+    key = f"tangent_at({at};{center})"
+    return [
+        ResidualSpec(
+            key=key,
+            func=func,
+            size=1,
+            kind="tangent_at",
+            source=stmt,
+        )
+    ]
+
+
 _RESIDUAL_BUILDERS: Dict[str, Callable[[Stmt, Dict[PointName, int]], List[ResidualSpec]]] = {
     "segment": _build_segment_length,
     "equal_segments": _build_equal_segments,
@@ -820,6 +881,8 @@ _RESIDUAL_BUILDERS: Dict[str, Callable[[Stmt, Dict[PointName, int]], List[Residu
     "median_from_to": _build_midpoint,
     "perpendicular_at": _build_foot,
     "distance": _build_distance,
+    "line_tangent_at": _build_line_tangent_at,
+    "tangent_at": _build_tangent_at,
 
     "quadrilateral": _build_quadrilateral_family,
     "parallelogram": _build_quadrilateral_family,
@@ -1036,19 +1099,25 @@ def translate(program: Program) -> Model:
     if circle_radius_refs:
         radius_lookup = {center: refs[0] for center, refs in circle_radius_refs.items() if refs}
         for stmt in program.stmts:
-            if stmt.kind != "point_on":
-                continue
-            path = stmt.data.get("path")
-            if not isinstance(path, (list, tuple)) or len(path) != 2:
-                continue
-            path_kind, payload = path
-            if path_kind != "circle" or not isinstance(payload, str):
-                continue
-            if any(key in stmt.opts for key in ("radius", "distance")):
-                continue
-            radius_point = radius_lookup.get(payload)
-            if radius_point and "radius_point" not in stmt.opts:
-                stmt.opts["radius_point"] = radius_point
+            if stmt.kind == "point_on":
+                path = stmt.data.get("path")
+                if not isinstance(path, (list, tuple)) or len(path) != 2:
+                    continue
+                path_kind, payload = path
+                if path_kind != "circle" or not isinstance(payload, str):
+                    continue
+                if any(key in stmt.opts for key in ("radius", "distance")):
+                    continue
+                radius_point = radius_lookup.get(payload)
+                if radius_point and "radius_point" not in stmt.opts:
+                    stmt.opts["radius_point"] = radius_point
+            elif stmt.kind in {"line_tangent_at", "tangent_at"}:
+                center = stmt.data.get("center")
+                if not isinstance(center, str):
+                    continue
+                radius_point = radius_lookup.get(center)
+                if radius_point and "radius_point" not in stmt.opts:
+                    stmt.opts["radius_point"] = radius_point
 
     if not order:
         raise ValueError("program contains no points to solve for")
