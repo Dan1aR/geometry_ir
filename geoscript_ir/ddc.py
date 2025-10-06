@@ -16,7 +16,9 @@ branches early.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
+from itertools import combinations
 from math import atan2, sqrt
 from typing import Callable, Dict, Iterable, List, Literal, Optional, Sequence, Set, Tuple, TypedDict
 
@@ -136,10 +138,12 @@ class EvalContext:
         coords: Dict[str, Point],
         base_coords: Dict[str, Point],
         circle_lookup: Dict[str, CircleInfo],
+        scene_scale: float,
     ) -> None:
         self._coords = coords
         self._base = base_coords
         self._circles = circle_lookup
+        self.scene_scale = scene_scale
 
     def has_point(self, name: str) -> bool:
         return name in self._coords or name in self._base
@@ -195,6 +199,30 @@ def _distance(a: Point, b: Point) -> float:
 
 def _midpoint(a: Point, b: Point) -> Point:
     return (a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0
+
+
+def _circle_spec_for_center(center: str, ctx: EvalContext) -> Optional[CircleSpec]:
+    info = ctx.circle_info(center)
+    if info is None:
+        return None
+    try:
+        center_pt = ctx.require_point(info.center)
+        through_pt = ctx.require_point(info.through)
+    except KeyError:
+        return None
+    radius = _distance(center_pt, through_pt)
+    if radius <= _EPS:
+        return None
+    return CircleSpec(
+        center=center_pt,
+        radius=radius,
+        center_name=info.center,
+        through_name=info.through,
+    )
+
+
+def _tangency_tolerance(ctx: EvalContext) -> float:
+    return max(ctx.scene_scale * 1e-6, 1e-9)
 
 
 def _format_edge(edge: Sequence[str]) -> str:
@@ -553,6 +581,78 @@ def _apply_membership_filters(candidates: List[Point], specs: Iterable[LineSpec]
     return filtered, eliminated
 
 
+def _tangent_from_external_point(
+    external: Point, circle: CircleSpec, ctx: EvalContext, notes: List[str]
+) -> List[Point]:
+    center = circle.center
+    d = (external[0] - center[0], external[1] - center[1])
+    d2 = _norm_sq(d)
+    r = circle.radius
+    r2 = r * r
+    tol = _tangency_tolerance(ctx)
+    if d2 <= r2 + tol:
+        notes.append("external point inside or on circle")
+        return []
+    if d2 <= _EPS:
+        notes.append("external point coincides with center")
+        return []
+    diff = max(d2 - r2, 0.0)
+    k = r2 / d2
+    h = r * sqrt(diff) / d2
+    perp = _rotate90(d)
+    cand1 = (
+        center[0] + k * d[0] + h * perp[0],
+        center[1] + k * d[1] + h * perp[1],
+    )
+    cand2 = (
+        center[0] + k * d[0] - h * perp[0],
+        center[1] + k * d[1] - h * perp[1],
+    )
+    if _distance(cand1, cand2) <= tol:
+        return [cand1]
+    return [cand1, cand2]
+
+
+def _apply_tangent_guard(
+    candidates: List[Point],
+    tangent_stmts: Sequence[Stmt],
+    line_specs: Sequence[LineSpec],
+    ctx: EvalContext,
+    notes: List[str],
+) -> List[Point]:
+    if not candidates or not tangent_stmts or not line_specs:
+        return candidates
+    tol = _tangency_tolerance(ctx)
+    filtered: List[Point] = []
+    for cand in candidates:
+        ok = True
+        for tan in tangent_stmts:
+            center_name = tan.data.get("center")
+            if not isinstance(center_name, str):
+                continue
+            circle = _circle_spec_for_center(center_name, ctx)
+            if circle is None:
+                continue
+            vec = _vec(circle.center, cand)
+            norm_vec = _norm(vec)
+            if abs(norm_vec - circle.radius) > tol:
+                ok = False
+                break
+            for spec in line_specs:
+                dir_vec = spec.direction
+                scale = max(_norm(dir_vec), 1.0)
+                if abs(_dot(vec, dir_vec)) > tol * scale:
+                    ok = False
+                    break
+            if not ok:
+                break
+        if ok:
+            filtered.append(cand)
+    if len(filtered) != len(candidates):
+        notes.append("tangent guard applied")
+    return filtered
+
+
 def _rule_result(
     candidates: List[Point],
     opts: Dict[str, object],
@@ -691,6 +791,29 @@ def _make_diameter_rules(stmt: Stmt) -> List[Rule]:
 
     rules.append(make_rule(edge[0], edge[1]))
     rules.append(make_rule(edge[1], edge[0]))
+
+    def make_center_rule() -> Rule:
+        inputs = {edge[0], edge[1]}
+
+        def solver(ctx: EvalContext) -> RuleOutcome:
+            a = ctx.require_point(edge[0])
+            b = ctx.require_point(edge[1])
+            return RuleOutcome(candidates=[_midpoint(a, b)], notes=[], chosen_by="unique")
+
+        fact = f"diameter({center};{_format_edge(edge)})"
+        return Rule(
+            name=f"diameter center {center}",
+            point=center,
+            inputs=inputs,
+            multiplicity=1,
+            solver=solver,
+            stmt=stmt,
+            opts=stmt.opts,
+            fact_id=fact,
+            soft_selectors=set(),
+        )
+
+    rules.append(make_center_rule())
     return rules
 
 
@@ -790,6 +913,191 @@ def _make_intersect_rule(stmt: Stmt, circle_lookup: Dict[str, CircleInfo]) -> Li
     return results
 
 
+def _make_line_tangent_rules(stmt: Stmt, circle_lookup: Dict[str, CircleInfo]) -> List[Rule]:
+    center = stmt.data.get("center")
+    at = stmt.data.get("at")
+    edge = stmt.data.get("edge")
+    if not (
+        isinstance(center, str)
+        and isinstance(at, str)
+        and isinstance(edge, (list, tuple))
+        and len(edge) == 2
+        and all(isinstance(x, str) for x in edge)
+    ):
+        return []
+
+    circle_info = circle_lookup.get(center)
+    if circle_info is None:
+        return []
+
+    rules: List[Rule] = []
+    fact = f"line_tangent({center};{_format_edge(edge)}@{at})"
+
+    if at in edge:
+        other = edge[1] if edge[0] == at else edge[0]
+        if other == at:
+            return []
+        inputs = {center, circle_info.through, other}
+
+        def solver(ctx: EvalContext) -> RuleOutcome:
+            notes: List[str] = []
+            circle = _circle_spec_for_center(center, ctx)
+            if circle is None:
+                notes.append("circle data unavailable")
+                return RuleOutcome(candidates=[], notes=notes, chosen_by="undetermined")
+            try:
+                external = ctx.require_point(other)
+            except KeyError:
+                return RuleOutcome(candidates=[], notes=["missing external point"], chosen_by="undetermined")
+            candidates = _tangent_from_external_point(external, circle, ctx, notes)
+            return _rule_result(candidates, stmt.opts, ctx, [], notes)
+
+        rules.append(
+            Rule(
+                name=f"tangent external {at}",
+                point=at,
+                inputs=inputs,
+                multiplicity=2,
+                solver=solver,
+                stmt=stmt,
+                opts=stmt.opts,
+                fact_id=fact,
+                soft_selectors={key for key in ("choose", "anchor", "ref") if key in stmt.opts},
+            )
+        )
+    else:
+        inputs = {center, circle_info.through, edge[0], edge[1]}
+
+        def solver(ctx: EvalContext) -> RuleOutcome:
+            notes: List[str] = []
+            circle = _circle_spec_for_center(center, ctx)
+            if circle is None:
+                notes.append("circle data unavailable")
+                return RuleOutcome(candidates=[], notes=notes, chosen_by="undetermined")
+            line_spec = _line_spec_from_path(("line", tuple(edge)), ctx)
+            if line_spec is None:
+                notes.append("line data unavailable")
+                return RuleOutcome(candidates=[], notes=notes, chosen_by="undetermined")
+            p = line_spec.anchor
+            direction = line_spec.direction
+            denom = _dot(direction, direction)
+            if denom <= _EPS:
+                notes.append("tangent line degenerate")
+                return RuleOutcome(candidates=[], notes=notes, chosen_by="undetermined")
+            center_pt = circle.center
+            t = _dot(_vec(p, center_pt), direction) / denom
+            foot = (p[0] + t * direction[0], p[1] + t * direction[1])
+            if abs(_distance(foot, center_pt) - circle.radius) > _tangency_tolerance(ctx):
+                notes.append("foot not on circle radius")
+                return RuleOutcome(candidates=[], notes=notes, chosen_by="undetermined")
+            hard_specs = [spec for spec in (line_spec,) if spec.kind in {"segment", "ray"}]
+            return _rule_result([foot], stmt.opts, ctx, hard_specs, notes)
+
+        rules.append(
+            Rule(
+                name=f"tangent touchpoint {at}",
+                point=at,
+                inputs=inputs,
+                multiplicity=1,
+                solver=solver,
+                stmt=stmt,
+                opts=stmt.opts,
+                fact_id=fact,
+                soft_selectors={key for key in ("choose", "anchor", "ref") if key in stmt.opts},
+            )
+        )
+
+    return rules
+
+
+def _merge_opts(*stmts: Stmt) -> Dict[str, object]:
+    merged: Dict[str, object] = {}
+    for stmt in stmts:
+        merged.update(stmt.opts)
+    return merged
+
+
+def _synth_on_on_rules(
+    point_on_map: Dict[str, List[Stmt]],
+    tangent_map: Dict[str, List[Stmt]],
+    circle_lookup: Dict[str, CircleInfo],
+) -> List[Rule]:
+    rules: List[Rule] = []
+    for point, stmts in point_on_map.items():
+        if len(stmts) < 2:
+            continue
+        for stmt1, stmt2 in combinations(stmts, 2):
+            path1 = stmt1.data.get("path")
+            path2 = stmt2.data.get("path")
+            if not (isinstance(path1, tuple) and isinstance(path2, tuple)):
+                continue
+            inputs = _path_dependencies(path1, circle_lookup) | _path_dependencies(path2, circle_lookup)
+
+            opts = _merge_opts(stmt1, stmt2)
+            soft_selectors = {key for key in ("choose", "anchor", "ref") if key in opts}
+            fact = f"on∩on({point})"
+            tangent_constraints = tangent_map.get(point, [])
+
+            def solver(ctx: EvalContext, p1=path1, p2=path2, base_opts=opts) -> RuleOutcome:
+                notes: List[str] = []
+                hard_specs: List[LineSpec] = []
+                line_specs_for_guard: List[LineSpec] = []
+                candidates: List[Point] = []
+                p1_line = _line_spec_from_path(p1, ctx)
+                p2_line = _line_spec_from_path(p2, ctx)
+                p1_circle = _circle_spec_from_path(p1, ctx)
+                p2_circle = _circle_spec_from_path(p2, ctx)
+                if p1_line and p2_line:
+                    candidates = _intersect_lines(p1_line, p2_line)
+                    hard_specs.extend(
+                        [spec for spec in (p1_line, p2_line) if spec.kind in {"segment", "ray"}]
+                    )
+                    line_specs_for_guard.extend([p1_line, p2_line])
+                elif p1_line and p2_circle:
+                    candidates = _intersect_line_circle(p1_line, p2_circle)
+                    hard_specs.extend([spec for spec in (p1_line,) if spec.kind in {"segment", "ray"}])
+                    line_specs_for_guard.append(p1_line)
+                elif p2_line and p1_circle:
+                    candidates = _intersect_line_circle(p2_line, p1_circle)
+                    hard_specs.extend([spec for spec in (p2_line,) if spec.kind in {"segment", "ray"}])
+                    line_specs_for_guard.append(p2_line)
+                elif p1_circle and p2_circle:
+                    candidates = _intersect_circles(p1_circle, p2_circle)
+                else:
+                    notes.append("unsupported on∩on combination")
+                    return RuleOutcome(candidates=[], notes=notes, chosen_by="undetermined")
+
+                if line_specs_for_guard and tangent_constraints:
+                    candidates = _apply_tangent_guard(candidates, tangent_constraints, line_specs_for_guard, ctx, notes)
+                    if not candidates:
+                        return RuleOutcome(candidates=[], notes=notes, chosen_by="undetermined")
+
+                return _rule_result(candidates, base_opts, ctx, hard_specs, notes)
+
+            multiplicity: Literal[1, 2]
+            p1_line = path1[0] != "circle"
+            p2_line = path2[0] != "circle"
+            if p1_line and p2_line:
+                multiplicity = 1
+            else:
+                multiplicity = 2
+
+            rules.append(
+                Rule(
+                    name=f"on∩on {point}",
+                    point=point,
+                    inputs=inputs,
+                    multiplicity=multiplicity,
+                    solver=solver,
+                    stmt=stmt1,
+                    opts=opts,
+                    fact_id=fact,
+                    soft_selectors=soft_selectors,
+                )
+            )
+    return rules
+
+
 def _collect_circles(program: Program) -> Dict[str, CircleInfo]:
     circles: Dict[str, CircleInfo] = {}
     for stmt in program.stmts:
@@ -802,6 +1110,20 @@ def _collect_circles(program: Program) -> Dict[str, CircleInfo]:
 
 
 def _collect_rules(program: Program, circles: Dict[str, CircleInfo]) -> List[Rule]:
+    point_on_map: Dict[str, List[Stmt]] = defaultdict(list)
+    tangent_map: Dict[str, List[Stmt]] = defaultdict(list)
+
+    for stmt in program.stmts:
+        if stmt.kind == "point_on":
+            point = stmt.data.get("point")
+            path = stmt.data.get("path")
+            if isinstance(point, str) and isinstance(path, tuple):
+                point_on_map[point].append(stmt)
+        elif stmt.kind == "tangent_at":
+            at = stmt.data.get("at")
+            if isinstance(at, str):
+                tangent_map[at].append(stmt)
+
     rules: List[Rule] = []
     for stmt in program.stmts:
         if stmt.kind in {"midpoint", "median_from_to"}:
@@ -816,6 +1138,10 @@ def _collect_rules(program: Program, circles: Dict[str, CircleInfo]) -> List[Rul
             rules.extend(_make_diameter_rules(stmt))
         elif stmt.kind == "intersect":
             rules.extend(_make_intersect_rule(stmt, circles))
+        elif stmt.kind == "line_tangent_at":
+            rules.extend(_make_line_tangent_rules(stmt, circles))
+
+    rules.extend(_synth_on_on_rules(point_on_map, tangent_map, circles))
     return rules
 
 
@@ -877,7 +1203,9 @@ def derive_and_check(
     reports: Dict[str, DerivedPointReport] = {}
     unused: List[str] = []
 
-    ctx = EvalContext(derived_coords, base_coords, circles)
+    scene_scale = _compute_scene_scale(solution, program)
+
+    ctx = EvalContext(derived_coords, base_coords, circles, scene_scale)
 
     remaining_rules = list(rules)
     progress = True
@@ -915,7 +1243,7 @@ def derive_and_check(
     for rule in remaining_rules:
         unused.append(rule.fact_id)
 
-    tol_value = tol if tol is not None else 1e-6 * _compute_scene_scale(solution, program)
+    tol_value = tol if tol is not None else 1e-6 * scene_scale
 
     mismatches = 0
     ambiguous = 0
@@ -997,7 +1325,9 @@ def evaluate_ddc(
         return {name: dict(points[name]) for name in names}
 
     mismatches = _copy_reports(
-        name for name, info in points.items() if info.get("match") == "no"
+        name
+        for name, info in points.items()
+        if info.get("match") == "no" and info.get("candidates")
     )
     partial_points = _copy_reports(
         name

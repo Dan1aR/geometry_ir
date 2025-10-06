@@ -112,3 +112,64 @@ def test_evaluate_ddc_maps_status_to_result():
     assert not mismatch_result.passed
     assert mismatch_result.severity == "error"
     assert mismatch_result.mismatches
+
+
+def test_ddc_handles_tangent_and_on_on_rules():
+    span = Span(1, 1)
+    program = Program(
+        [
+            Stmt("circle_center_radius_through", span, {"center": "O", "through": "R"}, origin="source"),
+            Stmt("segment", span, {"edge": ("A", "B")}, origin="source"),
+            Stmt("segment", span, {"edge": ("A", "C")}, origin="source"),
+            Stmt("line_tangent_at", span, {"edge": ("A", "B"), "center": "O", "at": "B"}, origin="source"),
+            Stmt("line_tangent_at", span, {"edge": ("A", "C"), "center": "O", "at": "C"}, origin="source"),
+            Stmt("point_on", span, {"point": "B", "path": ("circle", "O")}, origin="source"),
+            Stmt("point_on", span, {"point": "C", "path": ("circle", "O")}, origin="source"),
+            Stmt("point_on", span, {"point": "D", "path": ("segment", ("O", "Q"))}, origin="source"),
+            Stmt("point_on", span, {"point": "D", "path": ("circle", "O")}, origin="source"),
+            Stmt("line", span, {"edge": ("U", "V")}, origin="source"),
+            Stmt("line_tangent_at", span, {"edge": ("U", "V"), "center": "O", "at": "T2"}, origin="source"),
+            Stmt("point_on", span, {"point": "T2", "path": ("circle", "O")}, origin="source"),
+        ]
+    )
+
+    coords = {
+        "O": (0.0, 0.0),
+        "R": (0.0, 3.0),
+        "A": (5.0, 0.0),
+        "B": (9.0 / 5.0, 12.0 / 5.0),
+        "C": (9.0 / 5.0, -12.0 / 5.0),
+        "Q": (6.0, 0.0),
+        "D": (3.0, 0.0),
+        "U": (-3.0, 3.0),
+        "V": (3.0, 3.0),
+        "T2": (0.0, 3.0),
+    }
+
+    solution = Solution(
+        point_coords=coords,
+        success=True,
+        max_residual=0.0,
+        residual_breakdown=[],
+        warnings=[],
+    )
+
+    report = derive_and_check(program, solution)
+
+    assert report["status"] in {"ok", "ambiguous"}
+    data = report["points"]
+
+    b_info = data.get("B")
+    assert b_info is not None
+    assert b_info["match"] == "yes"
+    assert len(b_info.get("candidates", [])) >= 1
+
+    d_info = data.get("D")
+    assert d_info is not None
+    assert d_info["match"] == "yes"
+    assert len(d_info.get("candidates", [])) == 1
+
+    t2_info = data.get("T2")
+    assert t2_info is not None
+    assert t2_info["match"] == "yes"
+    assert t2_info["chosen_by"] == "unique"
