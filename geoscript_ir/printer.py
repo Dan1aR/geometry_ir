@@ -152,8 +152,10 @@ def print_program(prog: Program, *, original_only: bool = False) -> str:
             lines.append(f'parallel-edges ({edge_str(a)} ; {edge_str(b)}){o}')
             continue
         elif s.kind == 'rules':
+            if not s.opts:
+                raise ValueError('rules statement requires at least one option')
             parts = [f'{k}={"true" if s.opts[k] else "false"}' for k in sorted(s.opts.keys())]
-            lines.append('rules ' + ' '.join(parts)); continue
+            lines.append('rules [' + ' '.join(parts) + ']'); continue
         else:
             lines.append(f'# [unknown kind {s.kind}]'); continue
         if o and lines:

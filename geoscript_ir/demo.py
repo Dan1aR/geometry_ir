@@ -8,7 +8,7 @@ circle through (A, B, C, D)
 points E
 angle A-E-B
 target angle B-A-D
-rules no_solving=true
+rules [no_solving=true]
 """
 
 def run():

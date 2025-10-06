@@ -4,4 +4,4 @@ points A, B, C, D
 trapezoid A-B-C-D [bases=A-D isosceles=true]
 circle through (A, B, C, D)
 target angle B-A-D
-rules no_solving=true
+rules [no_solving=true]
