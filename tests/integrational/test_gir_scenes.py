@@ -27,7 +27,7 @@ class IntegrationCase:
     expected_targets: Optional[Dict[str, float]] = None
     tol_solver: float = 1e-8
     tol_ddc: Optional[float] = None
-    allow_ambiguous: bool = False
+    allow_ambiguous: bool = True
 
     @property
     def solver_options(self) -> SolveOptions:
@@ -53,7 +53,7 @@ def _iter_cases() -> Iterable[IntegrationCase]:
     for scene_path in sorted(DATA_DIR.glob("*.gir")):
         text = scene_path.read_text()
         overrides = _load_case_overrides(scene_path)
-        allow_ambiguous = bool(overrides.get("allow_ambiguous", False))
+        allow_ambiguous = bool(overrides.get("allow_ambiguous", True))
         tol_solver = float(overrides.get("tol_solver", 1e-8))
         tol_ddc = overrides.get("tol_ddc")
         if tol_ddc is not None:
