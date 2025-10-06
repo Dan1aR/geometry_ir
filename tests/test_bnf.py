@@ -137,6 +137,30 @@ def test_targets(text, kind, data, opts):
             {},
         ),
         (
+            'collinear (A, B, C)',
+            'collinear',
+            {'points': ['A', 'B', 'C']},
+            {},
+        ),
+        (
+            'concyclic (A, B, C, D)',
+            'concyclic',
+            {'points': ['A', 'B', 'C', 'D']},
+            {},
+        ),
+        (
+            'equal-angles (A-B-C ; D-E-F)',
+            'equal_angles',
+            {'lhs': [('A', 'B', 'C')], 'rhs': [('D', 'E', 'F')]},
+            {},
+        ),
+        (
+            'ratio (A-B : C-D = 2 : 3)',
+            'ratio',
+            {'edges': [('A', 'B'), ('C', 'D')], 'ratio': (2.0, 3.0)},
+            {},
+        ),
+        (
             'tangent at A to circle center O',
             'tangent_at',
             {'at': 'A', 'center': 'O'},
@@ -220,6 +244,20 @@ def test_placements():
     assert pt_on_median.data == {
         'point': 'T',
         'path': ('median', {'frm': 'C', 'to': ('A', 'B')}),
+    }
+
+    pt_on_perp_bis = parse_single('point U on perp-bisector of A-B')
+    assert pt_on_perp_bis.kind == 'point_on'
+    assert pt_on_perp_bis.data == {
+        'point': 'U',
+        'path': ('perp-bisector', ('A', 'B')),
+    }
+
+    pt_on_parallel = parse_single('point V on parallel through C to A-B')
+    assert pt_on_parallel.kind == 'point_on'
+    assert pt_on_parallel.data == {
+        'point': 'V',
+        'path': ('parallel', {'through': 'C', 'to': ('A', 'B')}),
     }
 
     inter = parse_single('intersect (line A-B) with (circle center O) at P, Q [type=external]')

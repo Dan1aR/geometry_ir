@@ -137,6 +137,25 @@ def parse_edgelist_paren(cur: Cursor, consume_lparen: bool = True):
     return edges, first_span
 
 
+def parse_anglelist(cur: Cursor, *, consume_lparen: bool = False):
+    angles = []
+    first_span: Optional[Span] = None
+    if consume_lparen:
+        lp = cur.expect('LPAREN')
+        first_span = Span(lp[2], lp[3])
+    while True:
+        t = cur.peek()
+        if not t or t[0] in ('RPAREN', 'SEMI'):
+            break
+        if angles:
+            cur.expect('COMMA')
+        angle, sp = parse_angle3(cur)
+        if first_span is None:
+            first_span = sp
+        angles.append(angle)
+    return angles, first_span
+
+
 def parse_opt_value(cur: Cursor):
     vtok = cur.peek()
     if not vtok:
@@ -254,6 +273,11 @@ def parse_path(cur: Cursor):
         cur.consume_keyword('to')
         to, _ = parse_pair(cur)
         return 'perpendicular', {'at': point_id, 'to': to}
+    if kw == 'perp-bisector':
+        cur.consume_keyword('perp-bisector')
+        cur.consume_keyword('of')
+        edge, _ = parse_pair(cur)
+        return 'perp-bisector', edge
     if kw == 'median':
         cur.consume_keyword('median')
         cur.consume_keyword('from')
@@ -261,6 +285,13 @@ def parse_path(cur: Cursor):
         cur.consume_keyword('to')
         to, _ = parse_pair(cur)
         return 'median', {'frm': frm, 'to': to}
+    if kw == 'parallel':
+        cur.consume_keyword('parallel')
+        cur.consume_keyword('through')
+        through, _ = parse_id(cur)
+        cur.consume_keyword('to')
+        to, _ = parse_pair(cur)
+        return 'parallel', {'through': through, 'to': to}
     raise SyntaxError(f'[line {t[2]}, col {t[3]}] invalid path kind {t[1]!r}')
 
 def parse_opts(cur: Cursor, *, required: bool = False, context: str = 'options') -> Dict[str, Any]:
@@ -533,6 +564,40 @@ def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
         cur.expect('RPAREN')
         opts = parse_opts(cur)
         stmt = Stmt('equal_segments', sp, {'lhs': lhs, 'rhs': rhs}, opts)
+    elif kw == 'collinear':
+        cur.consume_keyword('collinear')
+        ids, sp = parse_idlist_paren(cur)
+        opts = parse_opts(cur)
+        stmt = Stmt('collinear', sp, {'points': ids}, opts)
+    elif kw == 'concyclic':
+        cur.consume_keyword('concyclic')
+        ids, sp = parse_idlist_paren(cur)
+        opts = parse_opts(cur)
+        stmt = Stmt('concyclic', sp, {'points': ids}, opts)
+    elif kw == 'equal-angles':
+        cur.consume_keyword('equal-angles')
+        cur.expect('LPAREN')
+        lhs, sp = parse_anglelist(cur)
+        cur.expect('SEMI')
+        rhs, _ = parse_anglelist(cur)
+        cur.expect('RPAREN')
+        opts = parse_opts(cur)
+        stmt = Stmt('equal_angles', sp, {'lhs': lhs, 'rhs': rhs}, opts)
+    elif kw == 'ratio':
+        cur.consume_keyword('ratio')
+        cur.expect('LPAREN')
+        left_edge, sp = parse_pair(cur)
+        cur.expect('COLON')
+        right_edge, _ = parse_pair(cur)
+        cur.expect('EQUAL')
+        num_a_tok = cur.expect('NUMBER')
+        num_a = float(_parse_number_literal(num_a_tok[1]))
+        cur.expect('COLON')
+        num_b_tok = cur.expect('NUMBER')
+        num_b = float(_parse_number_literal(num_b_tok[1]))
+        cur.expect('RPAREN')
+        opts = parse_opts(cur)
+        stmt = Stmt('ratio', sp, {'edges': [left_edge, right_edge], 'ratio': (num_a, num_b)}, opts)
     elif kw == 'tangent':
         cur.consume_keyword('tangent')
         cur.consume_keyword('at')

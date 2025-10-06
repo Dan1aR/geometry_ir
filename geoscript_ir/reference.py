@@ -48,6 +48,10 @@ BNF = dedent(
                | 'rectangle'     ID '-' ID '-' ID '-' ID Opts?
                | 'square'        ID '-' ID '-' ID '-' ID Opts?
                | 'rhombus'       ID '-' ID '-' ID '-' ID Opts?
+               | 'collinear' '(' IdList ')' Opts?
+               | 'concyclic' '(' IdList ')' Opts?
+               | 'equal-angles' '(' AngleList ';' AngleList ')' Opts?
+               | 'ratio' '(' Pair ':' Pair '=' NUMBER ':' NUMBER ')' Opts?
 
     Placement := 'point' ID 'on' Path Opts?
                | 'intersect' '(' Path ')' 'with' '(' Path ')' 'at' ID (',' ID)? Opts?
@@ -61,6 +65,8 @@ BNF = dedent(
                | 'angle-bisector' Angle3 ('external')?
                | 'median'  'from' ID 'to' Pair
                | 'perpendicular' 'at' ID 'to' Pair
+               | 'perp-bisector' 'of' Pair
+               | 'parallel' 'through' ID 'to' Pair
 
     Rules     := 'rules' Opts
 
@@ -69,11 +75,15 @@ BNF = dedent(
     EdgeList  := Pair { ',' Pair }
     IdList    := ID { ',' ID }
     IdChain   := ID '-' ID { '-' ID }
+    AngleList := Angle3 { ',' Angle3 }
     Pair      := ID '-' ID
     Angle3    := ID '-' ID '-' ID
 
     Opts      := '[' KeyVal { (',' | ' ') KeyVal } ']'
     KeyVal    := KEY '=' (NUMBER | STRING | BOOLEAN | ID | ID '-' ID | SQRT | PRODUCT)
+               | 'choose' '=' ('near' | 'far' | 'left' | 'right' | 'cw' | 'ccw')
+               | 'anchor' '=' ID
+               | 'ref'     '=' Pair
     SQRT      := 'sqrt' '(' NUMBER ')'
     PRODUCT   := NUMBER '*' SQRT
     BOOLEAN   := 'true' | 'false'
