@@ -110,6 +110,7 @@ Write **GeoScript IR** programs that the downstream toolchain will parse, valida
 ## Output format (always)
 
 * Start with:
+  * Wrap the entire program between `<geoscript>` and `</geoscript>` tags (no content outside the tags).
 
   1. `scene "Title"`
   2. `layout canonical=<id> scale=<number>`

@@ -38,6 +38,7 @@ class FunctionalRule:
     inputs: List[PointName]
     compute: Callable[[Dict[PointName, Tuple[float, float]]], Tuple[float, float]]
     source: str
+    meta: Optional[Dict[str, object]] = None
 
 
 class DerivationPlan(TypedDict, total=False):
@@ -463,6 +464,11 @@ def _line_intersection_rule(
             raise FunctionalRuleError("intersection outside segment")
         if spec2.kind == "ray" and t2 < -1e-9:
             raise FunctionalRuleError("intersection outside ray")
+        endpoint_tol = 1e-9
+        if spec1.kind == "segment" and (abs(t1) <= endpoint_tol or abs(t1 - 1.0) <= endpoint_tol):
+            raise FunctionalRuleError("intersection at endpoint")
+        if spec2.kind == "segment" and (abs(t2) <= endpoint_tol or abs(t2 - 1.0) <= endpoint_tol):
+            raise FunctionalRuleError("intersection at endpoint")
         return pt
 
     rule = FunctionalRule(
@@ -470,6 +476,7 @@ def _line_intersection_rule(
         inputs=inputs,
         compute=compute,
         source=_rule_source(stmt),
+        meta={"path1": path1, "path2": path2, "allow_outside": True},
     )
     return point, rule
 
@@ -1291,7 +1298,7 @@ def _build_equal_angles(stmt: Stmt, index: Dict[PointName, int]) -> List[Residua
             left_sin = _cross_2d(lu, lv)
             right_sin = _cross_2d(ru, rv)
             vals.append(left_cos - right_cos)
-            vals.append(left_sin - right_sin)
+            vals.append(left_sin * left_sin - right_sin * right_sin)
         return np.asarray(vals, dtype=float)
 
     lhs_fmt = [f"{a}-{b}-{c}" for a, b, c in lhs]
@@ -1914,7 +1921,11 @@ def compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
         ambiguous = list(working_plan.get("ambiguous_points", []))
         notes = list(working_plan.get("notes", []))
         changed = False
+        tolerable_reasons = {"intersection outside segment", "intersection outside ray"}
         for point, reason in guard_failures:
+            if point in derived and reason in tolerable_reasons:
+                notes.append(f"plan retained {point} despite guard: {reason}")
+                continue
             if point in derived:
                 derived.pop(point)
                 if point not in ambiguous:
@@ -1953,6 +1964,7 @@ def _initial_guess(model: Model, rng: np.random.Generator, attempt: int) -> np.n
     # poor initial configuration (or even get stuck in a shallow local minimum).
     segment_hints: Dict[PointName, List[Edge]] = {}
     seen_point_on: Set[int] = set()
+    intersection_hints: Dict[PointName, Tuple[object, object, Stmt]] = {}
     for spec in model.residuals:
         stmt = spec.source
         if not stmt:
@@ -1993,6 +2005,21 @@ def _initial_guess(model: Model, rng: np.random.Generator, attempt: int) -> np.n
             if not isinstance(a, str) or not isinstance(b, str):
                 continue
             segment_hints.setdefault(point, []).append((a, b))
+        elif stmt.kind == "intersect":
+            path1 = stmt.data.get("path1")
+            path2 = stmt.data.get("path2")
+            if path1 is None or path2 is None:
+                continue
+            for key in ("at", "at2"):
+                point = stmt.data.get(key)
+                if not _is_point_name(point):
+                    continue
+                if point not in model.index:
+                    continue
+                # Only seed points we will actually optimize.
+                if point not in model.variables:
+                    continue
+                intersection_hints.setdefault(point, (path1, path2, stmt))
 
     base = max(model.scale, 1e-3)
     # Place first three points in a stable, non-degenerate pattern.
@@ -2010,12 +2037,185 @@ def _initial_guess(model: Model, rng: np.random.Generator, attempt: int) -> np.n
         guess[2 * i] = radius * math.cos(angle)
         guess[2 * i + 1] = radius * math.sin(angle)
 
-    # Apply the collected hints once the base configuration has been sketched
-    # out.  Keep the anchor/orientation seeds untouched so that the gauges stay
-    # satisfied at the starting point.
     protected_indices: Set[int] = {0}
     if n >= 2:
         protected_indices.add(1)
+
+    coords = {
+        name: (guess[2 * i], guess[2 * i + 1])
+        for i, name in enumerate(model.points)
+    }
+
+    def _path_as_segment_id(path: object) -> Optional[Tuple[str, str]]:
+        if not isinstance(path, tuple) or len(path) != 2:
+            return None
+        kind, payload = path
+        if kind != "segment" or not isinstance(payload, (list, tuple)):
+            return None
+        if len(payload) != 2:
+            return None
+        a, b = payload
+        if not (_is_point_name(a) and _is_point_name(b)):
+            return None
+        return str(a), str(b)
+
+    def _estimate_path_target(
+        path: object, current_coords: Dict[PointName, Tuple[float, float]]
+    ) -> Optional[Tuple[float, float]]:
+        if not isinstance(path, tuple) or len(path) != 2:
+            return None
+        kind, payload = path
+        if kind in {"segment", "line", "ray"}:
+            if not isinstance(payload, (list, tuple)) or len(payload) != 2:
+                return None
+            a, b = payload
+            if a not in current_coords or b not in current_coords:
+                return None
+            ax, ay = current_coords[a]
+            bx, by = current_coords[b]
+            if kind == "segment":
+                return ((ax + bx) * 0.5, (ay + by) * 0.5)
+            return (ax, ay)
+        return None
+
+    intersection_targets: Dict[Tuple[str, str], List[Tuple[float, float]]] = {}
+    if intersection_hints:
+        for point, (path1, path2, _stmt) in intersection_hints.items():
+            for path, other in ((path1, path2), (path2, path1)):
+                seg_id = _path_as_segment_id(path)
+                if seg_id is None:
+                    continue
+                target = _estimate_path_target(other, coords)
+                if target is None:
+                    continue
+                intersection_targets.setdefault(seg_id, []).append(target)
+
+    def _gather_intersection_targets(edge: Tuple[str, str]) -> List[Tuple[float, float]]:
+        a, b = edge
+        direct = intersection_targets.get((a, b), [])
+        rev = intersection_targets.get((b, a), [])
+        if direct and rev:
+            return direct + rev
+        if direct:
+            return list(direct)
+        if rev:
+            return list(rev)
+        return []
+
+    for spec in model.residuals:
+        if spec.kind != "equal_segments" or spec.source is None:
+            continue
+        stmt = spec.source
+        lhs = stmt.data.get("lhs", [])
+        rhs = stmt.data.get("rhs", [])
+        segments: List[Tuple[str, str]] = []
+        for group in (lhs, rhs):
+            if not isinstance(group, (list, tuple)):
+                continue
+            for entry in group:
+                if (
+                    isinstance(entry, (list, tuple))
+                    and len(entry) == 2
+                    and _is_point_name(entry[0])
+                    and _is_point_name(entry[1])
+                ):
+                    segments.append((str(entry[0]), str(entry[1])))
+        if len(segments) <= 1:
+            continue
+        ref = segments[0]
+        idx_ref_a = model.index.get(ref[0])
+        idx_ref_b = model.index.get(ref[1])
+        if idx_ref_a is None or idx_ref_b is None:
+            continue
+        ax = guess[2 * idx_ref_a]
+        ay = guess[2 * idx_ref_a + 1]
+        bx = guess[2 * idx_ref_b]
+        by = guess[2 * idx_ref_b + 1]
+        ref_len = math.hypot(bx - ax, by - ay)
+        if ref_len <= 1e-9:
+            continue
+
+        ref_vec = (bx - ax, by - ay)
+        ref_norm = math.hypot(ref_vec[0], ref_vec[1])
+        if ref_norm <= 1e-9:
+            ref_dir = (1.0, 0.0)
+        else:
+            ref_dir = (ref_vec[0] / ref_norm, ref_vec[1] / ref_norm)
+
+        for seg in segments[1:]:
+            a_name, b_name = seg
+            idx_a = model.index.get(a_name)
+            idx_b = model.index.get(b_name)
+            if idx_a is None or idx_b is None:
+                continue
+            if idx_a in protected_indices and idx_b in protected_indices:
+                continue
+
+            if idx_a in protected_indices:
+                anchor_name, anchor_idx = a_name, idx_a
+                move_name, move_idx = b_name, idx_b
+            elif idx_b in protected_indices:
+                anchor_name, anchor_idx = b_name, idx_b
+                move_name, move_idx = a_name, idx_a
+            else:
+                anchor_name, anchor_idx = a_name, idx_a
+                move_name, move_idx = b_name, idx_b
+
+            if move_idx in protected_indices:
+                continue
+
+            anchor = coords.get(anchor_name)
+            if anchor is None:
+                anchor = (
+                    guess[2 * anchor_idx],
+                    guess[2 * anchor_idx + 1],
+                )
+
+            targets = _gather_intersection_targets((a_name, b_name))
+            dir_vec: Tuple[float, float]
+            if targets:
+                accum_x = 0.0
+                accum_y = 0.0
+                count = 0
+                for tx, ty in targets:
+                    dx = tx - anchor[0]
+                    dy = ty - anchor[1]
+                    norm = math.hypot(dx, dy)
+                    if norm <= 1e-9:
+                        continue
+                    accum_x += dx / norm
+                    accum_y += dy / norm
+                    count += 1
+                if count:
+                    norm = math.hypot(accum_x, accum_y)
+                    if norm <= 1e-9:
+                        dir_vec = ref_dir
+                    else:
+                        dir_vec = (accum_x / norm, accum_y / norm)
+                else:
+                    dir_vec = ref_dir
+            else:
+                current = (
+                    guess[2 * move_idx] - anchor[0],
+                    guess[2 * move_idx + 1] - anchor[1],
+                )
+                norm = math.hypot(current[0], current[1])
+                if norm <= 1e-9:
+                    dir_vec = ref_dir
+                else:
+                    dir_vec = (current[0] / norm, current[1] / norm)
+
+            new_pos = (
+                anchor[0] + dir_vec[0] * ref_len,
+                anchor[1] + dir_vec[1] * ref_len,
+            )
+            guess[2 * move_idx] = new_pos[0]
+            guess[2 * move_idx + 1] = new_pos[1]
+            coords[move_name] = new_pos
+
+    # Apply the collected hints once the base configuration has been sketched
+    # out.  Keep the anchor/orientation seeds untouched so that the gauges stay
+    # satisfied at the starting point.
     for point, edges in segment_hints.items():
         idx = model.index.get(point)
         if idx is None or idx in protected_indices:
@@ -2039,6 +2239,27 @@ def _initial_guess(model: Model, rng: np.random.Generator, attempt: int) -> np.n
             guess[2 * idx] = accum_x / count
             guess[2 * idx + 1] = accum_y / count
 
+    if intersection_hints:
+        coords = {
+            name: (guess[2 * i], guess[2 * i + 1])
+            for i, name in enumerate(model.points)
+        }
+        for point, (path1, path2, stmt) in intersection_hints.items():
+            idx = model.index.get(point)
+            if idx is None or idx in protected_indices:
+                continue
+            rule_info = _line_intersection_rule(point, path1, path2, stmt)
+            if not rule_info:
+                continue
+            _, rule = rule_info
+            try:
+                value = rule.compute(dict(coords))
+            except FunctionalRuleError:
+                continue
+            guess[2 * idx] = value[0]
+            guess[2 * idx + 1] = value[1]
+            coords[point] = value
+
     # random rotation
     # Random rotation can help explore the search space when we reseed, but it
     # also increases the chance that the very first attempt starts from an
@@ -2058,6 +2279,12 @@ def _initial_guess(model: Model, rng: np.random.Generator, attempt: int) -> np.n
     jitter_scale = 0.05 * base * (1 + attempt)
     if attempt == 0:
         jitter = np.zeros_like(guess)
+        if n > 2:
+            tail = rng.normal(loc=0.0, scale=0.01 * base, size=guess.shape)
+            jitter += tail
+            jitter[0:2] = 0.0
+            if n >= 2:
+                jitter[2:4] = 0.0
     else:
         jitter = rng.normal(loc=0.0, scale=jitter_scale, size=guess.shape)
         jitter[0:2] = 0.0  # keep anchor stable at the origin
@@ -2095,7 +2322,26 @@ def _evaluate_plan_coords(
             try:
                 value = rule.compute(coords)
             except FunctionalRuleError as exc:
-                failures.append((name, str(exc)))
+                reason = str(exc)
+                meta = rule.meta if isinstance(rule.meta, dict) else {}
+                allow_outside = bool(meta.get("allow_outside"))
+                if allow_outside and reason in {"intersection outside segment", "intersection outside ray"}:
+                    path1 = meta.get("path1")
+                    path2 = meta.get("path2")
+                    spec1 = _resolve_line_like(path1, coords) if path1 is not None else None
+                    spec2 = _resolve_line_like(path2, coords) if path2 is not None else None
+                    if spec1 is not None and spec2 is not None:
+                        result = _intersect_line_specs(spec1, spec2)
+                    else:
+                        result = None
+                    if result is not None:
+                        value = result[0]
+                        coords[name] = value
+                        derived_coords[name] = value
+                        remaining.pop(name)
+                        progress = True
+                        continue
+                failures.append((name, reason))
                 remaining.pop(name)
                 progress = True
                 continue

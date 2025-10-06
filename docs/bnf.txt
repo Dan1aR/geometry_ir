@@ -1,3 +1,4 @@
+```
 Program   := { Stmt }
 Stmt      := Scene | Layout | Points | Obj | Placement | Annot | Target | Rules | Comment
 
@@ -81,3 +82,4 @@ KeyVal    := KEY '=' (NUMBER | STRING | BOOLEAN | ID | ID '-' ID | SQRT | PRODUC
 SQRT      := 'sqrt' '(' NUMBER ')'
 PRODUCT   := NUMBER '*' SQRT
 BOOLEAN   := 'true' | 'false'
+```
