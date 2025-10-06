@@ -702,6 +702,140 @@ segment A-B [length=5]
 
 This module gives us a **deterministic oracle** for points that *should* be determined by the givens. When the solver converges to a wrong branch or mirror, DDC will flag it immediately, with an actionable trace (“which point, derived by which rule, from which inputs, disagreed by how much”).
 
+---
+
+## 17) Integration-Test Flow (Solver + DDC Verification)
+
+The integration test suite now runs in two phases:
+
+1. **Solver convergence test** — checks that `scipy.optimize.least_squares` terminates successfully and residuals fall below tolerance.
+2. **Deterministic Derivation & Cross-Check (DDC)** — verifies that all points that can be *uniquely derived* from the givens match the numeric solver’s coordinates within tolerance.
+
+Only if **both** phases pass is a geometry test considered **successful**.
+
+---
+
+### 17.1 Test structure
+
+Each test case contains:
+
+| Field              | Meaning                                                                    |
+| ------------------ | -------------------------------------------------------------------------- |
+| `source`           | GeoScript program text                                                     |
+| `expect_success`   | whether the problem is expected to be solvable                             |
+| `expected_targets` | optional ground-truth values for `target ...` statements                   |
+| `tol_solver`       | solver convergence tolerance (`max_residual`)                              |
+| `tol_ddc`          | DDC geometric match tolerance                                              |
+| `allow_ambiguous`  | whether ambiguous but consistent branches are acceptable (default `false`) |
+
+---
+
+### 17.2 Execution pipeline
+
+```
+for case in test_cases:
+    program = parse_program(case.source)
+    validate(program)
+    desugared = desugar(program)
+    solution = solve(desugared, tol=case.tol_solver)
+    assert solution.success, "Solver did not converge"
+    assert solution.max_residual <= case.tol_solver
+    report = derive_and_check(desugared, solution, tol=case.tol_ddc)
+    evaluate_ddc(report, allow_ambiguous=case.allow_ambiguous)
+```
+
+---
+
+### 17.3 DDC evaluation policy
+
+| Condition                                                 | Result               | Notes                                                  |
+| --------------------------------------------------------- | -------------------- | ------------------------------------------------------ |
+| `report.status == "ok"`                                   | ✅ Pass               | All derivable points match solver coordinates.         |
+| `report.status == "partial"`                              | ⚠️ Pass with warning | Some points not derivable, but all derived ones match. |
+| `report.status == "ambiguous"` and `allow_ambiguous=True` | ⚠️ Pass with warning | Multiple valid branches consistent with constraints.   |
+| `report.status == "mismatch"`                             | ❌ Fail               | At least one derived point differs > `tol_ddc`.        |
+
+Each mismatch entry shows:
+
+```
+Point: C
+Rule : tangent_from(A, circle O)
+Dist : 0.04321
+Chosen_by : closest-to-solver
+Candidates:
+  (2.1, 4.5)
+  (-2.1, 4.5)
+```
+
+This helps identify mirror or wrong-branch errors.
+
+---
+
+### 17.4 Regression expectations
+
+* **Previously:** tests only ensured `solution.success==True`.
+* **Now:** they must also satisfy `report.status in {"ok","partial"}` (or `"ambiguous"` if explicitly allowed).
+* The continuous-integration run will print both solver and DDC summaries:
+
+  ```
+  ✅ Solver converged (residual 3.1e-9)
+  ✅ DDC OK (12/12 points matched)
+  ```
+
+  or
+
+  ```
+  ✅ Solver converged (residual 1.0e-8)
+  ❌ DDC mismatch: Point C off by 0.04
+  ```
+
+---
+
+### 17.5 Optional artifacts
+
+When any case fails or warns:
+
+* **`*.ddc.json`** — full derivation graph (`report.graph`) for visual inspection.
+* **`*.scene.png`** — TikZ/Matplotlib snapshot with mismatched points highlighted in red.
+* **`*.summary.txt`** — plain-text report with per-point distances and status.
+
+These files are stored in `/tmp/geoscript_tests/<case_id>/` by default.
+
+---
+
+### 17.6 CI acceptance thresholds
+
+| Metric                                  | Threshold            |
+| --------------------------------------- | -------------------- |
+| Solver success rate                     | ≥ 98 %               |
+| DDC “ok/partial/allowed ambiguous” rate | ≥ 95 %               |
+| Mean geometric deviation (`dist`)       | ≤ 1e-6 × scene_scale |
+| Max geometric deviation                 | ≤ 5e-6 × scene_scale |
+
+Any higher deviation fails the build and triggers a geometry-branch regression.
+
+---
+
+### 17.7 Developer workflow
+
+1. Add or modify a `.gs` sample in `tests/scenes/`.
+2. Run `pytest tests/test_integration.py --update-expected` to regenerate solver+DDC snapshots.
+3. Inspect `*.ddc.json` for new or ambiguous branches.
+4. Commit only when DDC shows `"status": "ok"` or intentional `"ambiguous"` with justification.
+
+---
+
+### 17.8 Rationale
+
+This new testing layer ensures that
+✔ the solver **converges**,
+✔ the geometry it converged to is **topologically correct**,
+✔ mirror or wrong-branch solutions are caught automatically.
+
+As a result, integration tests no longer silently accept “numerically nice but geometrically wrong” scenes, making the pipeline reliable for both numeric optimization and symbolic-geometry validation.
+
+---
+
 ### Notes for implementers
 
 * Preserve the **symbolic** text for numbers like `sqrt(2)` / `3*sqrt(2)` for labels while using their numeric value in residuals.
