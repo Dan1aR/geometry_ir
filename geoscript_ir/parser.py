@@ -263,10 +263,23 @@ def parse_path(cur: Cursor):
         return 'median', {'frm': frm, 'to': to}
     raise SyntaxError(f'[line {t[2]}, col {t[3]}] invalid path kind {t[1]!r}')
 
-def parse_opts(cur: Cursor) -> Dict[str, Any]:
+def parse_opts(cur: Cursor, *, required: bool = False, context: str = 'options') -> Dict[str, Any]:
     opts: Dict[str, Any] = {}
-    if not cur.match('LBRACK'):
+    lbrack = cur.match('LBRACK')
+    if not lbrack:
+        if required:
+            nxt = cur.peek()
+            if nxt:
+                raise SyntaxError(
+                    f"[line {nxt[2]}, col {nxt[3]}] expected '[' to start {context} block"
+                )
+            raise SyntaxError(f"Unexpected end of line: expected '[' to start {context} block")
         return opts
+    if cur.peek() and cur.peek()[0] == 'RBRACK':
+        closing = cur.peek()
+        raise SyntaxError(
+            f"[line {closing[2]}, col {closing[3]}] empty options block is not allowed"
+        )
     need_sep = False
     last_key: Optional[str] = None
     while True:
@@ -537,8 +550,12 @@ def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
         cur.consume_keyword('circle')
         cur.consume_keyword('center')
         center, _ = parse_id(cur)
-        opts = parse_opts(cur)
-        stmt = Stmt('diameter', sp, {'edge': edge, 'center': center}, opts)
+        if cur.peek() and cur.peek()[0] == 'LBRACK':
+            bracket = cur.peek()
+            raise SyntaxError(
+                f"[line {bracket[2]}, col {bracket[3]}] diameter does not accept options"
+            )
+        stmt = Stmt('diameter', sp, {'edge': edge, 'center': center}, {})
     elif kw == 'polygon':
         cur.consume_keyword('polygon')
         ids, sp = parse_idchain(cur)
@@ -606,24 +623,7 @@ def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
         stmt = Stmt('foot', sp, {'foot': foot, 'from': frm, 'edge': edge}, opts)
     elif kw == 'rules':
         cur.consume_keyword('rules')
-        opts: Dict[str, Any] = {}
-        if cur.peek() and cur.peek()[0] == 'LBRACK':
-            opts = parse_opts(cur)
-        else:
-            need_sep = False
-            while True:
-                t = cur.peek()
-                if not t:
-                    break
-                if need_sep and t[0] == 'COMMA':
-                    cur.i += 1
-                    continue
-                if t[0] != 'ID':
-                    break
-                key = cur.match('ID')[1]
-                cur.expect('EQUAL')
-                opts[key] = parse_opt_value(cur)
-                need_sep = True
+        opts = parse_opts(cur, required=True, context='rules options')
         stmt = Stmt('rules', Span(t0[2], t0[3]), {}, opts)
     else:
         raise SyntaxError(f'[line {t0[2]}, col {t0[3]}] unknown statement "{kw}"')

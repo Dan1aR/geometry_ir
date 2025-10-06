@@ -26,6 +26,13 @@ def test_diameter_prints_statement():
     assert print_program(prog) == 'diameter A-B to circle center O\n'
 
 
+def test_rules_prints_bracketed_options():
+    stmt = Stmt('rules', Span(1, 1), {}, {'allow_auxiliary': False, 'no_solving': True})
+    prog = Program([stmt])
+
+    assert print_program(prog) == 'rules [allow_auxiliary=false no_solving=true]\n'
+
+
 def test_original_only_skips_generated_statements():
     original = Stmt('segment', Span(1, 1), {'edge': ('A', 'B')})
     generated = Stmt(

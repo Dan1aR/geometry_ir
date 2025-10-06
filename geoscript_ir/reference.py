@@ -12,55 +12,59 @@ BNF = dedent(
     Points    := 'points' ID { ',' ID }
 
     Annot     := 'label point' ID Opts?
-              | 'sidelabel' Pair STRING Opts?
+               | 'sidelabel' Pair STRING Opts?
 
     Target    := 'target'
-                 ( 'angle' Angle3
-                 | 'length' Pair
-                 | 'point' ID
-                 | 'circle' '(' STRING ')'
-                 | 'area' '(' STRING ')'
+                 ( 'angle' Angle3 Opts?
+                 | 'length' Pair Opts?
+                 | 'point' ID Opts?
+                 | 'circle' '(' STRING ')' Opts?
+                 | 'area' '(' STRING ')' Opts?
                  | 'arc' ID '-' ID 'on' 'circle' 'center' ID Opts?
                  )
 
-    Obj       := 'segment' Pair Opts?
-               | 'ray'     Pair Opts?
-               | 'line'    Pair Opts?
+    Obj       := 'segment'      Pair Opts?
+               | 'ray'          Pair Opts?
+               | 'line'         Pair Opts?
                | 'circle' 'center' ID 'radius-through' ID Opts?
                | 'circle' 'through' '(' IdList ')' Opts?
                | 'circumcircle' 'of' IdChain Opts?
-               | 'incircle'    'of' IdChain Opts?
+               | 'incircle'     'of' IdChain Opts?
                | 'perpendicular' 'at' ID 'to' Pair 'foot' ID Opts?
-               | 'parallel' 'through' ID 'to' Pair Opts?
-               | 'median'  'from' ID 'to' Pair 'midpoint' ID Opts?
-               | 'angle' Angle3 Opts?
-               | 'right-angle' Angle3 Opts?
+               | 'parallel'      'through' ID 'to' Pair Opts?
+               | 'median'        'from' ID 'to' Pair 'midpoint' ID Opts?
+               | 'angle'         Angle3 Opts?
+               | 'right-angle'   Angle3 Opts?
                | 'equal-segments' '(' EdgeList ';' EdgeList ')' Opts?
                | 'parallel-edges' '(' Pair ';' Pair ')' Opts?
                | 'tangent' 'at' ID 'to' 'circle' 'center' ID Opts?
-               | 'diameter' Pair 'to' 'circle' 'center' ID Opts?
+               | 'diameter'      Pair 'to' 'circle' 'center' ID
                | 'line' ID '-' ID 'tangent' 'to' 'circle' 'center' ID 'at' ID Opts?
-               | 'polygon' IdChain Opts?
-               | 'triangle' ID '-' ID '-' ID Opts?
+               | 'polygon'       IdChain Opts?
+               | 'triangle'      ID '-' ID '-' ID Opts?
                | 'quadrilateral' ID '-' ID '-' ID '-' ID Opts?
                | 'parallelogram' ID '-' ID '-' ID '-' ID Opts?
-               | 'trapezoid' ID '-' ID '-' ID '-' ID Opts?
-               | 'rectangle' ID '-' ID '-' ID '-' ID Opts?
-               | 'square' ID '-' ID '-' ID '-' ID Opts?
-               | 'rhombus' ID '-' ID '-' ID '-' ID Opts?
+               | 'trapezoid'     ID '-' ID '-' ID '-' ID Opts?
+               | 'rectangle'     ID '-' ID '-' ID '-' ID Opts?
+               | 'square'        ID '-' ID '-' ID '-' ID Opts?
+               | 'rhombus'       ID '-' ID '-' ID '-' ID Opts?
 
-    Placement := 'point' ID 'on' Path
+    Placement := 'point' ID 'on' Path Opts?
                | 'intersect' '(' Path ')' 'with' '(' Path ')' 'at' ID (',' ID)? Opts?
                | 'midpoint' ID 'of' Pair Opts?
                | 'foot' ID 'from' ID 'to' Pair Opts?
 
     Path      := 'line'    Pair
-                | 'ray'     Pair
-                | 'segment' Pair
-                | 'circle' 'center' ID
-                | 'angle-bisector' Angle3 ('external')?
-                | 'median'  'from' ID 'to' Pair
-                | 'perpendicular' 'at' ID 'to' Pair
+               | 'ray'     Pair
+               | 'segment' Pair
+               | 'circle' 'center' ID
+               | 'angle-bisector' Angle3 ('external')?
+               | 'median'  'from' ID 'to' Pair
+               | 'perpendicular' 'at' ID 'to' Pair
+
+    Rules     := 'rules' Opts
+
+    Comment   := '#' { any-char }
 
     EdgeList  := Pair { ',' Pair }
     IdList    := ID { ',' ID }
@@ -68,8 +72,11 @@ BNF = dedent(
     Pair      := ID '-' ID
     Angle3    := ID '-' ID '-' ID
 
-    Opts      := '[' KeyVal { ' ' KeyVal } ']'
-    KeyVal    := KEY '=' (VALUE | STRING)
+    Opts      := '[' KeyVal { (',' | ' ') KeyVal } ']'
+    KeyVal    := KEY '=' (NUMBER | STRING | BOOLEAN | ID | ID '-' ID | SQRT | PRODUCT)
+    SQRT      := 'sqrt' '(' NUMBER ')'
+    PRODUCT   := NUMBER '*' SQRT
+    BOOLEAN   := 'true' | 'false'
     """
 ).strip()
 

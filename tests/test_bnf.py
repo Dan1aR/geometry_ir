@@ -304,3 +304,18 @@ def test_rules():
     stmt = parse_single('rules [no_solving=true allow_dashed=false]')
     assert stmt.kind == 'rules'
     assert stmt.opts == {'allow_dashed': False, 'no_solving': True}
+
+
+def test_rules_requires_bracket_syntax():
+    with pytest.raises(SyntaxError):
+        parse_program('rules no_solving=true')
+
+
+def test_diameter_rejects_options_in_parser():
+    with pytest.raises(SyntaxError):
+        parse_program('diameter A-B to circle center O [mark=true]')
+
+
+def test_empty_options_block_rejected():
+    with pytest.raises(SyntaxError):
+        parse_program('segment A-B []')

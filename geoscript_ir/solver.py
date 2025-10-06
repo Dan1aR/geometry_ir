@@ -653,7 +653,7 @@ def _build_quadrilateral_family(stmt: Stmt, index: Dict[PointName, int]) -> List
     if len(ids) != 4:
         return []
 
-    key_base = f"{stmt.kind}({"-".join(ids)})"
+    key_base = f"{stmt.kind}({'-'.join(ids)})"
     specs: List[ResidualSpec] = []
 
     def convex_func(x: np.ndarray) -> np.ndarray:
