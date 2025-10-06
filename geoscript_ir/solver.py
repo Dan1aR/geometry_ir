@@ -11,8 +11,11 @@ Drop-in replacement:
 """
 
 import re
+from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple, TypedDict
+from itertools import combinations
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple, TypedDict
+from typing import Literal
 import math
 import numbers
 
@@ -46,6 +49,59 @@ class DerivationPlan(TypedDict, total=False):
     derived_points: Dict[PointName, FunctionalRule]
     ambiguous_points: List[PointName]
     notes: List[str]
+
+
+PathKind = Literal[
+    "line",
+    "segment",
+    "ray",
+    "circle",
+    "perp-bisector",
+    "perpendicular",
+    "parallel",
+    "median",
+    "angle-bisector",
+]
+
+
+class PathSpec(TypedDict, total=False):
+    kind: PathKind
+    points: Tuple[str, str]
+    through: str
+    to: Tuple[str, str]
+    at: str
+    frm: str
+    points_chain: Tuple[str, str, str]
+    center: str
+    radius_point: str
+    radius: float
+    external: bool
+
+
+SeedHintKind = Literal[
+    "on_path",
+    "intersect",
+    "length",
+    "equal_length",
+    "ratio",
+    "parallel",
+    "perpendicular",
+    "tangent",
+    "concyclic",
+]
+
+
+class SeedHint(TypedDict, total=False):
+    kind: SeedHintKind
+    point: Optional[str]
+    path: Optional[PathSpec]
+    path2: Optional[PathSpec]
+    payload: Dict[str, Any]
+
+
+class SeedHints(TypedDict):
+    by_point: Dict[str, List[SeedHint]]
+    global_hints: List[SeedHint]
 
 
 _POINT_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
@@ -95,6 +151,318 @@ def _collect_point_order(program: Program) -> List[PointName]:
         _gather_point_names(stmt.opts, lambda name: _register_point_name(order, seen, name))
 
     return order
+
+
+def _is_edge_tuple(value: object) -> bool:
+    return (
+        isinstance(value, (list, tuple))
+        and len(value) == 2
+        and all(_is_point_name(v) for v in value)
+    )
+
+
+def _parse_ref_value(value: object) -> Optional[Tuple[str, str]]:
+    if isinstance(value, str) and "-" in value:
+        lhs, rhs = value.split("-", 1)
+        lhs = lhs.strip()
+        rhs = rhs.strip()
+        if _is_point_name(lhs) and _is_point_name(rhs):
+            return lhs, rhs
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        lhs, rhs = value
+        if _is_point_name(lhs) and _is_point_name(rhs):
+            return str(lhs), str(rhs)
+    return None
+
+
+def _normalize_path_spec(path: object, opts: Optional[Dict[str, Any]] = None) -> Optional[PathSpec]:
+    if not isinstance(path, (list, tuple)) or len(path) != 2:
+        return None
+    kind_raw, payload = path
+    if not isinstance(kind_raw, str):
+        return None
+    kind = kind_raw
+    spec: PathSpec = {"kind": kind}
+
+    if kind in {"line", "segment", "ray"}:
+        if not _is_edge_tuple(payload):
+            return None
+        a, b = payload
+        spec["points"] = (str(a), str(b))
+        return spec
+
+    if kind == "circle":
+        if not isinstance(payload, str) or not _is_point_name(payload):
+            return None
+        spec["center"] = payload
+        if opts:
+            radius_point = opts.get("radius_point")
+            if _is_point_name(radius_point):
+                spec["radius_point"] = str(radius_point)
+            for key in ("radius", "distance", "length", "value"):
+                if key in opts:
+                    try:
+                        spec["radius"] = float(opts[key])
+                    except (TypeError, ValueError):
+                        pass
+        return spec
+
+    if kind == "perp-bisector":
+        if not _is_edge_tuple(payload):
+            return None
+        a, b = payload
+        spec["points"] = (str(a), str(b))
+        return spec
+
+    if kind == "perpendicular":
+        if not isinstance(payload, dict):
+            return None
+        at = payload.get("at")
+        to = payload.get("to")
+        if not (_is_point_name(at) and _is_edge_tuple(to)):
+            return None
+        spec["at"] = str(at)
+        spec["to"] = (str(to[0]), str(to[1]))
+        return spec
+
+    if kind == "parallel":
+        if not isinstance(payload, dict):
+            return None
+        through = payload.get("through")
+        to = payload.get("to")
+        if not (_is_point_name(through) and _is_edge_tuple(to)):
+            return None
+        spec["through"] = str(through)
+        spec["to"] = (str(to[0]), str(to[1]))
+        return spec
+
+    if kind == "median":
+        if not isinstance(payload, dict):
+            return None
+        frm = payload.get("frm")
+        to = payload.get("to")
+        if not (_is_point_name(frm) and _is_edge_tuple(to)):
+            return None
+        spec["frm"] = str(frm)
+        spec["to"] = (str(to[0]), str(to[1]))
+        return spec
+
+    if kind == "angle-bisector":
+        if not isinstance(payload, dict):
+            return None
+        pts = payload.get("points")
+        if isinstance(pts, (list, tuple)) and len(pts) == 3 and all(_is_point_name(p) for p in pts):
+            spec["points_chain"] = (str(pts[0]), str(pts[1]), str(pts[2]))
+            if payload.get("external"):
+                spec["external"] = True
+            return spec
+        return None
+
+    return None
+
+
+def _normalize_hint_payload(opts: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not opts:
+        return {}
+    payload: Dict[str, Any] = {}
+    choose = opts.get("choose")
+    if isinstance(choose, str):
+        payload["choose"] = choose
+    anchor = opts.get("anchor")
+    if _is_point_name(anchor):
+        payload["anchor"] = str(anchor)
+    ref = _parse_ref_value(opts.get("ref"))
+    if ref:
+        payload["ref"] = ref
+    for key in ("radius_point", "radius", "length", "distance", "value", "label"):
+        if key in opts:
+            payload[key] = opts[key]
+    return payload
+
+
+def build_seed_hints(program: Program, plan: Optional[DerivationPlan]) -> SeedHints:
+    by_point: Dict[str, List[SeedHint]] = defaultdict(list)
+    global_hints: List[SeedHint] = []
+    on_path_groups: Dict[str, List[SeedHint]] = defaultdict(list)
+
+    for stmt in program.stmts:
+        data = stmt.data
+        opts = stmt.opts
+
+        if stmt.kind == "point_on":
+            point = data.get("point")
+            path = data.get("path")
+            if not _is_point_name(point):
+                continue
+            spec = _normalize_path_spec(path, opts)
+            if not spec:
+                continue
+            payload = _normalize_hint_payload(opts)
+            hint: SeedHint = {
+                "kind": "on_path",
+                "point": str(point),
+                "path": spec,
+                "payload": payload,
+            }
+            by_point[str(point)].append(hint)
+            on_path_groups[str(point)].append(hint)
+            continue
+
+        if stmt.kind == "intersect":
+            path1 = _normalize_path_spec(data.get("path1"), opts)
+            path2 = _normalize_path_spec(data.get("path2"), opts)
+            payload = _normalize_hint_payload(opts)
+            for key in ("at", "at2"):
+                point = data.get(key)
+                if not _is_point_name(point):
+                    continue
+                hint: SeedHint = {
+                    "kind": "intersect",
+                    "point": str(point),
+                    "path": path1,
+                    "path2": path2,
+                    "payload": dict(payload),
+                }
+                by_point[str(point)].append(hint)
+            continue
+
+        if stmt.kind == "segment":
+            edge = data.get("edge")
+            if not _is_edge_tuple(edge):
+                continue
+            length_val: Optional[float] = None
+            for key in ("length", "distance", "value"):
+                if key in opts:
+                    try:
+                        length_val = float(opts[key])
+                    except (TypeError, ValueError):
+                        length_val = None
+                    break
+            if length_val is None:
+                continue
+            a, b = edge
+            payload = {"edge": (str(a), str(b)), "length": float(length_val)}
+            global_hints.append({"kind": "length", "point": None, "path": None, "payload": payload})
+            continue
+
+        if stmt.kind == "equal_segments":
+            edges: List[Tuple[str, str]] = []
+            for key in ("lhs", "rhs"):
+                for value in data.get(key, []):
+                    if _is_edge_tuple(value):
+                        edges.append((str(value[0]), str(value[1])))
+            if len(edges) >= 2:
+                payload = {"edges": edges}
+                global_hints.append({"kind": "equal_length", "point": None, "path": None, "payload": payload})
+            continue
+
+        if stmt.kind == "ratio":
+            edges_val = data.get("edges")
+            ratio_val = data.get("ratio")
+            if not (
+                isinstance(edges_val, (list, tuple))
+                and len(edges_val) == 2
+                and _is_edge_tuple(edges_val[0])
+                and _is_edge_tuple(edges_val[1])
+                and isinstance(ratio_val, (list, tuple))
+                and len(ratio_val) == 2
+            ):
+                continue
+            try:
+                num_a = float(ratio_val[0])
+                num_b = float(ratio_val[1])
+            except (TypeError, ValueError):
+                continue
+            payload = {
+                "edges": [
+                    (str(edges_val[0][0]), str(edges_val[0][1])),
+                    (str(edges_val[1][0]), str(edges_val[1][1])),
+                ],
+                "ratio": (num_a, num_b),
+            }
+            global_hints.append({"kind": "ratio", "point": None, "path": None, "payload": payload})
+            continue
+
+        if stmt.kind == "parallel_edges":
+            edges_list = data.get("edges")
+            if not (
+                isinstance(edges_list, (list, tuple))
+                and len(edges_list) == 2
+                and _is_edge_tuple(edges_list[0])
+                and _is_edge_tuple(edges_list[1])
+            ):
+                continue
+            payload = {
+                "edges": [
+                    (str(edges_list[0][0]), str(edges_list[0][1])),
+                    (str(edges_list[1][0]), str(edges_list[1][1])),
+                ]
+            }
+            global_hints.append({"kind": "parallel", "point": None, "path": None, "payload": payload})
+            continue
+
+        if stmt.kind == "perpendicular_edges":
+            edges_list = data.get("edges")
+            if not (
+                isinstance(edges_list, (list, tuple))
+                and len(edges_list) == 2
+                and _is_edge_tuple(edges_list[0])
+                and _is_edge_tuple(edges_list[1])
+            ):
+                continue
+            payload = {
+                "edges": [
+                    (str(edges_list[0][0]), str(edges_list[0][1])),
+                    (str(edges_list[1][0]), str(edges_list[1][1])),
+                ]
+            }
+            global_hints.append({"kind": "perpendicular", "point": None, "path": None, "payload": payload})
+            continue
+
+        if stmt.kind in {"tangent_at", "line_tangent_at"}:
+            center = data.get("center")
+            at = data.get("at")
+            edge = data.get("edge") if stmt.kind == "line_tangent_at" else None
+            if not _is_point_name(center):
+                continue
+            payload: Dict[str, Any] = {"center": str(center)}
+            if _is_point_name(at):
+                payload["point"] = str(at)
+            if edge and _is_edge_tuple(edge):
+                payload["edge"] = (str(edge[0]), str(edge[1]))
+            global_hints.append({"kind": "tangent", "point": None, "path": None, "payload": payload})
+            continue
+
+        if stmt.kind == "concyclic":
+            points = data.get("points")
+            if not (isinstance(points, (list, tuple)) and len(points) >= 3):
+                continue
+            ids = [str(p) for p in points if _is_point_name(p)]
+            if len(ids) >= 3:
+                payload = {"points": ids}
+                global_hints.append({"kind": "concyclic", "point": None, "path": None, "payload": payload})
+            continue
+
+    for point, hints in on_path_groups.items():
+        if len(hints) < 2:
+            continue
+        for hint_a, hint_b in combinations(hints, 2):
+            path1 = hint_a.get("path")
+            path2 = hint_b.get("path")
+            if not path1 or not path2:
+                continue
+            payload = dict(hint_a.get("payload", {}))
+            payload.update(hint_b.get("payload", {}))
+            inter_hint: SeedHint = {
+                "kind": "intersect",
+                "point": point,
+                "path": path1,
+                "path2": path2,
+                "payload": payload,
+            }
+            by_point[point].append(inter_hint)
+
+    return SeedHints(by_point=dict(by_point), global_hints=global_hints)
 
 
 def _vec2(a: Tuple[float, float], b: Tuple[float, float]) -> Tuple[float, float]:
@@ -653,6 +1021,11 @@ class Model:
     base_points: List[PointName] = field(default_factory=list)
     ambiguous_points: List[PointName] = field(default_factory=list)
     plan_notes: List[str] = field(default_factory=list)
+    seed_hints: Optional[SeedHints] = None
+    layout_canonical: Optional[str] = None
+    layout_scale: Optional[float] = None
+    gauge_anchor: Optional[str] = None
+    primary_gauge_edge: Optional[Edge] = None
 
 
 @dataclass
@@ -1522,6 +1895,8 @@ def _compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
     preferred_base_edge: Optional[Edge] = None  # NEW
     carrier_edges: Set[Edge] = set()  # NEW: edges used as carriers in constraints
     circle_radius_refs: Dict[PointName, List[PointName]] = {}
+    layout_canonical: Optional[str] = None
+    layout_scale_value: Optional[float] = None
 
     for name in plan_base + plan_amb + list(plan_derived):
         if _is_point_name(name):
@@ -1614,6 +1989,17 @@ def _compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
 
         data = stmt.data
         opts = stmt.opts
+
+        if stmt.kind == "layout":
+            canon = data.get("canonical")
+            if isinstance(canon, str):
+                layout_canonical = canon
+            register_scale(data.get("scale"))
+            try:
+                if data.get("scale") is not None:
+                    layout_scale_value = float(data.get("scale"))
+            except (TypeError, ValueError):
+                pass
 
         for key in ("length", "distance", "value", "radius"):
             if key in opts:
@@ -1885,6 +2271,10 @@ def _compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
     base_points = [name for name in plan_base if name in index and name not in derived_map]
     ambiguous_points = [name for name in plan_amb if name in index and name not in derived_map]
 
+    model_seed_hints = build_seed_hints(program, plan)
+
+    model_layout_scale = layout_scale_value if layout_scale_value is not None else scene_scale
+
     return Model(
         points=order,
         index=index,
@@ -1896,6 +2286,11 @@ def _compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
         base_points=base_points,
         ambiguous_points=ambiguous_points,
         plan_notes=plan_notes,
+        seed_hints=model_seed_hints,
+        layout_canonical=layout_canonical,
+        layout_scale=model_layout_scale,
+        gauge_anchor=anchor_point,
+        primary_gauge_edge=orientation_edge,
     )
 
 
@@ -1913,7 +2308,7 @@ def compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
 
     # Validate plan guards at the default seed. Promote failing derived points to variables.
     rng = np.random.default_rng(0)
-    initial_full = _initial_guess(model, rng, 0)
+    initial_full = initial_guess(model, rng, 0, plan=working_plan)
     initial_vars = _extract_variable_vector(model, initial_full)
     _, guard_failures = _assemble_full_vector(model, initial_vars)
     if guard_failures:
@@ -1951,344 +2346,627 @@ def translate(program: Program) -> Model:
     return compile_with_plan(program, plan)
 
 
-def _initial_guess(model: Model, rng: np.random.Generator, attempt: int) -> np.ndarray:
+def initial_guess(
+    model: Model,
+    rng: np.random.Generator,
+    attempt: int,
+    *,
+    plan: Optional[DerivationPlan] = None,
+) -> np.ndarray:
+    """Produce an initial guess for the solver respecting layout and hints."""
+
     n = len(model.points)
     guess = np.zeros(2 * n)
     if n == 0:
         return guess
 
-    # Collect simple geometric hints that can provide a better starting point
-    # than the generic polygonal scatter used below.  In particular, points that
-    # are constrained to lie on a segment benefit from being seeded near the
-    # segment itself; otherwise the optimizer can waste iterations untangling a
-    # poor initial configuration (or even get stuck in a shallow local minimum).
-    segment_hints: Dict[PointName, List[Edge]] = {}
-    seen_point_on: Set[int] = set()
-    intersection_hints: Dict[PointName, Tuple[object, object, Stmt]] = {}
-    for spec in model.residuals:
-        stmt = spec.source
-        if not stmt:
-            continue
-        if stmt.kind == "point_on":
-            stmt_id = id(stmt)
-            if stmt_id in seen_point_on:
-                continue
-            seen_point_on.add(stmt_id)
-            path = stmt.data.get("path")
-            if not isinstance(path, (list, tuple)) or len(path) != 2:
-                continue
-            path_kind, payload = path
-            if path_kind != "segment" or not isinstance(payload, (list, tuple)):
-                continue
-            if len(payload) != 2:
-                continue
-            a, b = payload
-            point = stmt.data.get("point")
-            if not isinstance(point, str) or not isinstance(a, str) or not isinstance(b, str):
-                continue
-            segment_hints.setdefault(point, []).append((a, b))
-        elif stmt.kind in {"foot", "perpendicular_at", "midpoint", "median_from_to"}:
-            data = stmt.data
-            if stmt.kind in {"foot", "perpendicular_at"}:
-                point = data.get("foot")
-                edge_raw = data.get("edge") or data.get("to")
+    hints = model.seed_hints or SeedHints(by_point={}, global_hints=[])
+    by_point = hints.get("by_point", {}) if isinstance(hints, dict) else {}
+    global_hints = hints.get("global_hints", []) if isinstance(hints, dict) else []
+
+    layout_scale = model.layout_scale if model.layout_scale is not None else model.scale
+    base_scale = max(float(layout_scale or 1.0), 1e-3)
+
+    coords: Dict[PointName, Tuple[float, float]] = {}
+    protected: Set[PointName] = set()
+
+    def set_coord(name: PointName, value: Tuple[float, float]) -> None:
+        coords[name] = (float(value[0]), float(value[1]))
+
+    def get_coord(name: PointName) -> Tuple[float, float]:
+        return coords.get(name, (0.0, 0.0))
+
+    def ensure_coord(name: PointName) -> None:
+        coords.setdefault(name, (0.0, 0.0))
+
+    def normalize_vec(vec: Tuple[float, float]) -> Optional[Tuple[float, float]]:
+        norm = math.hypot(vec[0], vec[1])
+        if norm <= 1e-12:
+            return None
+        return vec[0] / norm, vec[1] / norm
+
+    def line_spec_from_path(path: Optional[PathSpec]) -> Optional[_LineLikeSpec]:
+        if not path:
+            return None
+        kind = path.get("kind")
+        if kind in {"line", "segment", "ray"}:
+            pts = path.get("points")
+            if not isinstance(pts, tuple) or len(pts) != 2:
+                return None
+            a, b = pts
+            if a not in coords or b not in coords:
+                return None
+            direction = _vec2(get_coord(a), get_coord(b))
+            if _norm_sq2(direction) <= 1e-12:
+                return None
+            return _LineLikeSpec(anchor=get_coord(a), direction=direction, kind=kind)
+        if kind == "perp-bisector":
+            pts = path.get("points")
+            if not isinstance(pts, tuple) or len(pts) != 2:
+                return None
+            a, b = pts
+            if a not in coords or b not in coords:
+                return None
+            anchor = _midpoint2(get_coord(a), get_coord(b))
+            direction = _rotate90(_vec2(get_coord(a), get_coord(b)))
+            if _norm_sq2(direction) <= 1e-12:
+                return None
+            return _LineLikeSpec(anchor=anchor, direction=direction, kind="line")
+        if kind == "perpendicular":
+            at = path.get("at")
+            to = path.get("to")
+            if not (isinstance(to, tuple) and len(to) == 2 and at in coords and to[0] in coords and to[1] in coords):
+                return None
+            base_dir = _vec2(get_coord(to[0]), get_coord(to[1]))
+            direction = _rotate90(base_dir)
+            if _norm_sq2(direction) <= 1e-12:
+                return None
+            return _LineLikeSpec(anchor=get_coord(at), direction=direction, kind="line")
+        if kind == "parallel":
+            through = path.get("through")
+            to = path.get("to")
+            if not (isinstance(to, tuple) and len(to) == 2 and through in coords and to[0] in coords and to[1] in coords):
+                return None
+            direction = _vec2(get_coord(to[0]), get_coord(to[1]))
+            if _norm_sq2(direction) <= 1e-12:
+                return None
+            return _LineLikeSpec(anchor=get_coord(through), direction=direction, kind="line")
+        if kind == "median":
+            frm = path.get("frm")
+            to = path.get("to")
+            if not (isinstance(to, tuple) and len(to) == 2 and frm in coords and to[0] in coords and to[1] in coords):
+                return None
+            midpoint = _midpoint2(get_coord(to[0]), get_coord(to[1]))
+            direction = _vec2(get_coord(frm), midpoint)
+            if _norm_sq2(direction) <= 1e-12:
+                return None
+            return _LineLikeSpec(anchor=get_coord(frm), direction=direction, kind="line")
+        if kind == "angle-bisector":
+            pts = path.get("points_chain")
+            if not (isinstance(pts, tuple) and len(pts) == 3):
+                return None
+            u, v, w = pts
+            if u not in coords or v not in coords or w not in coords:
+                return None
+            vu = _vec2(get_coord(v), get_coord(u))
+            vw = _vec2(get_coord(v), get_coord(w))
+            nu = normalize_vec(vu)
+            nw = normalize_vec(vw)
+            if not nu or not nw:
+                return None
+            if path.get("external"):
+                direction = (nu[0] - nw[0], nu[1] - nw[1])
             else:
-                point = data.get("midpoint")
-                edge_raw = data.get("edge") or data.get("to")
-            if not isinstance(point, str) or edge_raw is None:
-                continue
-            try:
-                edge = _as_edge(edge_raw)
-            except ValueError:
-                continue
-            a, b = edge
-            if not isinstance(a, str) or not isinstance(b, str):
-                continue
-            segment_hints.setdefault(point, []).append((a, b))
-        elif stmt.kind == "intersect":
-            path1 = stmt.data.get("path1")
-            path2 = stmt.data.get("path2")
-            if path1 is None or path2 is None:
-                continue
-            for key in ("at", "at2"):
-                point = stmt.data.get(key)
-                if not _is_point_name(point):
-                    continue
-                if point not in model.index:
-                    continue
-                # Only seed points we will actually optimize.
-                if point not in model.variables:
-                    continue
-                intersection_hints.setdefault(point, (path1, path2, stmt))
-
-    base = max(model.scale, 1e-3)
-    # Place first three points in a stable, non-degenerate pattern.
-    guess[0] = 0.0
-    guess[1] = 0.0
-    if n >= 2:
-        guess[2] = base
-        guess[3] = 0.0
-    if n >= 3:
-        guess[4] = 0.5 * base
-        guess[5] = math.sqrt(3.0) * 0.5 * base
-    for i in range(3, n):
-        angle = (2 * math.pi * i) / max(4, n)
-        radius = 0.5 * base
-        guess[2 * i] = radius * math.cos(angle)
-        guess[2 * i + 1] = radius * math.sin(angle)
-
-    protected_indices: Set[int] = {0}
-    if n >= 2:
-        protected_indices.add(1)
-
-    coords = {
-        name: (guess[2 * i], guess[2 * i + 1])
-        for i, name in enumerate(model.points)
-    }
-
-    def _path_as_segment_id(path: object) -> Optional[Tuple[str, str]]:
-        if not isinstance(path, tuple) or len(path) != 2:
-            return None
-        kind, payload = path
-        if kind != "segment" or not isinstance(payload, (list, tuple)):
-            return None
-        if len(payload) != 2:
-            return None
-        a, b = payload
-        if not (_is_point_name(a) and _is_point_name(b)):
-            return None
-        return str(a), str(b)
-
-    def _estimate_path_target(
-        path: object, current_coords: Dict[PointName, Tuple[float, float]]
-    ) -> Optional[Tuple[float, float]]:
-        if not isinstance(path, tuple) or len(path) != 2:
-            return None
-        kind, payload = path
-        if kind in {"segment", "line", "ray"}:
-            if not isinstance(payload, (list, tuple)) or len(payload) != 2:
+                direction = (nu[0] + nw[0], nu[1] + nw[1])
+            if _norm_sq2(direction) <= 1e-12:
                 return None
-            a, b = payload
-            if a not in current_coords or b not in current_coords:
-                return None
-            ax, ay = current_coords[a]
-            bx, by = current_coords[b]
-            if kind == "segment":
-                return ((ax + bx) * 0.5, (ay + by) * 0.5)
-            return (ax, ay)
+            return _LineLikeSpec(anchor=get_coord(v), direction=direction, kind="line")
         return None
 
-    intersection_targets: Dict[Tuple[str, str], List[Tuple[float, float]]] = {}
-    if intersection_hints:
-        for point, (path1, path2, _stmt) in intersection_hints.items():
-            for path, other in ((path1, path2), (path2, path1)):
-                seg_id = _path_as_segment_id(path)
-                if seg_id is None:
-                    continue
-                target = _estimate_path_target(other, coords)
-                if target is None:
-                    continue
-                intersection_targets.setdefault(seg_id, []).append(target)
+    def circle_from_path(path: Optional[PathSpec]) -> Optional[Tuple[Tuple[float, float], float]]:
+        if not path or path.get("kind") != "circle":
+            return None
+        center_name = path.get("center")
+        if center_name not in coords:
+            return None
+        center = get_coord(center_name)
+        radius = None
+        radius_value = path.get("radius")
+        if isinstance(radius_value, numbers.Real):
+            radius = float(radius_value)
+        if radius is None:
+            radius_point = path.get("radius_point")
+            if _is_point_name(radius_point) and radius_point in coords:
+                radius = _norm2(_vec2(center, get_coord(radius_point)))
+        if radius is None or radius <= 1e-9:
+            return None
+        return center, radius
 
-    def _gather_intersection_targets(edge: Tuple[str, str]) -> List[Tuple[float, float]]:
+    def project_to_line(spec: _LineLikeSpec, point: Tuple[float, float]) -> Tuple[float, float]:
+        anchor = spec.anchor
+        direction = spec.direction
+        denom = _dot2(direction, direction)
+        if denom <= 1e-12:
+            return anchor
+        rel = (point[0] - anchor[0], point[1] - anchor[1])
+        t = _dot2(rel, direction) / denom
+        if spec.kind == "segment":
+            t = min(max(t, 0.0), 1.0)
+        elif spec.kind == "ray":
+            t = max(t, 0.0)
+        return (anchor[0] + t * direction[0], anchor[1] + t * direction[1])
+
+    def circle_direction(path: PathSpec, payload: Dict[str, Any], point: PointName) -> Tuple[float, float]:
+        center_name = path.get("center")
+        center = get_coord(center_name) if center_name else (0.0, 0.0)
+        current = get_coord(point)
+        vec = (current[0] - center[0], current[1] - center[1])
+        if _norm_sq2(vec) > 1e-12:
+            return vec
+        radius_point = payload.get("radius_point") or path.get("radius_point")
+        if _is_point_name(radius_point) and radius_point in coords:
+            return _vec2(center, get_coord(radius_point))
+        return (1.0, 0.0)
+
+    def apply_on_path(point: PointName, hint: SeedHint) -> None:
+        if point in protected:
+            return
+        path = hint.get("path")
+        if not path:
+            return
+        payload = hint.get("payload", {})
+        if path.get("kind") == "circle":
+            circle = circle_from_path(path)
+            if not circle:
+                return
+            center, radius = circle
+            direction = circle_direction(path, payload, point)
+            normed = normalize_vec(direction)
+            if not normed:
+                return
+            new_point = (center[0] + normed[0] * radius, center[1] + normed[1] * radius)
+            set_coord(point, new_point)
+            return
+        line_spec = line_spec_from_path(path)
+        if line_spec is None:
+            return
+        current = get_coord(point)
+        projected = project_to_line(line_spec, current)
+        set_coord(point, projected)
+
+    def line_circle_intersections(line_spec: _LineLikeSpec, circle: Tuple[Tuple[float, float], float]) -> List[Tuple[Tuple[float, float], float]]:
+        center, radius = circle
+        p = line_spec.anchor
+        d = line_spec.direction
+        diff = (p[0] - center[0], p[1] - center[1])
+        a = _dot2(d, d)
+        if a <= 1e-12:
+            return []
+        b = 2.0 * _dot2(d, diff)
+        c = _dot2(diff, diff) - radius * radius
+        disc = b * b - 4.0 * a * c
+        if disc < -1e-12:
+            return []
+        if abs(disc) <= 1e-12:
+            t = -b / (2.0 * a)
+            point = (p[0] + t * d[0], p[1] + t * d[1])
+            return [(point, t)]
+        sqrt_disc = math.sqrt(max(disc, 0.0))
+        t1 = (-b - sqrt_disc) / (2.0 * a)
+        t2 = (-b + sqrt_disc) / (2.0 * a)
+        return [
+            ((p[0] + t1 * d[0], p[1] + t1 * d[1]), t1),
+            ((p[0] + t2 * d[0], p[1] + t2 * d[1]), t2),
+        ]
+
+    def circle_circle_intersections(
+        circle_a: Tuple[Tuple[float, float], float],
+        circle_b: Tuple[Tuple[float, float], float],
+    ) -> List[Tuple[Tuple[float, float], float, float]]:
+        (c0, r0), (c1, r1) = circle_a, circle_b
+        dx = c1[0] - c0[0]
+        dy = c1[1] - c0[1]
+        d = math.hypot(dx, dy)
+        if d <= 1e-12:
+            return []
+        if d > r0 + r1 + 1e-9:
+            return []
+        if d < abs(r0 - r1) - 1e-9:
+            return []
+        a = (r0 * r0 - r1 * r1 + d * d) / (2.0 * d)
+        h_sq = r0 * r0 - a * a
+        if h_sq < -1e-12:
+            return []
+        h = math.sqrt(max(h_sq, 0.0))
+        xm = c0[0] + a * dx / d
+        ym = c0[1] + a * dy / d
+        rx = -dy * (h / d)
+        ry = dx * (h / d)
+        return [
+            ((xm + rx, ym + ry), 0.0, 0.0),
+            ((xm - rx, ym - ry), 0.0, 0.0),
+        ]
+
+    def membership_ok(line_spec: _LineLikeSpec, t: float) -> bool:
+        if line_spec.kind == "segment":
+            return -1e-9 <= t <= 1.0 + 1e-9
+        if line_spec.kind == "ray":
+            return t >= -1e-9
+        return True
+
+    def select_candidate(
+        point: PointName,
+        candidates: List[Tuple[float, float]],
+        payload: Dict[str, Any],
+    ) -> Optional[Tuple[float, float]]:
+        if not candidates:
+            return None
+        choose = payload.get("choose")
+        if choose in {"near", "far"}:
+            anchor_name = payload.get("anchor")
+            if _is_point_name(anchor_name) and anchor_name in coords:
+                anchor_pt = get_coord(anchor_name)
+                candidates = sorted(
+                    candidates,
+                    key=lambda pt: math.hypot(pt[0] - anchor_pt[0], pt[1] - anchor_pt[1]),
+                    reverse=(choose == "far"),
+                )
+                return candidates[0]
+        if choose in {"left", "right"}:
+            ref = payload.get("ref")
+            if isinstance(ref, tuple) and len(ref) == 2 and ref[0] in coords and ref[1] in coords:
+                a = get_coord(ref[0])
+                b = get_coord(ref[1])
+                base_vec = (b[0] - a[0], b[1] - a[1])
+                filtered = []
+                for pt in candidates:
+                    rel = (pt[0] - a[0], pt[1] - a[1])
+                    cross = base_vec[0] * rel[1] - base_vec[1] * rel[0]
+                    if choose == "left" and cross >= -1e-9:
+                        filtered.append(pt)
+                    if choose == "right" and cross <= 1e-9:
+                        filtered.append(pt)
+                if filtered:
+                    candidates = filtered
+        current = get_coord(point)
+        candidates = sorted(
+            candidates,
+            key=lambda pt: math.hypot(pt[0] - current[0], pt[1] - current[1]),
+        )
+        return candidates[0]
+
+    def apply_intersection(point: PointName, hint: SeedHint) -> None:
+        if point in protected:
+            return
+        path1 = hint.get("path")
+        path2 = hint.get("path2")
+        if not path1 or not path2:
+            return
+        line1 = line_spec_from_path(path1)
+        line2 = line_spec_from_path(path2)
+        circle1 = circle_from_path(path1)
+        circle2 = circle_from_path(path2)
+        candidates: List[Tuple[float, float]] = []
+        if line1 and line2:
+            inter = _intersect_line_specs(line1, line2)
+            if inter is not None:
+                pt, t1, t2 = inter
+                if membership_ok(line1, t1) and membership_ok(line2, t2):
+                    candidates.append(pt)
+        elif line1 and circle2:
+            for pt, t in line_circle_intersections(line1, circle2):
+                if membership_ok(line1, t):
+                    candidates.append(pt)
+        elif circle1 and line2:
+            for pt, t in line_circle_intersections(line2, circle1):
+                if membership_ok(line2, t):
+                    candidates.append(pt)
+        elif circle1 and circle2:
+            for pt, _, _ in circle_circle_intersections(circle1, circle2):
+                candidates.append(pt)
+        if not candidates:
+            return
+        payload = hint.get("payload", {})
+        chosen = select_candidate(point, candidates, payload)
+        if chosen:
+            set_coord(point, chosen)
+
+    def distance(a: PointName, b: PointName) -> float:
+        if a not in coords or b not in coords:
+            return 0.0
+        return _norm2(_vec2(get_coord(a), get_coord(b)))
+
+    def choose_anchor(edge: Tuple[str, str], hint_counts: Dict[str, int]) -> Tuple[str, str]:
         a, b = edge
-        direct = intersection_targets.get((a, b), [])
-        rev = intersection_targets.get((b, a), [])
-        if direct and rev:
-            return direct + rev
-        if direct:
-            return list(direct)
-        if rev:
-            return list(rev)
-        return []
+        if a in protected and b not in protected:
+            return a, b
+        if b in protected and a not in protected:
+            return b, a
+        score_a = hint_counts.get(a, 0)
+        score_b = hint_counts.get(b, 0)
+        if score_a >= score_b:
+            return a, b
+        return b, a
 
-    for spec in model.residuals:
-        if spec.kind != "equal_segments" or spec.source is None:
-            continue
-        stmt = spec.source
-        lhs = stmt.data.get("lhs", [])
-        rhs = stmt.data.get("rhs", [])
-        segments: List[Tuple[str, str]] = []
-        for group in (lhs, rhs):
-            if not isinstance(group, (list, tuple)):
-                continue
-            for entry in group:
-                if (
-                    isinstance(entry, (list, tuple))
-                    and len(entry) == 2
-                    and _is_point_name(entry[0])
-                    and _is_point_name(entry[1])
-                ):
-                    segments.append((str(entry[0]), str(entry[1])))
-        if len(segments) <= 1:
-            continue
-        ref = segments[0]
-        idx_ref_a = model.index.get(ref[0])
-        idx_ref_b = model.index.get(ref[1])
-        if idx_ref_a is None or idx_ref_b is None:
-            continue
-        ax = guess[2 * idx_ref_a]
-        ay = guess[2 * idx_ref_a + 1]
-        bx = guess[2 * idx_ref_b]
-        by = guess[2 * idx_ref_b + 1]
-        ref_len = math.hypot(bx - ax, by - ay)
-        if ref_len <= 1e-9:
-            continue
-
-        ref_vec = (bx - ax, by - ay)
-        ref_norm = math.hypot(ref_vec[0], ref_vec[1])
-        if ref_norm <= 1e-9:
-            ref_dir = (1.0, 0.0)
+    def move_point_along(edge: Tuple[str, str], length: float, hint_counts: Dict[str, int]) -> None:
+        a, b = choose_anchor(edge, hint_counts)
+        if b in protected:
+            return
+        if a not in coords or b not in coords:
+            return
+        anchor = get_coord(a)
+        if a in protected and abs(anchor[1]) < 1e-6:
+            normed = (0.0, 1.0)
         else:
-            ref_dir = (ref_vec[0] / ref_norm, ref_vec[1] / ref_norm)
+            direction = _vec2(anchor, get_coord(b))
+            normed = normalize_vec(direction)
+            if not normed:
+                normed = (0.0, 1.0) if abs(anchor[1]) < 1e-6 else (1.0, 0.0)
+            if normed[1] < 0 and abs(anchor[1]) < 1e-6:
+                normed = (-normed[0], -normed[1])
+        new_pos = (anchor[0] + normed[0] * length, anchor[1] + normed[1] * length)
+        set_coord(b, new_pos)
 
-        for seg in segments[1:]:
-            a_name, b_name = seg
-            idx_a = model.index.get(a_name)
-            idx_b = model.index.get(b_name)
-            if idx_a is None or idx_b is None:
+    def apply_equal_lengths(edges: List[Tuple[str, str]], hint_counts: Dict[str, int]) -> None:
+        if len(edges) < 2:
+            return
+        ref = edges[0]
+        ref_len = distance(ref[0], ref[1])
+        if ref_len <= 1e-9:
+            return
+        for edge in edges[1:]:
+            move_point_along(edge, ref_len, hint_counts)
+
+    def apply_ratio(edges: List[Tuple[str, str]], ratio: Tuple[float, float], hint_counts: Dict[str, int]) -> None:
+        if len(edges) != 2:
+            return
+        edge_a, edge_b = edges
+        len_a = distance(edge_a[0], edge_a[1])
+        len_b = distance(edge_b[0], edge_b[1])
+        if len_a <= 1e-9 and len_b <= 1e-9:
+            return
+        p, q = ratio
+        if p <= 0 or q <= 0:
+            return
+        count_a = sum(1 for pnt in edge_a if pnt in protected) + sum(hint_counts.get(pnt, 0) > 1 for pnt in edge_a)
+        count_b = sum(1 for pnt in edge_b if pnt in protected) + sum(hint_counts.get(pnt, 0) > 1 for pnt in edge_b)
+        if count_a > count_b:
+            if len_a <= 1e-9:
+                return
+            target = len_a * q / p
+            move_point_along(edge_b, target, hint_counts)
+        else:
+            if len_b <= 1e-9:
+                return
+            target = len_b * p / q
+            move_point_along(edge_a, target, hint_counts)
+
+    def apply_parallel(edges: List[Tuple[str, str]], hint_counts: Dict[str, int]) -> None:
+        if len(edges) < 2:
+            return
+        ref = edges[0]
+        if ref[0] not in coords or ref[1] not in coords:
+            return
+        ref_dir_vec = _vec2(get_coord(ref[0]), get_coord(ref[1]))
+        normed = normalize_vec(ref_dir_vec)
+        if not normed:
+            return
+        ref_len = distance(ref[0], ref[1])
+        for edge in edges[1:]:
+            move_point_along(edge, distance(edge[0], edge[1]), hint_counts)
+            a, b = choose_anchor(edge, hint_counts)
+            if b in protected or a not in coords:
                 continue
-            if idx_a in protected_indices and idx_b in protected_indices:
+            anchor = get_coord(a)
+            length = distance(edge[0], edge[1]) or ref_len
+            new_pos = (anchor[0] + normed[0] * length, anchor[1] + normed[1] * length)
+            set_coord(b, new_pos)
+
+    def apply_perpendicular(edges: List[Tuple[str, str]], hint_counts: Dict[str, int]) -> None:
+        if len(edges) < 2:
+            return
+        ref = edges[0]
+        if ref[0] not in coords or ref[1] not in coords:
+            return
+        ref_dir_vec = _vec2(get_coord(ref[0]), get_coord(ref[1]))
+        normed = normalize_vec(ref_dir_vec)
+        if not normed:
+            return
+        perp = (-normed[1], normed[0])
+        for edge in edges[1:]:
+            a, b = choose_anchor(edge, hint_counts)
+            if b in protected or a not in coords:
                 continue
+            anchor = get_coord(a)
+            length = distance(edge[0], edge[1])
+            if length <= 1e-9:
+                length = distance(ref[0], ref[1])
+            new_pos = (anchor[0] + perp[0] * length, anchor[1] + perp[1] * length)
+            set_coord(b, new_pos)
 
-            if idx_a in protected_indices:
-                anchor_name, anchor_idx = a_name, idx_a
-                move_name, move_idx = b_name, idx_b
-            elif idx_b in protected_indices:
-                anchor_name, anchor_idx = b_name, idx_b
-                move_name, move_idx = a_name, idx_a
-            else:
-                anchor_name, anchor_idx = a_name, idx_a
-                move_name, move_idx = b_name, idx_b
+    def apply_tangent(payload: Dict[str, Any]) -> None:
+        center = payload.get("center")
+        point = payload.get("point")
+        edge = payload.get("edge")
+        if not (_is_point_name(center) and _is_point_name(point) and isinstance(edge, tuple) and len(edge) == 2):
+            return
+        if center not in coords or edge[0] not in coords or edge[1] not in coords:
+            return
+        if point in protected:
+            return
+        line_spec = _LineLikeSpec(anchor=get_coord(edge[0]), direction=_vec2(get_coord(edge[0]), get_coord(edge[1])), kind="line")
+        proj = project_to_line(line_spec, get_coord(center))
+        set_coord(point, proj)
 
-            if move_idx in protected_indices:
+    def safety_pass() -> None:
+        min_sep = 1e-3 * base_scale
+        names = list(coords.keys())
+        for i, name_a in enumerate(names):
+            for name_b in names[i + 1 :]:
+                if name_a in protected or name_b in protected:
+                    continue
+                pa = get_coord(name_a)
+                pb = get_coord(name_b)
+                diff = _vec2(pa, pb)
+                dist = _norm2(diff)
+                if dist < min_sep and dist > 1e-9:
+                    adjust = (diff[0] / dist * (min_sep - dist) * 0.5, diff[1] / dist * (min_sep - dist) * 0.5)
+                    set_coord(name_a, (pa[0] - adjust[0], pa[1] - adjust[1]))
+                    set_coord(name_b, (pb[0] + adjust[0], pb[1] + adjust[1]))
+                elif dist <= 1e-9:
+                    offset = 0.5 * min_sep
+                    set_coord(name_a, (pa[0] - offset, pa[1]))
+                    set_coord(name_b, (pb[0] + offset, pb[1]))
+
+    # Stage A – canonical scaffold
+    anchor_name = model.gauge_anchor or (model.points[0] if model.points else None)
+    if anchor_name:
+        set_coord(anchor_name, (0.0, 0.0))
+        protected.add(anchor_name)
+    orientation_edge = model.primary_gauge_edge
+    if orientation_edge:
+        a, b = orientation_edge
+        if anchor_name is None:
+            anchor_name = a
+            set_coord(anchor_name, (0.0, 0.0))
+            protected.add(anchor_name)
+        if a == anchor_name:
+            other = b
+        elif b == anchor_name:
+            other = a
+        else:
+            other = b
+            if a not in coords:
+                set_coord(a, (0.0, 0.0))
+                protected.add(a)
+        set_coord(other, (base_scale, 0.0))
+        protected.add(other)
+
+    assigned = set(coords)
+    third = None
+    for name in model.points:
+        if name not in assigned:
+            third = name
+            break
+    if third:
+        set_coord(third, (0.5 * base_scale, math.sqrt(3.0) * 0.5 * base_scale))
+        assigned.add(third)
+
+    remaining = [name for name in model.points if name not in coords]
+    denom = max(4, len(remaining) + len(assigned))
+    for idx, name in enumerate(remaining):
+        angle = (2 * math.pi * (idx + 1)) / denom
+        radius = 0.5 * base_scale
+        set_coord(name, (radius * math.cos(angle), radius * math.sin(angle)))
+
+    # Stage B – deterministic derivations
+    if model.derived:
+        derived_coords, _ = _evaluate_plan_coords(model, dict(coords))
+        for name, value in derived_coords.items():
+            set_coord(name, value)
+
+    if attempt == 0 and len(model.points) > 2:
+        sigma = 0.01 * base_scale
+        for name in model.points:
+            if name in protected:
                 continue
+            current = get_coord(name)
+            jitter = rng.normal(loc=0.0, scale=sigma, size=2)
+            set_coord(name, (current[0] + float(jitter[0]), current[1] + float(jitter[1])))
 
-            anchor = coords.get(anchor_name)
-            if anchor is None:
-                anchor = (
-                    guess[2 * anchor_idx],
-                    guess[2 * anchor_idx + 1],
-                )
+    # Stage C – on_path hints
+    for point, hints_for_point in by_point.items():
+        for hint in hints_for_point:
+            if hint.get("kind") == "on_path":
+                apply_on_path(point, hint)
 
-            targets = _gather_intersection_targets((a_name, b_name))
-            dir_vec: Tuple[float, float]
-            if targets:
-                accum_x = 0.0
-                accum_y = 0.0
-                count = 0
-                for tx, ty in targets:
-                    dx = tx - anchor[0]
-                    dy = ty - anchor[1]
-                    norm = math.hypot(dx, dy)
-                    if norm <= 1e-9:
-                        continue
-                    accum_x += dx / norm
-                    accum_y += dy / norm
-                    count += 1
-                if count:
-                    norm = math.hypot(accum_x, accum_y)
-                    if norm <= 1e-9:
-                        dir_vec = ref_dir
-                    else:
-                        dir_vec = (accum_x / norm, accum_y / norm)
-                else:
-                    dir_vec = ref_dir
-            else:
-                current = (
-                    guess[2 * move_idx] - anchor[0],
-                    guess[2 * move_idx + 1] - anchor[1],
-                )
-                norm = math.hypot(current[0], current[1])
-                if norm <= 1e-9:
-                    dir_vec = ref_dir
-                else:
-                    dir_vec = (current[0] / norm, current[1] / norm)
+    # Stage D – intersections
+    for point, hints_for_point in by_point.items():
+        for hint in hints_for_point:
+            if hint.get("kind") == "intersect":
+                apply_intersection(point, hint)
 
-            new_pos = (
-                anchor[0] + dir_vec[0] * ref_len,
-                anchor[1] + dir_vec[1] * ref_len,
-            )
-            guess[2 * move_idx] = new_pos[0]
-            guess[2 * move_idx + 1] = new_pos[1]
-            coords[move_name] = new_pos
+    # Stage E – metric nudges
+    hint_counts = {name: len(by_point.get(name, [])) for name in model.points}
+    for hint in global_hints:
+        kind = hint.get("kind")
+        payload = hint.get("payload", {})
+        if kind == "length":
+            edge = payload.get("edge")
+            length = payload.get("length")
+            if isinstance(edge, tuple) and len(edge) == 2 and isinstance(length, numbers.Real):
+                move_point_along((edge[0], edge[1]), float(length), hint_counts)
+        elif kind == "equal_length":
+            edges = payload.get("edges")
+            if isinstance(edges, list):
+                apply_equal_lengths([(str(a), str(b)) for a, b in edges], hint_counts)
+        elif kind == "ratio":
+            edges = payload.get("edges")
+            ratio = payload.get("ratio")
+            if (
+                isinstance(edges, list)
+                and len(edges) == 2
+                and isinstance(ratio, tuple)
+                and len(ratio) == 2
+            ):
+                apply_ratio([(str(a), str(b)) for a, b in edges], (float(ratio[0]), float(ratio[1])), hint_counts)
+        elif kind == "parallel":
+            edges = payload.get("edges")
+            if isinstance(edges, list) and len(edges) >= 2:
+                apply_parallel([(str(a), str(b)) for a, b in edges], hint_counts)
+        elif kind == "perpendicular":
+            edges = payload.get("edges")
+            if isinstance(edges, list) and len(edges) >= 2:
+                apply_perpendicular([(str(a), str(b)) for a, b in edges], hint_counts)
+        elif kind == "tangent":
+            apply_tangent(payload)
 
-    # Apply the collected hints once the base configuration has been sketched
-    # out.  Keep the anchor/orientation seeds untouched so that the gauges stay
-    # satisfied at the starting point.
-    for point, edges in segment_hints.items():
-        idx = model.index.get(point)
-        if idx is None or idx in protected_indices:
-            continue
-        accum_x = 0.0
-        accum_y = 0.0
-        count = 0
-        for a, b in edges:
-            ia = model.index.get(a)
-            ib = model.index.get(b)
-            if ia is None or ib is None:
-                continue
-            ax = guess[2 * ia]
-            ay = guess[2 * ia + 1]
-            bx = guess[2 * ib]
-            by = guess[2 * ib + 1]
-            accum_x += 0.5 * (ax + bx)
-            accum_y += 0.5 * (ay + by)
-            count += 1
-        if count:
-            guess[2 * idx] = accum_x / count
-            guess[2 * idx + 1] = accum_y / count
+    # Stage F – tangency handled above; Stage G – safety
+    safety_pass()
 
-    if intersection_hints:
-        coords = {
-            name: (guess[2 * i], guess[2 * i + 1])
-            for i, name in enumerate(model.points)
-        }
-        for point, (path1, path2, stmt) in intersection_hints.items():
-            idx = model.index.get(point)
-            if idx is None or idx in protected_indices:
-                continue
-            rule_info = _line_intersection_rule(point, path1, path2, stmt)
-            if not rule_info:
-                continue
-            _, rule = rule_info
-            try:
-                value = rule.compute(dict(coords))
-            except FunctionalRuleError:
-                continue
-            guess[2 * idx] = value[0]
-            guess[2 * idx + 1] = value[1]
-            coords[point] = value
+    # Refresh deterministic points after adjustments
+    if model.derived:
+        derived_coords, _ = _evaluate_plan_coords(model, dict(coords))
+        for name, value in derived_coords.items():
+            set_coord(name, value)
 
-    # random rotation
-    # Random rotation can help explore the search space when we reseed, but it
-    # also increases the chance that the very first attempt starts from an
-    # unfortunate configuration (e.g. nearly collapsing a trapezoid).  Keep the
-    # initial orientation deterministic for the first attempt and only rotate on
-    # subsequent retries.
-    if n >= 2 and attempt > 0:
+    # Optional rotation when no gauge edge on reseed attempts
+    if attempt > 0 and model.primary_gauge_edge is None:
         theta = rng.uniform(0.0, 2 * math.pi)
         cos_t = math.cos(theta)
         sin_t = math.sin(theta)
-        for i in range(n):
-            x = guess[2 * i]
-            y = guess[2 * i + 1]
-            guess[2 * i] = cos_t * x - sin_t * y
-            guess[2 * i + 1] = sin_t * x + cos_t * y
+        for name, value in list(coords.items()):
+            x, y = value
+            set_coord(name, (cos_t * x - sin_t * y, sin_t * x + cos_t * y))
 
-    jitter_scale = 0.05 * base * (1 + attempt)
+    for name, idx in model.index.items():
+        if name in coords:
+            guess[2 * idx] = coords[name][0]
+            guess[2 * idx + 1] = coords[name][1]
+
+    protected_indices = {model.index[name] for name in protected if name in model.index}
+
     if attempt == 0:
-        jitter = np.zeros_like(guess)
-        if n > 2:
-            tail = rng.normal(loc=0.0, scale=0.01 * base, size=guess.shape)
-            jitter += tail
-            jitter[0:2] = 0.0
-            if n >= 2:
-                jitter[2:4] = 0.0
-    else:
-        jitter = rng.normal(loc=0.0, scale=jitter_scale, size=guess.shape)
-        jitter[0:2] = 0.0  # keep anchor stable at the origin
+        return guess
+
+    sigma_attempt = min(0.2, 0.05 * (1 + attempt)) * base_scale
+    jitter = rng.normal(loc=0.0, scale=sigma_attempt, size=guess.shape)
+    for idx in protected_indices:
+        jitter[2 * idx : 2 * idx + 2] = 0.0
     guess += jitter
+    if model.derived:
+        updated_coords = {
+            name: (guess[2 * idx], guess[2 * idx + 1])
+            for name, idx in model.index.items()
+        }
+        derived_coords, _ = _evaluate_plan_coords(model, updated_coords)
+        for name, value in derived_coords.items():
+            idx = model.index.get(name)
+            if idx is None:
+                continue
+            base = idx * 2
+            guess[base] = value[0]
+            guess[base + 1] = value[1]
     return guess
 
 
@@ -2447,7 +3125,7 @@ def solve(
     def run_attempt(attempt_index: int) -> Tuple[float, bool]:
         nonlocal best_result, best_residual
 
-        full_guess = _initial_guess(model, rng, attempt_index)
+        full_guess = initial_guess(model, rng, attempt_index)
         x0 = _extract_variable_vector(model, full_guess)
 
         def fun(x: np.ndarray) -> np.ndarray:
