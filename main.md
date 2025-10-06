@@ -283,7 +283,31 @@ The validator runs a dry translation to ensure the residual builder can accept t
 
 * **AST**: `Program{ stmts: [Stmt] }`, `Stmt{ kind, span{line,col}, data{}, opts{}, origin: 'source'|'desugar()' }`.
   `Program.source_program` filters to source-only statements.
-* **Core API**: `parse_program`, `validate`, `desugar`, `translate`, `solve*`, TikZ helpers, prompts `BNF`, `LLM_PROMPT`.
+* **Core API**:
+
+  * `parse_program`, `validate`, `desugar`
+  * **Pre-solve planning (default):**
+
+    * `plan_derive(program: Program) -> DerivationPlan`
+    * `compile_with_plan(program: Program, plan: DerivationPlan) -> Model`
+  * **Solver**: `solve*(model_or_program, ...)`
+  * **Post-solve DDC**: `derive_and_check(desugared: Program, solution: Solution, *, tol=None) -> DerivationReport`
+  * TikZ helpers, prompts `BNF`, `LLM_PROMPT`.
+
+```python
+# NEW types (public sketch)
+class FunctionalRule(TypedDict):
+    name: str
+    inputs: List[str]               # point ids needed
+    eval: Callable[[Coords], Tuple[float,float]]  # pure function P = f(inputs)
+    guard: Callable[[Coords], bool] # True if well-posed (not parallel/etc.)
+
+class DerivationPlan(TypedDict):
+    base_points: List[str]          # optimized by solver
+    derived_points: Dict[str, FunctionalRule]  # computed on-the-fly
+    ambiguous_points: List[str]     # remain variables (multi-root or branch)
+    notes: List[str]
+```
 
 ---
 
@@ -406,12 +430,29 @@ target point M
 
 ## 13) Solver contract
 
-* **Input**: a validated `Program`.
+* **Inputs**:
+
+  * a validated & desugared `Program`, and **optionally a `DerivationPlan`**.
 * **Output**:
   `Solution { point_coords, success, max_residual, residual_breakdown, warnings }`, plus helpers to normalize coordinates for rendering.
-* **Algorithm**: build
-  `Model{ points, index, residuals, gauges, scale }`, then minimize all residual groups using LSQ (`method="trf"`); reseed if necessary; score candidates by success then residual magnitude.
+* **Algorithm**:
+
+  1. **Pre-solve planning (default)**:
+
+     * If no explicit plan was provided, call `plan_derive(program)` to obtain a `DerivationPlan`.
+     * The plan partitions points into:
+
+       * `base_points` (decision variables),
+       * `derived_points` (computed from functional rules),
+       * `ambiguous_points` (kept as variables).
+  2. **Model build**:
+
+     * `compile_with_plan(program, plan)` produces
+       `Model{ variables=base_points ∪ ambiguous_points, derived=derived_points, index, residuals, gauges, scale }`.
+     * Residual evaluation **first** computes all `derived` via their `eval()` in topo order, guarded by `guard()`; then computes residuals using both optimized and derived coordinates.
+  3. **Solve**: minimize all residual groups using LSQ (`method="trf"`); reseed if necessary; score candidates by success then residual magnitude.
 * **Safety**: min-separation guards, edge floors, area floors, non-parallel margins for trapezoids, orientation gauges (prefer declared bases; otherwise unit-span).
+* **Plan guards**: if any `guard()` fails at the initial seed (e.g., near-parallel lines in a derived intersection), the compiler emits a **plan degradation warning** and **promotes** the affected point(s) to `ambiguous_points` (variables), then recompiles **once**. Variable dimensionality is fixed thereafter.
 
 ---
 
@@ -431,13 +472,41 @@ Renderers and agents may use the following canonical seeds:
 * `triangle_ABO`: `A=(0,0)`, `B=(4,0)`, `O` above AB
 * `generic` / `generic_auto`: balanced unit-scale layout with non-degenerate orientation
 
-
 ---
 
-## 16) Deterministic Derivation & Cross‑Check (DDC)
+## 16) Deterministic Derivation — Plan & Check (DDC-Plan + DDC-Check)
 
-**Goal.** Even when LSQ “converges,” the chosen branch (mirror, wrong intersection, etc.) can be geometrically incorrect.
-The **DDC** module deterministically **derives** coordinates for all points that are *uniquely computable* from other points and objects, **without** optimizing, then **compares** them to the solver’s output. It catches wrong branches, flipped orders, and inconsistent placements early.
+**Goals.**
+
+1. **DDC-Plan (pre-solve)**: statically identify points that are **functionally determined** (single-valued; no branch choice) by the givens, and compile them into **derived** nodes so the solver does **not** optimize them.
+2. **DDC-Check (post-solve)**: for all deterministically derivable points (including multi-root situations filtered by hard constraints), compute candidates numerically and **cross-check** them against the solver’s output. It catches wrong branches, flipped orders, and inconsistent placements early.
+
+### 16.0 DDC-Plan (pre-solve) — variable reduction
+
+**What qualifies as functional (always single-valued):**
+
+* Midpoint; Foot of perpendicular; Diameter reflection; Center from diameter.
+* Incenter (intersection of internal bisectors); Circumcenter (intersection of perpendicular bisectors).
+* Intersection of two **line-like** paths (Line, Ray, Segment, PerpBisector, PerpendicularAt, ParallelThrough, AngleBisector, MedianFrom, TangentLineAt) — unique except parallel/collinear (guarded).
+* Tangency with a **known tangent line**: `line X-Y tangent to circle center O at T` ⇒ unique `T` by orthogonal projection (guarded by distance≈radius).
+* **On∩On (line-like ∩ line-like)** synthesized from two `point P on ...` facts.
+
+**What does *not* qualify (keep as variables):**
+
+* Any rule with inherent **two roots** without a structural hard disambiguator at compile time:
+
+  * `line ∩ circle`, `circle ∩ circle`, tangent from an external point (`line A-P tangent ... at P`), or any use of `choose=...` (branch selectors are numeric, not structural).
+* On∩On with a circle unless the second path is a known tangent line (then use the tangent rule above).
+
+**Plan construction (static, no coordinates needed):**
+
+1. Build the **Derivation Graph** (see 16.2) using only rules that qualify as functional.
+2. Topologically sort to partition points into `derived_points` and **base**. Cycles or rules depending on a non-functional dependency leave the target point as base.
+3. Export `DerivationPlan{ base_points, derived_points, ambiguous_points, notes }`.
+
+**Runtime evaluation:** In the compiled model, `derived_points` are evaluated *deterministically* each residual call; if a rule’s `guard()` fails at the initial seed, the compiler demotes that point to a variable and recompiles once (see §13, “Plan guards”).
+
+---
 
 ### 16.1 Public API
 
@@ -458,19 +527,19 @@ def derive_and_check(program: Program, solution: Solution, *, tol=None) -> Deriv
       status: Literal["ok","mismatch","ambiguous","partial"]
       summary: str
       points: Dict[str, DerivedPointReport]
-      unused_facts: List[str]         # ids/labels of facts not consumed by any derivation
-      graph: DerivationGraphExport    # nodes, edges, topo order (for visualization/debug)
+      unused_facts: List[str]
+      graph: DerivationGraphExport
   ```
 
   ```python
   class DerivedPointReport(TypedDict):
-      rule: str                        # e.g. "foot(H; X→AB)", "intersect(line, circle)"
-      inputs: List[str]                # dependency ids (points/paths)
+      rule: str
+      inputs: List[str]
       candidates: List[Tuple[float,float]]
       chosen_by: Literal["unique","opts","ray/segment filter","closest-to-solver","undetermined"]
       match: Literal["yes","no"]
-      dist: float                      # min distance from solver coordinate to any candidate
-      notes: List[str]                 # degeneracy warnings, filters applied
+      dist: float
+      notes: List[str]
   ```
 
   Overall `status` rules:
@@ -486,12 +555,12 @@ def derive_and_check(program: Program, solution: Solution, *, tol=None) -> Deriv
 
 1. **Prep**
 
-   * Use the **desugared** program (so high‑level shapes are already expanded to canonical facts).
+   * Use the **desugared** program (so high-level shapes are already expanded to canonical facts).
    * Build a typed catalog of **objects** (lines/rays/segments, circles) and **facts** (e.g., “H is foot from X to AB”).
 
 2. **Build the Derivation Graph**
 
-   * Nodes are **points** (both given & to‑be‑derived).
+   * Nodes are **points** (both given & to-be-derived).
    * Directed edges represent **dependencies** required to compute a point (e.g., `H ← {A,B,X}` for a foot from `X` to `AB`).
    * Include **path nodes** when a rule depends on a path (e.g., `line(A,B)`), but the graph is *topologically sorted on points*: path nodes don’t participate in ordering; they are recomputed on demand from their defining points.
    * If multiple rules can derive the same point, create parallel candidate nodes; the evaluator will reconcile them (they must agree within `tol` or we raise a consistency warning).
@@ -500,11 +569,13 @@ def derive_and_check(program: Program, solution: Solution, *, tol=None) -> Deriv
 
    * **Base points**: those that **cannot** be uniquely derived from any rule given current knowledge (they must be provided by the solver). These appear at layer 0.
    * Higher layers contain points derivable from earlier layers. Cycles are broken by leaving involved points as base (no derivation).
+   * **DDC-Plan vs DDC-Check**: the **Plan** uses only **functional** rules (no multi-root). The **Check** may use multi-root rules to generate candidate sets for verification.
 
 **4. Evaluate (derive coordinates)**
 
 * For each point in topo order, execute its **derivation rule(s)** (see §16.4).
-* A rule may produce **1** or **2** candidates; for 2‑candidate rules, apply **filters**:
+* **In DDC-Plan** we only install rules that are **single-valued** (no candidate sets).
+* **In DDC-Check** a rule may produce **1** or **2** candidates; for 2-candidate rules, apply **filters**:
 
   * hard filters: ray/segment membership, perpendicular/parallel/tangency guards, `diameter` reflection, declared ordering constraints that are *hard* (e.g., “on segment”, “between”).
   * **on∩on synthesis**: if a point is separately constrained to lie on two Paths (via two `point … on …` facts), synthesize an **intersection rule** for those two Paths on the fly (see §16.4, “On∩On synthetic rules”).
@@ -518,7 +589,7 @@ def derive_and_check(program: Program, solution: Solution, *, tol=None) -> Deriv
 
 6. **Report & diagnostics**
 
-   * Produce a human‑readable summary with per‑point info, a list of **unused facts** (good for catching under‑modeling), and a compact **graph export** (JSON) for visualization.
+   * Produce a human-readable summary with per-point info, a list of **unused facts** (good for catching under-modeling), and a compact **graph export** (JSON) for visualization.
 
 ---
 
@@ -543,7 +614,7 @@ To compute candidates deterministically, DDC needs exact parameterizations of ba
 * `PerpendicularAt(T; A,B)`: line through `T` with direction `(B−A)⊥`.
 * `AngleBisector(U,V,W, external=False)`: at `V`, bisects oriented angle `(VU, VW)`; if `external=True` use external bisector. Direction `dir = ( (U−V)/‖U−V‖ + s*(W−V)/‖W−V‖ )`, with `s=+1` (internal) or `s=−1` (external); if `dir≈0`, declare degenerate.
 * **`MedianFrom(P; A,B)`**: line through vertex `P` and midpoint `M=(A+B)/2`.
-* **`TangentLineAt(T; O)`**: line through `T` with direction `(T−O)⊥` (well‑defined if `T≠O`).
+* **`TangentLineAt(T; O)`**: line through `T` with direction `(T−O)⊥` (well-defined if `T≠O`).
 
 ---
 
@@ -589,15 +660,15 @@ class Rule:
 
 ### B. Intersection rules (generic; may be 1 or 2 candidates)
 
-These operate on any **line‑like** path (Line, Ray, Segment, PerpBisector, ParallelThrough, PerpendicularAt, AngleBisector, MedianFrom, TangentLineAt), plus Circle:
+These operate on any **line-like** path (Line, Ray, Segment, PerpBisector, ParallelThrough, PerpendicularAt, AngleBisector, MedianFrom, TangentLineAt), plus Circle:
 
-8. **Intersect(line‑like, line‑like)** — unique unless parallel/collinear; apply **ray/segment** parameter filters.
+8. **Intersect(line-like, line-like)** — unique unless parallel/collinear; apply **ray/segment** parameter filters.
 
-9. **Intersect(line‑like, circle)** — quadratic along the line parameter; **0/1/2** candidates; apply **ray/segment** filters.
+9. **Intersect(line-like, circle)** — quadratic along the line parameter; **0/1/2** candidates; apply **ray/segment** filters.
 
-10. **Intersect(circle, circle)** — classic two‑circle intersection; **0/1/2** candidates.
+10. **Intersect(circle, circle)** — classic two-circle intersection; **0/1/2** candidates.
 
-> Special cases such as **Angle‑bisector ∩ (line|circle)** or **Median ∩ …** are covered by 8–9 after parameterizing the path (see §16.3). No separate bespoke rules are required.
+> Special cases such as **Angle-bisector ∩ (line|circle)** or **Median ∩ …** are covered by 8–9 after parameterizing the path (see §16.3). No separate bespoke rules are required.
 
 ### C. Tangency rules (completed)
 
@@ -616,10 +687,10 @@ Multiplicity **2**; apply soft selectors (`choose=near|far|left|right|cw|ccw`) a
 12. **Touchpoint from known tangent line** — from
     `line X-Y tangent to circle center O at T` (X,Y,O known; r known)
     Compute the **foot of O on line XY**: let `v=Y−X`, `t = ((O−X)·v)/(v·v)`, `T0 = X + t·v`.
-    Validate `|‖T0−O‖ − r| ≤ ε_tan` (scale‑aware). If valid, **unique** candidate `T=T0`; else **degenerate** (report).
+    Validate `|‖T0−O‖ − r| ≤ ε_tan` (scale-aware). If valid, **unique** candidate `T=T0`; else **degenerate** (report).
 
 13. **Touchpoint from tangent direction at T** — from
-    `tangent at T to circle center O` **and** a second constraint placing `T` on a **line‑like** carrier `ℓ` (e.g., `point T on line A-B` / `ray` / `segment`)
+    `tangent at T to circle center O` **and** a second constraint placing `T` on a **line-like** carrier `ℓ` (e.g., `point T on line A-B` / `ray` / `segment`)
     Compute `T = intersect(ℓ, Circle(O; r))`. Keep only solutions that satisfy `OT ⟂ ℓ`. Multiplicity **≤2**, then filtered to **≤1** by the perpendicular guard.
 
 14. **Tangent line through a given point (line unknown)** — from
@@ -630,13 +701,13 @@ Multiplicity **2**; apply soft selectors (`choose=near|far|left|right|cw|ccw`) a
 
 These rules are **synthesized** when the fact base contains **two independent `point P on <Path>`** constraints for the same `P` (even if the source script didn’t use an explicit `intersect(...)` statement):
 
-15. **On∩On: line‑like ∩ line‑like** — produce unique intersection unless parallel/collinear; **ray/segment** filters apply.
+15. **On∩On: line-like ∩ line-like** — produce unique intersection unless parallel/collinear; **ray/segment** filters apply.
 
-16. **On∩On: line‑like ∩ circle** — as in rule 9 (with ray/segment filters).
+16. **On∩On: line-like ∩ circle** — as in rule 9 (with ray/segment filters).
 
 17. **On∩On: circle ∩ circle** — as in rule 10.
 
-18. **On∩On with tangent guard** — if one of the two paths is a **TangentLineAt(T;O)** or equivalent constraint (from `tangent at T …`) and the other is **line‑like**, keep only candidates that satisfy `OT ⟂` (other line’s direction at `T`).
+18. **On∩On with tangent guard** — if one of the two paths is a **TangentLineAt(T;O)** or equivalent constraint (from `tangent at T …`) and the other is **line-like**, keep only candidates that satisfy `OT ⟂` (other line’s direction at `T`).
 
 > These synthetic rules are crucial because authors often write two `point … on …` lines instead of a single `intersect(...) … at …`. DDC should not force a particular authoring style.
 
@@ -661,7 +732,7 @@ These rules are **synthesized** when the fact base contains **two independent `p
   * `choose=left|right ref=A-B`
   * `choose=cw|ccw anchor=Q [ref=A-B]`
 
-> If after applying **hard filters** more than one candidate remains and **no soft selector** is present, the point is **ambiguous**; DDC keeps all candidates and marks the point `ambiguous` (comparison may still succeed if solver picked any one of them).
+> If after applying **hard filters** more than one candidate remains and **no soft selector** is present, the point is **ambiguous**; DDC keeps all candidates and marks the point `ambiguous` (comparison may still succeed if the solver picked any one of them). **DDC-Plan never installs such rules; those points remain variables.**
 
 ---
 
@@ -677,10 +748,10 @@ These rules are **synthesized** when the fact base contains **two independent `p
 
 ### 16.7 Unused facts & coverage
 
-* Any derivation‑eligible fact that **does not** participate in producing any candidate for any point is recorded in `unused_facts`.
+* Any derivation-eligible fact that **does not** participate in producing any candidate for any point is recorded in `unused_facts`.
   Common causes:
 
-  * Under‑modeled programs (e.g., never using `equal-angles` that could disambiguate a branch).
+  * Under-modeled programs (e.g., never using `equal-angles` that could disambiguate a branch).
   * Typos/IDs that don’t connect to the main graph.
   * Dead constraints (e.g., circle defined but no one uses it).
 
@@ -701,7 +772,7 @@ These rules are **synthesized** when the fact base contains **two independent `p
 geoscript-ir check path/to/problem.gs --dump-graph graph.json --tol 1e-7
 ```
 
-* Prints a one‑line status and a table per point.
+* Prints a one-line status and a table per point.
 * Writes a JSON export of the derivation graph plus candidate coordinates.
 
 ---
@@ -726,10 +797,11 @@ segment A-B [length=5]
 
 ### 16.11 Implementation notes
 
-* Keep all computations in double precision; guard divisions by near‑zero with small eps (e.g., `1e-14 * scene_scale`).
-* Never mutate solver coordinates; DDC is **read‑only** on the solution.
+* Keep all computations in double precision; guard divisions by near-zero with small eps (e.g., `1e-14 * scene_scale`).
+* Never mutate solver coordinates; DDC is **read-only** on the solution.
 * The rule engine is deliberately small; each rule is < 30 lines and pure (no side effects).
 * Unit tests: for every rule, craft fixtures with (a) normal, (b) degenerate, (c) ambiguous inputs; verify candidate counts and coordinates.
+* **Plan tests**: ensure each functional rule compiles into a `derived_point`, its `guard()` is exercised, and demotion to variable occurs on forced degeneracy (parallel). See §17.2 and §17.9.
 
 ---
 
@@ -739,12 +811,13 @@ This module gives us a **deterministic oracle** for points that *should* be dete
 
 ## 17) Integration-Test Flow (Solver + DDC Verification)
 
-The integration test suite now runs in two phases:
+The integration test suite now runs in **three** phases:
 
-1. **Solver convergence test** — checks that `scipy.optimize.least_squares` terminates successfully and residuals fall below tolerance.
-2. **Deterministic Derivation & Cross-Check (DDC)** — verifies that all points that can be *uniquely derived* from the givens match the numeric solver’s coordinates within tolerance.
+1. **DDC-Plan compilation (pre-solve)** — compiles a plan and **reduces the variable set** by deriving functional points.
+2. **Solver convergence test** — checks that `scipy.optimize.least_squares` terminates successfully and residuals fall below tolerance.
+3. **DDC-Check (post-solve)** — verifies that all points that can be *derived numerically* match the solver’s coordinates within tolerance.
 
-Only if **both** phases pass is a geometry test considered **successful**.
+Only if **all** phases pass is a geometry test considered **successful**.
 
 ---
 
@@ -760,20 +833,32 @@ Each test case contains:
 | `tol_solver`       | solver convergence tolerance (`max_residual`)                              |
 | `tol_ddc`          | DDC geometric match tolerance                                              |
 | `allow_ambiguous`  | whether ambiguous but consistent branches are acceptable (default `false`) |
+| `expect_var_drop`  | expected reduction in variable count due to Plan (int or min ratio)        |
+| `force_parallel`   | optional flag to seed near-parallel paths to exercise Plan demotion        |
 
 ---
 
 ### 17.2 Execution pipeline
 
-> The DDC engine now **auto‑synthesizes** On∩On intersection rules (§16.4‑D) and supports the complete tangency suite (§16.4‑C). Existing tests continue to pass; additional cases gain coverage.
+> The DDC engine **auto-synthesizes** On∩On intersection rules (§16.4-D) and supports the complete tangency suite (§16.4-C). The **Plan** reduces variables before solving.
+
 ```
 for case in test_cases:
     program = parse_program(case.source)
     validate(program)
     desugared = desugar(program)
-    solution = solve(desugared, tol=case.tol_solver)
+
+    # --- NEW: pre-solve planning & compilation
+    plan = plan_derive(desugared)
+    if case.expect_var_drop is not None:
+        assert variable_reduction(plan) >= case.expect_var_drop
+    model = compile_with_plan(desugared, plan)
+    # demotion-on-guard-failure occurs once inside compile_with_plan at first evaluation
+
+    solution = solve(model, tol=case.tol_solver)
     assert solution.success, "Solver did not converge"
     assert solution.max_residual <= case.tol_solver
+
     report = derive_and_check(desugared, solution, tol=case.tol_ddc)
     evaluate_ddc(report, allow_ambiguous=case.allow_ambiguous)
 ```
@@ -807,11 +892,14 @@ This helps identify mirror or wrong-branch errors.
 
 ### 17.4 Regression expectations
 
-* **Previously:** tests only ensured `solution.success==True`.
-* **Now:** they must also satisfy `report.status in {"ok","partial"}` (or `"ambiguous"` if explicitly allowed).
+* **Plan** reduces variables in common scenes (midpoints, feet, in/circumcenters, line∩line intersections).
+
+* **Check** must satisfy `report.status in {"ok","partial"}` (or `"ambiguous"` if explicitly allowed).
+
 * The continuous-integration run will print both solver and DDC summaries:
 
   ```
+  ✅ Plan: -4 variables (derived: M,H,O,X)
   ✅ Solver converged (residual 3.1e-9)
   ✅ DDC OK (12/12 points matched)
   ```
@@ -819,15 +907,21 @@ This helps identify mirror or wrong-branch errors.
   or
 
   ```
+  ✅ Plan: -2 variables
   ✅ Solver converged (residual 1.0e-8)
   ❌ DDC mismatch: Point C off by 0.04
   ```
+
 * DDC must validate **touchpoints** from:
 
-  * `line X-Y tangent to circle center O at T` (unique via foot‑projection).
+  * `line X-Y tangent to circle center O at T` (unique via foot-projection).
   * `line A-T tangent … at T` (two candidates from external point).
+
 * DDC must derive points constrained by **two `on` statements** (line/line, line/circle, circle/circle).
-* Bisector/median paths used in `intersect(...)` or via On∩On must be handled as **line‑like** paths.
+
+* Bisector/median paths used in `intersect(...)` or via On∩On must be handled as **line-like** paths.
+
+> Tangency validations use `ε_tan = 5×tol_ddc` internally for the “distance to circle equals r” check; the **point match** still uses `tol_ddc`.
 
 ---
 
@@ -853,14 +947,13 @@ These files are stored in `/tmp/geoscript_tests/<case_id>/` by default.
 | Max geometric deviation                 | ≤ 5e-6 × scene_scale |
 
 Any higher deviation fails the build and triggers a geometry-branch regression.
-> Tangency validations use `ε_tan = 5×tol_ddc` internally for the “distance to circle equals r” check; the **point match** still uses `tol_ddc`.
 
 ---
 
 ### 17.7 Developer workflow
 
 1. Add or modify a `.gs` sample in `tests/scenes/`.
-2. Run `pytest tests/test_integration.py --update-expected` to regenerate solver+DDC snapshots.
+2. Run `pytest tests/test_integration.py --update-expected` to regenerate **plan snapshots**, **solver results**, and **DDC**.
 3. Inspect `*.ddc.json` for new or ambiguous branches.
 4. Commit only when DDC shows `"status": "ok"` or intentional `"ambiguous"` with justification.
 
@@ -868,12 +961,64 @@ Any higher deviation fails the build and triggers a geometry-branch regression.
 
 ### 17.8 Rationale
 
-This new testing layer ensures that
+This layered testing ensures that
+✔ we **reduce** the optimization problem (fewer variables),
 ✔ the solver **converges**,
 ✔ the geometry it converged to is **topologically correct**,
 ✔ mirror or wrong-branch solutions are caught automatically.
 
-As a result, integration tests no longer silently accept “numerically nice but geometrically wrong” scenes, making the pipeline reliable for both numeric optimization and symbolic-geometry validation.
+As a result, integration tests no longer silently accept “numerically nice but geometrically wrong” scenes, and they also avoid wasting iterations on deterministically derivable points.
+
+---
+
+### 17.9 Example plan tests (new)
+
+**A. Midpoints demoted from variables**
+
+```
+scene "Two midpoints plan"
+layout canonical=generic scale=1
+points A, B, C, M, N
+segment A-B
+segment B-C
+midpoint M of A-B
+midpoint N of B-C
+target point M
+```
+
+*Expectation*: `expect_var_drop >= 2`; `M,N ∈ derived_points`.
+
+**B. Foot & line∩line**
+
+```
+scene "Foot + intersection"
+layout canonical=generic scale=1
+points A, B, C, D, H, X
+line A-B
+line C-D
+foot H from C to A-B
+intersect (line A-B) with (line C-D) at X
+target point X
+```
+
+*Expectation*: `expect_var_drop >= 2` (`H` and `X` derived).
+
+**C. Tangent with known tangent line (functional)**
+
+```
+scene "Projection touchpoint"
+layout canonical=generic scale=1
+points X, Y, O, T
+line X-Y
+circle center O radius-through X
+line X-Y tangent to circle center O at T
+target point T
+```
+
+*Expectation*: `T ∈ derived_points`.
+
+**D. Degeneracy demotion (parallel)**
+Use `force_parallel=True` to seed an almost-parallel `line A-B` and `line C-D`; compiler should demote the line∩line intersection to a variable and proceed.
 
 ---
 
