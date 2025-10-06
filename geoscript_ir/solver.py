@@ -32,6 +32,7 @@ class ResidualSpec:
     size: int
     kind: str
     source: Optional[Stmt] = None
+    meta: Optional[Dict[str, object]] = None
 
 
 @dataclass
@@ -269,7 +270,12 @@ def _build_area_floor(ids: Sequence[PointName], index: Dict[PointName, int], min
     return ResidualSpec(key=key, func=func, size=1, kind="area_floor", source=None)
 
 
-def _build_min_separation(pair: Edge, index: Dict[PointName, int], min_distance: float) -> ResidualSpec:
+def _build_min_separation(
+    pair: Edge,
+    index: Dict[PointName, int],
+    min_distance: float,
+    reasons: Optional[Sequence[str]] = None,
+) -> ResidualSpec:
     if pair[0] == pair[1]:
         raise ValueError("min separation requires two distinct points")
     min_sq = float(min_distance * min_distance)
@@ -280,7 +286,18 @@ def _build_min_separation(pair: Edge, index: Dict[PointName, int], min_distance:
         return np.array([_smooth_hinge(min_sq - dist_sq)], dtype=float)
 
     key = f"min_separation({_format_edge(pair)})"
-    return ResidualSpec(key=key, func=func, size=1, kind="min_separation", source=None)
+    meta: Dict[str, object] = {"pair": pair}
+    if reasons:
+        meta["reasons"] = list(reasons)
+
+    return ResidualSpec(
+        key=key,
+        func=func,
+        size=1,
+        kind="min_separation",
+        source=None,
+        meta=meta,
+    )
 
 
 # --- keep every edge above a floor ---
@@ -818,7 +835,7 @@ def translate(program: Program) -> Model:
 
     order: List[PointName] = []
     seen: Dict[PointName, int] = {}
-    distinct_pairs: Set[Edge] = set()
+    distinct_pairs: Dict[Edge, Set[str]] = {}
     polygon_sequences: Dict[Tuple[PointName, ...], str] = {}
     polygon_meta: Dict[Tuple[PointName, ...], Dict[str, object]] = {}  # NEW
     scale_samples: List[float] = []
@@ -837,11 +854,14 @@ def translate(program: Program) -> Model:
         except (TypeError, ValueError):
             return
 
-    def mark_distinct(a: PointName, b: PointName) -> None:
+    def mark_distinct(a: PointName, b: PointName, reason: str = "") -> None:
         if a == b:
             return
         pair = (a, b) if a <= b else (b, a)
-        distinct_pairs.add(pair)
+        if pair not in distinct_pairs:
+            distinct_pairs[pair] = set()
+        if reason:
+            distinct_pairs[pair].add(reason)
 
     def handle_edge(edge: Sequence[str]) -> None:
         nonlocal orientation_edge
@@ -850,7 +870,7 @@ def translate(program: Program) -> Model:
         _register_point(order, seen, b)
         if orientation_edge is None and a != b:
             orientation_edge = (a, b)
-        mark_distinct(a, b)
+        mark_distinct(a, b, reason="edge")
         # Track as a carrier edge used by constraints
         if a != b:
             carrier_edges.add((a, b))
@@ -952,7 +972,7 @@ def translate(program: Program) -> Model:
             pts_list = [p for p in data["points"] if isinstance(p, str)]
             for i in range(len(pts_list)):
                 for j in range(i + 1, len(pts_list)):
-                    mark_distinct(pts_list[i], pts_list[j])
+                    mark_distinct(pts_list[i], pts_list[j], reason="points")
 
         if "ids" in data:
             for name in data["ids"]:
@@ -1036,7 +1056,7 @@ def translate(program: Program) -> Model:
     # Guard against collapsed layouts by separating every point pair
     for i, a in enumerate(order):
         for b in order[i + 1:]:
-            mark_distinct(a, b)
+            mark_distinct(a, b, reason="global")
 
     # Prefer the declared trapezoid base for orientation if available
     if preferred_base_edge is not None:
@@ -1063,7 +1083,8 @@ def translate(program: Program) -> Model:
     min_sep = _MIN_SEP_SCALE * scene_scale
     if min_sep > 0:
         for pair in sorted(distinct_pairs):
-            residuals.append(_build_min_separation(pair, index, min_sep))
+            reasons = sorted(distinct_pairs.get(pair, ()))
+            residuals.append(_build_min_separation(pair, index, min_sep, reasons))
 
     # polygon-level guards + track polygon edges for de-dup
     polygon_edges_set: Set[Edge] = set()
@@ -1300,7 +1321,12 @@ def _evaluate(model: Model, x: np.ndarray) -> Tuple[np.ndarray, List[Tuple[Resid
     return np.zeros(0, dtype=float), breakdown
 
 
-def solve(model: Model, options: SolveOptions = SolveOptions()) -> Solution:
+def solve(
+    model: Model,
+    options: SolveOptions = SolveOptions(),
+    *,
+    _allow_relaxation: bool = True,
+) -> Solution:
     rng = np.random.default_rng(options.random_seed)
     warnings: List[str] = []
     best_result: Optional[
@@ -1374,6 +1400,74 @@ def solve(model: Model, options: SolveOptions = SolveOptions()) -> Solution:
         raise RuntimeError("solver failed to evaluate residuals")
 
     _, max_res, best_x, breakdown, converged = best_result
+
+    if not converged and _allow_relaxation:
+        # Identify min-separation guards that keep nearly-coincident points apart.
+        relaxed_specs: List[ResidualSpec] = []
+        relaxed_pairs: List[str] = []
+        min_sep_target = _MIN_SEP_SCALE * max(model.scale, 1.0)
+        close_threshold = min_sep_target * 0.25
+        abs_threshold = max(1e-3 * max(model.scale, 1.0), 5e-4)
+        drop_threshold = min(close_threshold, abs_threshold)
+        residual_threshold = max(1e-4, 1e-3 * (min_sep_target ** 2))
+        for spec, values in breakdown:
+            if spec.kind != "min_separation" or not values.size:
+                continue
+            meta = spec.meta if isinstance(spec.meta, dict) else {}
+            pair = meta.get("pair") if isinstance(meta, dict) else None
+            reasons = set(meta.get("reasons", [])) if isinstance(meta, dict) else set()
+            if pair is None and spec.key.startswith("min_separation(") and spec.key.endswith(")"):
+                body = spec.key[len("min_separation(") : -1]
+                if "-" in body:
+                    a, b = body.split("-", 1)
+                    pair = (a, b)
+            if not isinstance(pair, tuple) or len(pair) != 2:
+                continue
+            if reasons and not reasons <= {"global", "points"}:
+                continue
+            idx_a = model.index.get(pair[0])
+            idx_b = model.index.get(pair[1])
+            if idx_a is None or idx_b is None:
+                continue
+            diff = best_x[2 * idx_b : 2 * idx_b + 2] - best_x[2 * idx_a : 2 * idx_a + 2]
+            dist = float(math.sqrt(max(_norm_sq(diff), 0.0)))
+            max_abs = float(np.max(np.abs(values)))
+            if dist <= drop_threshold or max_abs >= residual_threshold:
+                relaxed_specs.append(spec)
+                relaxed_pairs.append(f"{pair[0]}-{pair[1]}")
+        if relaxed_specs and len(relaxed_specs) <= 4:
+            filtered = [
+                spec
+                for spec in model.residuals
+                if spec not in relaxed_specs
+            ]
+            if len(filtered) < len(model.residuals):
+                relaxed_model = Model(
+                    points=model.points,
+                    index=model.index,
+                    residuals=filtered,
+                    gauges=model.gauges,
+                    scale=model.scale,
+                )
+                relaxed_solution = solve(
+                    relaxed_model,
+                    options,
+                    _allow_relaxation=False,
+                )
+                combined_warnings: List[str] = []
+                for entry in (
+                    warnings
+                    + [
+                        "relaxed min separation guard(s) for pairs: "
+                        + ", ".join(sorted(relaxed_pairs))
+                    ]
+                    + relaxed_solution.warnings
+                ):
+                    if entry not in combined_warnings:
+                        combined_warnings.append(entry)
+                relaxed_solution.warnings = combined_warnings
+                return relaxed_solution
+
     if not converged:
         warnings.append(
             f"solver did not converge within tolerance {options.tol:.1e}; max residual {max_res:.3e}"
