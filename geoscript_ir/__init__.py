@@ -9,6 +9,8 @@ from .reference_tikz import GEOSCRIPT_TO_TIKZ_PROMPT
 from .tikz_codegen import generate_tikz_code, generate_tikz_document, latex_escape_keep_math
 from .solver import (
     translate,
+    plan_derive,
+    compile_with_plan,
     solve,
     solve_best_model,
     solve_with_desugar_variants,
@@ -32,6 +34,8 @@ __all__ = [
     'print_program',
     'format_stmt',
     'translate',
+    'plan_derive',
+    'compile_with_plan',
     'solve',
     'solve_best_model',
     'solve_with_desugar_variants',

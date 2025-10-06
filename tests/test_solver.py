@@ -4,6 +4,8 @@ import pytest
 from geoscript_ir import desugar_variants, parse_program, validate, desugar
 from geoscript_ir.solver import (
     translate,
+    plan_derive,
+    compile_with_plan,
     solve,
     solve_best_model,
     solve_with_desugar_variants,
@@ -172,6 +174,41 @@ def test_normalize_point_coords():
     )
 
     assert solution.normalized_point_coords() == normalized
+
+
+def test_plan_derive_detects_midpoint():
+    prog = parse_program(
+        """
+        scene "Midpoint"
+        points A, B, M
+        segment A-B
+        midpoint M of A-B
+        """
+    )
+    validate(prog)
+    desugared = desugar(prog)
+    plan = plan_derive(desugared)
+    derived = plan.get("derived_points", {}) or {}
+    assert "M" in derived
+    assert sorted(derived["M"].inputs) == ["A", "B"]
+
+
+def test_compile_with_plan_uses_variables_only():
+    prog = parse_program(
+        """
+        scene "Altitude"
+        points A, B, C, H
+        triangle A-B-C
+        foot H from C to A-B
+        """
+    )
+    validate(prog)
+    desugared = desugar(prog)
+    plan = plan_derive(desugared)
+    model = compile_with_plan(desugared, plan)
+    assert "H" in model.derived
+    assert "H" not in model.variables
+    assert set(model.variables) <= set(model.points)
 
 def test_quadrilateral_convexity_residuals():
     model = _build_model(
