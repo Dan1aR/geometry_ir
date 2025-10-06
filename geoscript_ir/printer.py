@@ -33,6 +33,14 @@ def path_str(path: Tuple[str, object]) -> str:
         if isinstance(to_edge, (list, tuple)):
             return f'median from {frm} to {edge_str(to_edge)}'
         return f'median from {frm}'
+    if kind == 'perp-bisector' and isinstance(payload, (list, tuple)):
+        return f'perp-bisector of {edge_str(tuple(payload))}'
+    if kind == 'parallel' and isinstance(payload, dict):
+        through = payload.get('through', '')
+        to_edge = payload.get('to')
+        if isinstance(to_edge, (list, tuple)):
+            return f'parallel through {through} to {edge_str(tuple(to_edge))}'
+        return f'parallel through {through}'
     return f'# [unknown path {kind}]'
 
 def print_program(prog: Program, *, original_only: bool = False) -> str:
@@ -111,6 +119,28 @@ def print_program(prog: Program, *, original_only: bool = False) -> str:
             lhs = ', '.join(edge_str(e) for e in s.data['lhs'])
             rhs = ', '.join(edge_str(e) for e in s.data['rhs'])
             lines.append(f'equal-segments ({lhs} ; {rhs})')
+        elif s.kind == 'collinear':
+            ids = ', '.join(s.data['points'])
+            lines.append(f'collinear ({ids})')
+        elif s.kind == 'concyclic':
+            ids = ', '.join(s.data['points'])
+            lines.append(f'concyclic ({ids})')
+        elif s.kind == 'equal_angles':
+            lhs = ', '.join(angle_str(tuple(ang)) for ang in s.data['lhs'])
+            rhs = ', '.join(angle_str(tuple(ang)) for ang in s.data['rhs'])
+            lines.append(f'equal-angles ({lhs} ; {rhs})')
+        elif s.kind == 'ratio':
+            left, right = s.data['edges']
+            a, b = s.data['ratio']
+
+            def _fmt_ratio_part(val):
+                if isinstance(val, float) and val.is_integer():
+                    return str(int(val))
+                return str(val)
+
+            lines.append(
+                f'ratio ({edge_str(left)} : {edge_str(right)} = {_fmt_ratio_part(a)} : {_fmt_ratio_part(b)})'
+            )
         elif s.kind == 'tangent_at':
             lines.append(f'tangent at {s.data["at"]} to circle center {s.data["center"]}{o}'); continue
         elif s.kind == 'diameter':

@@ -197,6 +197,12 @@ def _smooth_hinge(value: float) -> float:
     return 0.5 * (value + math.sqrt(value * value + _HINGE_EPS * _HINGE_EPS))
 
 
+def _circle_row(vec: np.ndarray) -> np.ndarray:
+    x = float(vec[0])
+    y = float(vec[1])
+    return np.array([x, y, x * x + y * y, 1.0], dtype=float)
+
+
 def _quadrilateral_edges(x: np.ndarray, index: Dict[PointName, int], ids: Sequence[PointName]) -> List[np.ndarray]:
     points = [_vec(x, index, name) for name in ids]
     return [points[(i + 1) % 4] - points[i] for i in range(4)]
@@ -565,6 +571,38 @@ def _build_point_on(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpe
         key = f"point_on_median({point},{frm};{_format_edge(to_edge)})"
         return [ResidualSpec(key=key, func=func, size=1, kind="point_on_median", source=stmt)]
 
+    if path_kind == "perp-bisector":
+        edge = _as_edge(payload)
+
+        def func(x: np.ndarray) -> np.ndarray:
+            a = _vec(x, index, edge[0])
+            b = _vec(x, index, edge[1])
+            mid = 0.5 * (a + b)
+            ab = b - a
+            p = _vec(x, index, point)
+            equidistant = _norm_sq(p - a) - _norm_sq(p - b)
+            perpendicular = float(np.dot(ab, p - mid))
+            return np.array([perpendicular, equidistant], dtype=float)
+
+        key = f"point_on_perp_bisector({point},{_format_edge(edge)})"
+        return [ResidualSpec(key=key, func=func, size=2, kind="point_on_perp_bisector", source=stmt)]
+
+    if path_kind == "parallel" and isinstance(payload, dict):
+        through = payload.get("through")
+        to_edge_raw = payload.get("to")
+        if not isinstance(through, str) or to_edge_raw is None:
+            raise ValueError("parallel path requires a through point and reference edge")
+        ref_edge = _as_edge(to_edge_raw)
+
+        def func(x: np.ndarray) -> np.ndarray:
+            base = _vec(x, index, through)
+            dir_vec = _edge_vec(x, index, ref_edge)
+            pt = _vec(x, index, point)
+            return np.array([_cross_2d(dir_vec, pt - base)], dtype=float)
+
+        key = f"point_on_parallel({point},{through};{_format_edge(ref_edge)})"
+        return [ResidualSpec(key=key, func=func, size=1, kind="point_on_parallel", source=stmt)]
+
     raise ValueError(f"Unsupported path kind for point_on: {path_kind}")
 
 
@@ -586,6 +624,82 @@ def _build_collinear(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSp
 
     key = "collinear(" + ",".join(pts) + ")"
     return [ResidualSpec(key=key, func=func, size=len(others) - 1, kind="collinear", source=stmt)]
+
+
+def _build_concyclic(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
+    pts: Sequence[PointName] = stmt.data.get("points", [])
+    if len(pts) < 4:
+        return []
+    base = pts[:3]
+    others = pts[3:]
+
+    def func(x: np.ndarray) -> np.ndarray:
+        base_rows = np.vstack([_circle_row(_vec(x, index, name)) for name in base])
+        vals = [
+            float(np.linalg.det(np.vstack([base_rows, _circle_row(_vec(x, index, name))])))
+            for name in others
+        ]
+        return np.asarray(vals, dtype=float)
+
+    key = "concyclic(" + ",".join(pts) + ")"
+    return [ResidualSpec(key=key, func=func, size=len(others), kind="concyclic", source=stmt)]
+
+
+def _build_equal_angles(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
+    lhs: Sequence[Tuple[PointName, PointName, PointName]] = stmt.data.get("lhs", [])
+    rhs: Sequence[Tuple[PointName, PointName, PointName]] = stmt.data.get("rhs", [])
+    if not lhs or len(lhs) != len(rhs):
+        return []
+    pairs = list(zip(lhs, rhs))
+
+    def func(x: np.ndarray) -> np.ndarray:
+        vals: List[float] = []
+        for left, right in pairs:
+            la, lb, lc = left
+            ra, rb, rc = right
+            lu = _vec(x, index, la) - _vec(x, index, lb)
+            lv = _vec(x, index, lc) - _vec(x, index, lb)
+            ru = _vec(x, index, ra) - _vec(x, index, rb)
+            rv = _vec(x, index, rc) - _vec(x, index, rb)
+            lu /= _safe_norm(lu)
+            lv /= _safe_norm(lv)
+            ru /= _safe_norm(ru)
+            rv /= _safe_norm(rv)
+            left_cos = float(np.dot(lu, lv))
+            right_cos = float(np.dot(ru, rv))
+            left_sin = _cross_2d(lu, lv)
+            right_sin = _cross_2d(ru, rv)
+            vals.append(left_cos - right_cos)
+            vals.append(left_sin - right_sin)
+        return np.asarray(vals, dtype=float)
+
+    lhs_fmt = [f"{a}-{b}-{c}" for a, b, c in lhs]
+    rhs_fmt = [f"{a}-{b}-{c}" for a, b, c in rhs]
+    key = "equal_angles(" + ",".join(lhs_fmt) + ";" + ",".join(rhs_fmt) + ")"
+    return [ResidualSpec(key=key, func=func, size=2 * len(pairs), kind="equal_angles", source=stmt)]
+
+
+def _build_ratio(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
+    edges = stmt.data.get("edges", [])
+    ratio = stmt.data.get("ratio")
+    if not isinstance(edges, (list, tuple)) or len(edges) != 2 or ratio is None:
+        return []
+    edge_a = _as_edge(edges[0])
+    edge_b = _as_edge(edges[1])
+    num_a, num_b = ratio
+    if num_a <= 0 or num_b <= 0:
+        raise ValueError("ratio parts must be positive")
+
+    scale_a = float(num_b) ** 2
+    scale_b = float(num_a) ** 2
+
+    def func(x: np.ndarray) -> np.ndarray:
+        len_a_sq = _norm_sq(_edge_vec(x, index, edge_a))
+        len_b_sq = _norm_sq(_edge_vec(x, index, edge_b))
+        return np.array([scale_a * len_a_sq - scale_b * len_b_sq], dtype=float)
+
+    key = f"ratio({_format_edge(edge_a)}:{_format_edge(edge_b)}={num_a}:{num_b})"
+    return [ResidualSpec(key=key, func=func, size=1, kind="ratio", source=stmt)]
 
 
 def _build_midpoint(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
@@ -681,6 +795,9 @@ _RESIDUAL_BUILDERS: Dict[str, Callable[[Stmt, Dict[PointName, int]], List[Residu
     "angle_at": _build_angle,
     "point_on": _build_point_on,
     "collinear": _build_collinear,
+    "concyclic": _build_concyclic,
+    "equal_angles": _build_equal_angles,
+    "ratio": _build_ratio,
     "midpoint": _build_midpoint,
     "foot": _build_foot,
     "median_from_to": _build_midpoint,
@@ -773,6 +890,17 @@ def translate(program: Program) -> Model:
             if isinstance(to_edge, (list, tuple)):
                 handle_edge(to_edge)
             return
+        if kind == "perp-bisector" and isinstance(payload, (list, tuple)):
+            handle_edge(payload)
+            return
+        if kind == "parallel" and isinstance(payload, dict):
+            through = payload.get("through")
+            if isinstance(through, str):
+                _register_point(order, seen, through)
+            to_edge = payload.get("to")
+            if isinstance(to_edge, (list, tuple)):
+                handle_edge(to_edge)
+            return
 
     # scan program
     for stmt in program.stmts:
@@ -836,11 +964,23 @@ def translate(program: Program) -> Model:
             for edge in data["edges"]:
                 handle_edge(edge)
         if "lhs" in data:
-            for edge in data["lhs"]:
-                handle_edge(edge)
+            for item in data["lhs"]:
+                if isinstance(item, (list, tuple)):
+                    if len(item) == 2:
+                        handle_edge(item)
+                    elif len(item) == 3:
+                        for name in item:
+                            if isinstance(name, str):
+                                _register_point(order, seen, name)
         if "rhs" in data:
-            for edge in data["rhs"]:
-                handle_edge(edge)
+            for item in data["rhs"]:
+                if isinstance(item, (list, tuple)):
+                    if len(item) == 2:
+                        handle_edge(item)
+                    elif len(item) == 3:
+                        for name in item:
+                            if isinstance(name, str):
+                                _register_point(order, seen, name)
         if "of" in data and isinstance(data["of"], (list, tuple)):
             handle_edge(data["of"])
         if "rays" in data:

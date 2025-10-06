@@ -354,6 +354,137 @@ def test_translate_handles_explicit_circle_tangency_with_named_foot():
     assert any(spec.key == "foot(O->H on A-B)" for spec in model.residuals)
 
 
+def test_point_on_perp_bisector_residual_enforces_constraints():
+    model = _build_model(
+        """
+        scene "Perp bisector"
+        points A, B, U
+        segment A-B
+        point U on perp-bisector of A-B
+        """
+    )
+
+    spec = next(spec for spec in model.residuals if spec.key == "point_on_perp_bisector(U,A-B)")
+
+    good_coords = {"A": (0.0, 0.0), "B": (2.0, 0.0), "U": (1.0, 1.5)}
+    vals_good = spec.func(_coords_array(model, good_coords))
+    assert vals_good.shape == (2,)
+    assert np.max(np.abs(vals_good)) < 1e-9
+
+    bad_coords = dict(good_coords)
+    bad_coords["U"] = (2.0, 1.0)
+    vals_bad = spec.func(_coords_array(model, bad_coords))
+    assert np.max(np.abs(vals_bad)) > 1e-6
+
+
+def test_point_on_parallel_residual_tracks_direction():
+    model = _build_model(
+        """
+        scene "Parallel path"
+        points A, B, C, V
+        segment A-B
+        point V on parallel through C to A-B
+        """
+    )
+
+    spec = next(spec for spec in model.residuals if spec.key == "point_on_parallel(V,C;A-B)")
+
+    aligned = {"A": (0.0, 0.0), "B": (2.0, 0.0), "C": (1.0, 1.0), "V": (3.0, 1.0)}
+    vals_aligned = spec.func(_coords_array(model, aligned))
+    assert vals_aligned.shape == (1,)
+    assert abs(vals_aligned[0]) < 1e-9
+
+    misaligned = dict(aligned)
+    misaligned["V"] = (3.0, 1.5)
+    vals_misaligned = spec.func(_coords_array(model, misaligned))
+    assert abs(vals_misaligned[0]) > 1e-6
+
+
+def test_concyclic_residual_vanishes_on_circle():
+    model = _build_model(
+        """
+        scene "Concyclic"
+        points A, B, C, D
+        concyclic (A, B, C, D)
+        """
+    )
+
+    spec = next(spec for spec in model.residuals if spec.key == "concyclic(A,B,C,D)")
+
+    circle_coords = {
+        "A": (1.0, 0.0),
+        "B": (0.0, 1.0),
+        "C": (-1.0, 0.0),
+        "D": (0.0, -1.0),
+    }
+    vals_circle = spec.func(_coords_array(model, circle_coords))
+    assert vals_circle.shape == (1,)
+    assert abs(vals_circle[0]) < 1e-9
+
+    off_circle = dict(circle_coords)
+    off_circle["D"] = (0.0, -1.5)
+    vals_off = spec.func(_coords_array(model, off_circle))
+    assert abs(vals_off[0]) > 1e-6
+
+
+def test_equal_angles_residual_matches_oriented_angles():
+    model = _build_model(
+        """
+        scene "Equal angles"
+        points A, B, C, D, E, F
+        equal-angles (A-B-C ; D-E-F)
+        """
+    )
+
+    spec = next(spec for spec in model.residuals if spec.key.startswith("equal_angles("))
+
+    coords = {
+        "A": (1.0, 0.0),
+        "B": (0.0, 0.0),
+        "C": (1.0, 1.0),
+        "D": (3.0, 0.0),
+        "E": (2.0, 0.0),
+        "F": (3.0, 1.0),
+    }
+    vals_equal = spec.func(_coords_array(model, coords))
+    assert vals_equal.shape == (2,)
+    assert np.max(np.abs(vals_equal)) < 1e-9
+
+    perturbed = dict(coords)
+    perturbed["F"] = (3.0, 1.5)
+    vals_perturbed = spec.func(_coords_array(model, perturbed))
+    assert np.max(np.abs(vals_perturbed)) > 1e-6
+
+
+def test_ratio_residual_enforces_length_ratio():
+    model = _build_model(
+        """
+        scene "Segment ratio"
+        points A, B, C, D
+        segment A-B
+        segment C-D
+        ratio (A-B : C-D = 2 : 3)
+        """
+    )
+
+    spec = next(spec for spec in model.residuals if spec.key.startswith("ratio("))
+
+    coords = {
+        "A": (0.0, 0.0),
+        "B": (2.0, 0.0),
+        "C": (4.0, 0.0),
+        "D": (4.0, 3.0),
+    }
+    vals_ratio = spec.func(_coords_array(model, coords))
+    assert vals_ratio.shape == (1,)
+    assert abs(vals_ratio[0]) < 1e-9
+
+    distorted = dict(coords)
+    distorted["D"] = (4.0, 2.0)
+    vals_distorted = spec.func(_coords_array(model, distorted))
+    assert abs(vals_distorted[0]) > 1e-6
+
+
 def test_translate_adds_min_separation_residual_for_segments():
     model = _build_model(
         """

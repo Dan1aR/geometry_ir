@@ -1,4 +1,5 @@
 from copy import deepcopy
+import math
 from typing import List
 
 from .ast import Program
@@ -53,6 +54,46 @@ def validate(prog: Program) -> None:
         elif k == 'equal_segments':
             if not s.data['lhs'] or not s.data['rhs']:
                 raise ValidationError(f'[line {s.span.line}, col {s.span.col}] equal-segments needs both sides non-empty')
+        elif k == 'collinear':
+            pts = s.data.get('points', [])
+            if len(pts) < 3:
+                raise ValidationError(f'[line {s.span.line}, col {s.span.col}] collinear requires at least three points')
+            if len(set(pts)) != len(pts):
+                raise ValidationError(f'[line {s.span.line}, col {s.span.col}] collinear points must be distinct')
+        elif k == 'concyclic':
+            pts = s.data.get('points', [])
+            if len(pts) < 4:
+                raise ValidationError(f'[line {s.span.line}, col {s.span.col}] concyclic requires at least four points')
+            if len(set(pts)) != len(pts):
+                raise ValidationError(f'[line {s.span.line}, col {s.span.col}] concyclic points must be distinct')
+        elif k == 'equal_angles':
+            lhs = s.data.get('lhs', [])
+            rhs = s.data.get('rhs', [])
+            if not lhs or len(lhs) != len(rhs):
+                raise ValidationError(f'[line {s.span.line}, col {s.span.col}] equal-angles requires matching angle lists')
+            for ang in list(lhs) + list(rhs):
+                if len(ang) != 3:
+                    raise ValidationError(f'[line {s.span.line}, col {s.span.col}] equal-angles entries must be triples')
+                if len(set(ang)) != 3:
+                    raise ValidationError(f'[line {s.span.line}, col {s.span.col}] equal-angles points must be distinct per angle')
+        elif k == 'ratio':
+            edges = s.data.get('edges', [])
+            ratio = s.data.get('ratio')
+            if not isinstance(edges, list) or len(edges) != 2:
+                raise ValidationError(f'[line {s.span.line}, col {s.span.col}] ratio requires two edges')
+            for edge in edges:
+                if len(edge) != 2 or edge[0] == edge[1]:
+                    raise ValidationError(f'[line {s.span.line}, col {s.span.col}] ratio edges must use distinct points')
+            if not isinstance(ratio, tuple) or len(ratio) != 2:
+                raise ValidationError(f'[line {s.span.line}, col {s.span.col}] ratio requires two numeric parts')
+            a, b = ratio
+            try:
+                fa = float(a)
+                fb = float(b)
+            except (TypeError, ValueError):
+                raise ValidationError(f'[line {s.span.line}, col {s.span.col}] ratio parts must be numeric') from None
+            if not math.isfinite(fa) or not math.isfinite(fb) or fa <= 0 or fb <= 0:
+                raise ValidationError(f'[line {s.span.line}, col {s.span.col}] ratio parts must be positive finite numbers')
         elif k == 'diameter':
             for key in s.opts:
                 raise ValidationError(

@@ -15,6 +15,7 @@ SYMBOLS = {
     ';': 'SEMI',
     '=': 'EQUAL',
     '*': 'STAR',
+    ':': 'COLON',
 }
 
 WS = ' \t\r'
