@@ -138,7 +138,7 @@ Only the keys below are interpreted. The parser rejects malformed option syntax;
 * `right-angle A-B-C [mark=square | label="..."]`
 * `equal-angles (...) [label="..."]`
 * `target angle A-B-C [label="..."]`
-* `target arc P-Q on circle center O [label="..."]`
+* `target arc P-Q on circle center O [label="?BT"]`
 
 ### Segments/Edges/Polygons
 
@@ -251,6 +251,14 @@ Let `v(P)` be the 2D variable of point `P`; `AB := v(B)−v(A)`, `×` = 2D cross
 * **Scale**: `scale` flows into the model; if no numeric scale is meaningful, a **unit-span gauge** is applied on an orientation edge.
 * **Min-separation**: global pairwise min distances (stronger for declared collinear sets), polygon edge floors, and lighter carrier floors are enforced via hinge residuals.
 
+**Anchor protection for seeding (initial guess).**
+The solver’s initial-guess routine **must not** disturb the primary orientation gauge edge selected by the layout (or by the compiler when applying a unit-span gauge). Concretely:
+
+1. Keep both endpoints of the primary gauge edge fixed at attempt `0`.
+2. On reseeds (`attempt > 0`), do **not** random-rotate the entire configuration if a primary gauge edge is present; explore with jitter only.
+3. Never jitter either endpoint of the primary gauge edge on any attempt.
+   This guarantees that gauges start satisfied and avoids spurious flips on near-degenerate scenes.
+
 ---
 
 ## 8) Validation rules (reject early)
@@ -307,6 +315,38 @@ class DerivationPlan(TypedDict):
     derived_points: Dict[str, FunctionalRule]  # computed on-the-fly
     ambiguous_points: List[str]     # remain variables (multi-root or branch)
     notes: List[str]
+```
+
+```python
+# NEW: Seeding (initial guess) API
+class SeedHint(TypedDict):
+    kind: Literal[
+        "on_path",          # point constrained to a Path
+        "intersect",        # point is intersection of two Paths
+        "length",           # numeric length for an edge
+        "equal_length",     # group of equal-length edges
+        "ratio",            # AB:CD = p:q
+        "parallel",         # AB ∥ CD
+        "perpendicular",    # AB ⟂ CD
+        "tangent",          # line tangent to circle at T
+        "concyclic"         # points share a circle (soft, optional)
+    ]
+    point: Optional[str]          # target point (if applies)
+    path: Optional[PathSpec]      # normalized Path (see §16.3)
+    path2: Optional[PathSpec]     # for 'intersect'
+    payload: Dict[str, Any]       # choose/anchor/ref, numeric p/q, lengths, etc.
+
+class SeedHints(TypedDict):
+    by_point: Dict[str, List[SeedHint]]
+    global_hints: List[SeedHint]  # equal_length groups, ratios, parallels, etc.
+
+def build_seed_hints(program: Program, plan: Optional[DerivationPlan]) -> SeedHints: ...
+
+def initial_guess(model: Model,
+                  rng: np.random.Generator,
+                  attempt: int,
+                  *,
+                  plan: Optional[DerivationPlan] = None) -> np.ndarray: ...
 ```
 
 ---
@@ -437,6 +477,8 @@ target point M
   `Solution { point_coords, success, max_residual, residual_breakdown, warnings }`, plus helpers to normalize coordinates for rendering.
 * **Algorithm**:
 
+  0. **Seeding**: compute an initial guess with the **seeding policy** defined in §18
+     (layout/gauges respected; uses `build_seed_hints()` and `plan` when available).
   1. **Pre-solve planning (default)**:
 
      * If no explicit plan was provided, call `plan_derive(program)` to obtain a `DerivationPlan`.
@@ -453,6 +495,7 @@ target point M
   3. **Solve**: minimize all residual groups using LSQ (`method="trf"`); reseed if necessary; score candidates by success then residual magnitude.
 * **Safety**: min-separation guards, edge floors, area floors, non-parallel margins for trapezoids, orientation gauges (prefer declared bases; otherwise unit-span).
 * **Plan guards**: if any `guard()` fails at the initial seed (e.g., near-parallel lines in a derived intersection), the compiler emits a **plan degradation warning** and **promotes** the affected point(s) to `ambiguous_points` (variables), then recompiles **once**. Variable dimensionality is fixed thereafter.
+* **Seeding guards**: the initial guess must respect primary gauge anchors (see §7) and avoid placing any polygon below its edge/area floors.
 
 ---
 
@@ -846,20 +889,20 @@ Each test case contains:
 for case in test_cases:
     program = parse_program(case.source)
     validate(program)
-    desugared = desugar(program)
+    desugar(program)
 
     # --- NEW: pre-solve planning & compilation
-    plan = plan_derive(desugared)
+    plan = plan_derive(program)
     if case.expect_var_drop is not None:
         assert variable_reduction(plan) >= case.expect_var_drop
-    model = compile_with_plan(desugared, plan)
+    model = compile_with_plan(program, plan)
     # demotion-on-guard-failure occurs once inside compile_with_plan at first evaluation
 
     solution = solve(model, tol=case.tol_solver)
     assert solution.success, "Solver did not converge"
     assert solution.max_residual <= case.tol_solver
 
-    report = derive_and_check(desugared, solution, tol=case.tol_ddc)
+    report = derive_and_check(program, solution, tol=case.tol_ddc)
     evaluate_ddc(report, allow_ambiguous=case.allow_ambiguous)
 ```
 
@@ -1027,5 +1070,191 @@ Use `force_parallel=True` to seed an almost-parallel `line A-B` and `line C-D`; 
 * Preserve the **symbolic** text for numbers like `sqrt(2)` / `3*sqrt(2)` for labels while using their numeric value in residuals.
 * Keep the validator’s dry “translate” to surface early failures with source spans.
 * Branch-picking options should compile to **small, scale-aware biases** (hinge terms) so they guide root selection without fighting metric constraints.
+
+---
+
+## 18) Initial Guess (Seeding) — Design & Requirements
+
+> **Rationale.** The previous initializer biased only a few AST cases (e.g., `point … on segment`) and inspected raw residual statements. We replace it with a **pluggable, data-driven seeding policy** that:
+>
+> * derives hints from the **desugared program** and the **DerivationPlan** (not from raw residual text),
+> * understands all **Path** forms (line, ray, segment, circle, perp-bisector, perpendicular-at, parallel-through, angle-bisector, median-from), and
+> * respects **gauges**, **choose=…** options, and basic metric relations (length, equal-length, ratio).
+
+### 18.0 Goals
+
+1. Start in a **non-degenerate** configuration that already satisfies gauges and is geometrically plausible.
+2. Use **deterministic derivations** (from **DDC-Plan**) to seed any single-valued points exactly; do **not** optimize what we can compute.
+3. Handle common authoring patterns: `point … on <Path>`, `intersect(Path, Path)`, tangency, equal lengths/ratios, parallels, perpendiculars, rays/segments clamping.
+4. Be **robust**: cheap O(n)–O(n log n) scans, no brittle branching on AST strings; work from normalized **PathSpec** and typed hints.
+5. Keep the **primary gauge edge fixed** across attempts; jitter others modestly; escalate jitter per attempt without random global rotations (when a gauge is present).
+
+### 18.1 Data sources
+
+Seeding operates on:
+
+* the **desugared** `Program`,
+* the **DerivationPlan** (when available) to mark **derived_points** vs **variables**,
+* the **normalized Path helpers** (§16.3),
+* compiled metadata: primary **gauge edge** and `layout.scale`.
+
+The compiler provides a `SeedHints` structure via `build_seed_hints()` that collects, per point:
+
+* `on_path` hints from `point P on <Path>`,
+* `intersect` hints from explicit `intersect(...) at P` **or** synthesized **On∩On** pairs (see §16.4-D),
+* metric/global hints: `length`, `equal_length` groups, `ratio`, `parallel`, `perpendicular`, `tangent`, `concyclic` (optional).
+  Soft selectors `choose=near|far|left|right|cw|ccw` with `anchor`/`ref` are attached in `payload`.
+
+### 18.2 Seeding algorithm (single attempt)
+
+Let `base = max(layout.scale, 1e-3)`. Let `(G1,G2)` be endpoints of the primary gauge edge if present.
+
+**Stage A — Canonical scaffold.**
+
+* Place `(G1,G2)` at canonical positions: `G1=(0,0)`, `G2=(base,0)`. If a third canonical vertex exists in the selected `layout` (e.g., `triangle_*`), place it above the base. Scatter other points on a small circle of radius `≈0.5·base` with blue-noise jitter (no global rotation).
+* Mark `G1,G2` **protected**: they must not be moved or jittered by later stages or reseeds.
+
+**Stage B — Deterministic derivations (Plan).**
+
+* For every `P ∈ plan.derived_points`, evaluate its rule (guarded). If the guard fails at the seed, skip here (the compiler will demote once per §13). Otherwise **write** `P`’s coordinates and (if `P` is still a variable in the model) use them as the starting guess.
+
+**Stage C — Path adherence for `on_path`.**
+For each variable point `P` with `on_path` hints:
+
+* **Line/Ray/Segment**: orthogonally project the current `P` onto the carrier line; for **Ray** clamp `t≥0`, for **Segment** clamp `t∈[0,1]`.
+* **Circle(O; r)**: if `O` and a radius witness exist, place `P = O + r·û` where `û` is chosen by:
+
+  * soft selectors (`choose=…` with `anchor`/`ref`),
+  * otherwise the direction from `O` to the nearest already-placed neighbor of `P` (if any),
+  * otherwise reuse `û` from the circle’s witness point.
+* **Perp-bisector(A,B)**: place near the midpoint `M=(A+B)/2`.
+* **PerpendicularAt(T; A,B)**, **ParallelThrough(P0; A,B)**, **MedianFrom(V; A,B)**, **AngleBisector(U,V,W)**: place on the carrier line through the appropriate anchor (use mid-t value for line-like paths).
+
+**Stage D — Intersections.**
+For each `intersect(Path1, Path2) at P` (including **On∩On** syntheses):
+
+* Compute candidates using the generic intersection solvers (§16.4-B). Apply **hard filters** (segment/ray membership; tangency and perpendicular checks when applicable).
+* If 2 candidates remain, apply **soft selectors** (`choose=…`) and, failing that, pick the candidate closest to `P`’s current coordinate. Write the chosen value into the guess.
+
+**Stage E — Metric nudges (length/equal/ratio).**
+
+* **Length** `‖AB‖=L`: if one endpoint is protected or already placed with high confidence, move the other endpoint onto the ray from the anchor by `L` (no movement if both endpoints protected).
+* **Equal-length** groups: pick a reference edge with non-zero current length; for each other edge, if one endpoint is “anchored” (protected or appears in multiple hints), place the free endpoint to match the reference length, with direction taken from:
+
+  * the averaged directions of any intersection/`on_path` targets involving that edge’s line-like carriers (if any),
+  * otherwise the current edge direction,
+  * otherwise the reference edge direction.
+* **Ratio** `AB:CD = p:q`: when three endpoints are reasonably positioned, place the fourth along its current direction to satisfy the ratio approximately.
+
+**Stage F — Parallels / Perpendiculars / Tangency.**
+
+* If edges `AB ∥ CD` and `CD` has a stable direction, rotate `AB`’s direction to match; nudge the non-anchored endpoint.
+* For `AB ⟂ CD`, rotate `AB` to the perpendicular of `CD`.
+* For known tangent line `X–Y` to circle center `O` at `T`, seed `T` as the foot of the orthogonal projection of `O` onto line `XY` (validated by `|‖OT‖−r| ≤ ε_tan`).
+
+**Stage G — Safety pass.**
+
+* Enforce **min-separation** and polygon **edge/area floors** at the seed by spreading any colliding points slightly along existing directions (without moving `G1,G2`).
+
+### 18.3 Reseed policy
+
+* **No global rotation when a gauge edge exists.** (If no gauge is present, a random rotation is allowed on `attempt>0`.)
+* Jitter is zero for `G1,G2` on **all** attempts. For other points:
+
+  * `attempt==0`: very small iid jitter (`≈1%·base`) except for `G1,G2`.
+  * `attempt>0`: Gaussian jitter with scale `σ_attempt = min(0.2, 0.05·(1+attempt))·base`, still clamped away from collisions by the safety pass.
+
+### 18.4 Implementation notes
+
+* **Do not** thread through raw `Stmt.kind` strings in the initializer. Build `SeedHints` during compilation:
+
+  * consume `Placement` and `Obj` forms directly from the **desugared** program,
+  * re-use Path normalization logic from §16.3,
+  * synthesize **On∩On** intersection hints (§16.4-D).
+* Prefer **constant-time** writes into the flat guess vector; maintain a scratch `coords[name]` map while seeding.
+* Respect `plan.derived_points`: if a point is deterministically computed at runtime, use that coordinate as the seed (even if the model still optimizes it for robustness).
+* Keep this module **pure**: no side effects on the `Model`; no randomness outside the passed `rng`.
+
+### 18.5 Public surface & backwards compatibility
+
+* `initial_guess(model, rng, attempt, *, plan=None)` becomes the single entry point used by the solver. Internally it calls `build_seed_hints()` if hints were not already attached to the `Model`.
+* The prior initializer’s behavior (equilateral scaffold + ad-hoc segment/line intersection seeding) is subsumed by **Stages A–D**.
+
+### 18.6 Tests (must-pass)
+
+Add seeding tests to the integration flow (see §17):
+
+1. **Gauge stability**
+
+   * Scene: any triangle with `layout=triangle_ABC`.
+   * Assert: on all attempts, the initial guess leaves `A,B` unchanged (within machine epsilon), no global rotation.
+
+2. **On∩On synthesis (line ∩ circle)**
+
+   ```
+   points A, B, O, P
+   line A-B
+   circle center O radius-through A
+   point P on line A-B
+   point P on circle center O
+   target point P
+   ```
+
+   * Assert: seed places `P` on (or very near) the analytical intersection, honoring `choose` if present.
+
+3. **Known tangent touchpoint (functional)**
+
+   ```
+   points X, Y, O, T
+   line X-Y
+   circle center O radius-through X
+   line X-Y tangent to circle center O at T
+   ```
+
+   * Assert: seed computes `T` by orthogonal projection; residual small before optimization.
+
+4. **Equal-length propagation**
+
+   ```
+   points A, B, C, D
+   segment A-B
+   segment C-D
+   segment A-B [length=3]
+   equal-segments (A-B ; C-D)
+   ```
+
+   * Assert: the free endpoint of `C-D` is placed at distance `≈3` from its anchor and aligned by available direction hints (stable when we add an `on_path` for `C-D`).
+
+5. **Ratio nudge**
+
+   ```
+   points A, B, C, D
+   segment A-B
+   segment C-D
+   ratio (A-B : C-D = 2 : 3)
+   ```
+
+   * Assert: if three endpoints are reasonably placed by earlier stages, the fourth is nudged along its direction to satisfy the ratio approximately.
+
+6. **Per-attempt jitter escalation**
+
+   * Run `initial_guess` for attempts `0,1,2`.
+   * Assert: `σ` increases, `A,B` remain fixed, no rotation when a gauge edge exists.
+
+### 18.7 Migration guidance (for implementers)
+
+* Remove initializer logic that inspects `spec.source.kind` directly; instead:
+
+  * extend the compiler to output `SeedHints` by walking **desugared** statements,
+  * normalize all `Path` payloads once (reuse §16.3 helpers),
+  * synthesize **On∩On** intersection hints (§16.4-D).
+* Replace bespoke `equal_segments` steering with the generic **Stage E** (reference edge + anchor-aware placement + direction averaging from hints).
+* Fix the reseed behavior: do **not** random-rotate when a gauge edge is present; never jitter protected gauge endpoints.
+* Keep the initial scaffold deterministic for `attempt==0`.
+
+### 18.8 Out-of-scope (future)
+
+* Using `concyclic` to estimate a circle center for seeding when no explicit center exists (possible via three-point least squares). Optional; not required for v1.
+* Using `equal-angles` to orient directions at the seed (non-trivial; defer).
 
 ---
