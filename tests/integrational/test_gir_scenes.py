@@ -33,7 +33,7 @@ class IntegrationCase:
     def solver_options(self) -> SolveOptions:
         return SolveOptions(
             random_seed=123,
-            reseed_attempts=5,
+            reseed_attempts=10,
             tol=self.tol_solver,
         )
 

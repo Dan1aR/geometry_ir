@@ -501,14 +501,14 @@ def derive_and_check(program: Program, solution: Solution, *, tol=None) -> Deriv
    * **Base points**: those that **cannot** be uniquely derived from any rule given current knowledge (they must be provided by the solver). These appear at layer 0.
    * Higher layers contain points derivable from earlier layers. Cycles are broken by leaving involved points as base (no derivation).
 
-4. **Evaluate (derive coordinates)**
+**4. Evaluate (derive coordinates)**
 
-   * For each point in topo order, execute its **derivation rule(s)** (see §16.4).
-   * A rule may produce **1** or **2** candidates; for 2‑candidate rules, apply **filters**:
+* For each point in topo order, execute its **derivation rule(s)** (see §16.4).
+* A rule may produce **1** or **2** candidates; for 2‑candidate rules, apply **filters**:
 
-     * hard filters: ray/segment membership, `diameter` reflection, declared ordering constraints that are *hard* (e.g., “on segment”, “between”).
-     * soft selectors from **options**: `choose=near|far` (w.r.t. `anchor=P`), `choose=left|right` (w.r.t. oriented `ref=A-B`), `choose=cw|ccw` (around `anchor`, optionally `ref`), see §4.
-   * If >1 candidates remain, leave them all and set `chosen_by="closest-to-solver"` **only** for the comparison step (we do not collapse the set permanently).
+  * hard filters: ray/segment membership, perpendicular/parallel/tangency guards, `diameter` reflection, declared ordering constraints that are *hard* (e.g., “on segment”, “between”).
+  * **on∩on synthesis**: if a point is separately constrained to lie on two Paths (via two `point … on …` facts), synthesize an **intersection rule** for those two Paths on the fly (see §16.4, “On∩On synthetic rules”).
+  * soft selectors from **options**: `choose=near|far`, `choose=left|right`, `choose=cw|ccw` (see §4).
 
 5. **Compare against solver coordinates**
 
@@ -534,14 +534,20 @@ To compute candidates deterministically, DDC needs exact parameterizations of ba
 
 **Path helpers** (used internally to form `Path` instances):
 
-* `PerpBisector(A,B)`: passes through `M=(A+B)/2`, direction `(B−A)⊥`.
+* `Line(A,B)`: passes through A, direction `B−A`.
+* `Ray(A,B)`: `Line(A,B)` with parameter `t≥0`.
+* `Segment(A,B)`: `Line(A,B)` with parameter `t∈[0,1]`.
+* `Circle(O; r)`: `center=O`, `r=‖R−O‖` where `R` is that circle’s `radius-through` witness.
+* `PerpBisector(A,B)`: passes mid `M=(A+B)/2`, direction `(B−A)⊥`.
 * `ParallelThrough(P; A,B)`: line through `P` with direction `B−A`.
 * `PerpendicularAt(T; A,B)`: line through `T` with direction `(B−A)⊥`.
-* `AngleBisector(U,V,W, external=False)`: at `V`, bisects oriented angle `(VU, VW)`; `external` flips direction.
+* `AngleBisector(U,V,W, external=False)`: at `V`, bisects oriented angle `(VU, VW)`; if `external=True` use external bisector. Direction `dir = ( (U−V)/‖U−V‖ + s*(W−V)/‖W−V‖ )`, with `s=+1` (internal) or `s=−1` (external); if `dir≈0`, declare degenerate.
+* **`MedianFrom(P; A,B)`**: line through vertex `P` and midpoint `M=(A+B)/2`.
+* **`TangentLineAt(T; O)`**: line through `T` with direction `(T−O)⊥` (well‑defined if `T≠O`).
 
 ---
 
-### 16.4 Derivation rule library
+## 16.4 Derivation rule library
 
 Each rule is implemented as:
 
@@ -549,70 +555,95 @@ Each rule is implemented as:
 @dataclass
 class Rule:
     name: str
-    inputs: Set[Symbol]   # required known points/paths
+    inputs: Set[Symbol]   # required known points/paths/facts
     produces: Symbol      # point being derived
     multiplicity: Literal[1,2]
     solver: Callable[..., List[Point]]  # returns candidate coordinates
-    filters: List[Callable[..., None]]  # optional hard filters (segment/ray membership, etc.)
+    filters: List[Callable[..., None]]  # hard filters (segment/ray/tangency/parallel/etc.)
     soft_selectors: List[str]           # uses program opts: choose/anchor/ref
 ```
 
-**Core rules (unique)**
+### A. Core unique rules
 
-1. **Midpoint** — `midpoint M of A-B`
+1. **Midpoint** — from `midpoint M of A-B`
    `M = (A + B) / 2`.
 
-2. **Foot of perpendicular** — `foot H from X to A-B`
+2. **Foot of perpendicular** — from `foot H from X to A-B`
    Let `u = B−A`, `t = ((X−A)·u) / (u·u)`, `H = A + t·u`.
 
-3. **Diameter reflection** — `diameter A-B to circle center O`
-   If one endpoint known and `O` known, derive the other: `B = 2O − A` (or `A = 2O − B`).
+3. **Diameter reflection** — from `diameter A-B to circle center O`
+   If one endpoint and `O` are known: `B = 2O − A` (or symmetrically `A = 2O − B`).
 
-4. **Incenter (triangle)** — from `incircle of A-B-C`
-   `I = intersect(bisector at A, bisector at B)`, using normalized direction bisectors.
+4. **Center from diameter endpoints** — from `diameter A-B to circle center O`
+   If `A` and `B` known: **derive** `O = (A + B) / 2`.
 
-5. **Circumcenter (triangle)** — from `circumcircle of A-B-C` or `circle through (A,B,C)`
-   `O = intersect(PerpBisector(AB), PerpBisector(AC))`.
+5. **Incenter (triangle)** — from `incircle of A-B-C`
+   `I = intersect(AngleBisector(B,A,C), AngleBisector(A,B,C))` (internal bisectors).
 
-**Intersection rules (may be 1 or 2 candidates)**
+6. **Circumcenter (triangle)** — from `circumcircle of A-B-C` or `circle through (A,B,C)`
+   `O = intersect(PerpBisector(A,B), PerpBisector(A,C))`.
 
-6. **Intersect(line, line)** — solve 2×2 linear system; unique unless parallel/collinear.
+7. **Midpoint from equal segments + collinearity** — from
+   `collinear(A,M,B)` **and** `equal-segments (A-M ; M-B)` (or included in a group)
+   Derive `M = (A + B)/2`. If multiple equalities are present, verify consistency.
 
-7. **Intersect(line, ray/segment)** — compute line–line intersection, then **hard filter** by parameter range on ray/segment.
+### B. Intersection rules (generic; may be 1 or 2 candidates)
 
-8. **Intersect(ray/segment, ray/segment)** — idem.
+These operate on any **line‑like** path (Line, Ray, Segment, PerpBisector, ParallelThrough, PerpendicularAt, AngleBisector, MedianFrom, TangentLineAt), plus Circle:
 
-9. **Intersect(line, circle)** — quadratic in `t` on line param; **0/1/2** candidates; ray/segment filters apply.
+8. **Intersect(line‑like, line‑like)** — unique unless parallel/collinear; apply **ray/segment** parameter filters.
 
-10. **Intersect(circle, circle)** — classic two‑circle intersection; 0/1/2 candidates.
+9. **Intersect(line‑like, circle)** — quadratic along the line parameter; **0/1/2** candidates; apply **ray/segment** filters.
 
-11. **Angle‑bisector with line/ray/segment** — parametric line of bisector with filters.
+10. **Intersect(circle, circle)** — classic two‑circle intersection; **0/1/2** candidates.
 
-**Tangency rules**
+> Special cases such as **Angle‑bisector ∩ (line|circle)** or **Median ∩ …** are covered by 8–9 after parameterizing the path (see §16.3). No separate bespoke rules are required.
 
-12. **Tangent from external point to known circle** —
-    From `line A-P tangent to circle center O at P` derive `P`.
-    Let `d = A−O`, `D2 = ‖d‖²`, `r = radius`. If `D2 ≤ r²` → no real tangent.
-    Tangency points:
+### C. Tangency rules (completed)
 
-    ```
-    k = r^2 / D2
-    h = r*sqrt(D2 - r^2) / D2
-    P± = O + k*d ± h * d⊥
-    ```
+11. **Tangent from external point to circle** — from
+    `line A-P tangent to circle center O at P` (A known, O known, circle has witness `r`)
+    Let `d = A−O`, `D2 = ‖d‖²`. If `D2 ≤ r²`: **no real tangent**. Else
 
-    **Multiplicity 2**; apply `choose=...` soft selectors and ray/segment filters if present.
+```
+k = r^2 / D2
+h = r*sqrt(D2 - r^2) / D2
+P± = O + k*d ± h * d⊥
+```
 
-13. **Point on circle + perpendicular at touchpoint** —
-    For `tangent at T to circle center O`, if the tangent line’s second point is known and `T` unknown but constrained to a line/ray/segment, intersect that carrier with the circle(s) as above and filter by perpendicularity.
+Multiplicity **2**; apply soft selectors (`choose=near|far|left|right|cw|ccw`) and membership filters if the “tangent line” is further constrained to a ray/segment.
 
-**Equal‑angles / collinear / concyclic (used as filters/guards)**
+12. **Touchpoint from known tangent line** — from
+    `line X-Y tangent to circle center O at T` (X,Y,O known; r known)
+    Compute the **foot of O on line XY**: let `v=Y−X`, `t = ((O−X)·v)/(v·v)`, `T0 = X + t·v`.
+    Validate `|‖T0−O‖ − r| ≤ ε_tan` (scale‑aware). If valid, **unique** candidate `T=T0`; else **degenerate** (report).
 
-* `collinear(P1,...,Pn)` — used to *reduce* candidate sets by checking cross( P1P2, P1Pi ) ≈ 0.
-* `concyclic(P1,...,Pn)` — used to validate a constructed circle and prune candidates.
-* `equal-angles(...)` — used to reject wrong branch if angle equality is present.
+13. **Touchpoint from tangent direction at T** — from
+    `tangent at T to circle center O` **and** a second constraint placing `T` on a **line‑like** carrier `ℓ` (e.g., `point T on line A-B` / `ray` / `segment`)
+    Compute `T = intersect(ℓ, Circle(O; r))`. Keep only solutions that satisfy `OT ⟂ ℓ`. Multiplicity **≤2**, then filtered to **≤1** by the perpendicular guard.
 
-> The initial library above is sufficient to cover 95% of olympiad‑style derivations we encode today. Rules are **pluggable**; you can register more without changing the framework.
+14. **Tangent line through a given point (line unknown)** — from
+    `point A on tangent at T to circle center O` with unknown `T` (expressed together as: `line A-T tangent to circle center O at T`).
+    This is a thin wrapper around Rule 11 producing the same `T±`. If the script additionally says `point T on (ray/segment A-?)`, apply hard membership filters.
+
+### D. On∩On **synthetic** rules (new)
+
+These rules are **synthesized** when the fact base contains **two independent `point P on <Path>`** constraints for the same `P` (even if the source script didn’t use an explicit `intersect(...)` statement):
+
+15. **On∩On: line‑like ∩ line‑like** — produce unique intersection unless parallel/collinear; **ray/segment** filters apply.
+
+16. **On∩On: line‑like ∩ circle** — as in rule 9 (with ray/segment filters).
+
+17. **On∩On: circle ∩ circle** — as in rule 10.
+
+18. **On∩On with tangent guard** — if one of the two paths is a **TangentLineAt(T;O)** or equivalent constraint (from `tangent at T …`) and the other is **line‑like**, keep only candidates that satisfy `OT ⟂` (other line’s direction at `T`).
+
+> These synthetic rules are crucial because authors often write two `point … on …` lines instead of a single `intersect(...) … at …`. DDC should not force a particular authoring style.
+
+### E. Filters & selectors (unchanged, expanded by context)
+
+* **Hard filters**: ray/segment membership; perpendicular/parallel/tangency checks; “between” constraints; diameter reflection; circle membership with the correct witness `r`; **touchpoint validation** (`|‖OT‖−r|≤ε_tan`).
+* **Soft selectors**: `choose=near|far anchor=Q`, `choose=left|right ref=A-B`, `choose=cw|ccw anchor=Q [ref=A-B]`. Tangency rules honor these to pick one of the two tangents.
 
 ---
 
@@ -637,7 +668,8 @@ class Rule:
 ### 16.6 Comparison policy & tolerances
 
 * Compute `scene_scale = max(1.0, diag(bounding_box(points)))`.
-* Default `tol = 1e-6 * scene_scale` (configurable).
+* Default `tol = 1e-6 * scene_scale`.
+  Tangency validation uses `ε_tan = 5 * tol` (slightly looser to absorb projection noise).
 * A point *matches* if its solver coordinate is within `tol` of any candidate.
 * If multiple rules derive the same point, all must agree (pairwise distance ≤ `tol`) or the point is flagged `mismatch (conflicting rules)`.
 
@@ -656,9 +688,10 @@ class Rule:
 
 ### 16.8 Failure modes & messages
 
-* **Degenerate inputs** (parallel lines, concentric circles, `‖A−O‖ ≤ r` for tangency): emit a precise message alongside the rule name and the offending quantities.
-* **Ambiguous** (multiple candidates survive hard filters and no soft selector): mark point `ambiguous`, include all candidates.
-* **Mismatch** (solver point not within `tol` of any candidate): report the min distance and the candidate set.
+* **Degenerate inputs**: parallel lines, concentric circles, `‖A−O‖ ≤ r` for tangency; for rule 12, `|dist(O, line XY) − r| > ε_tan`.
+* **Ambiguous**: multiple candidates survive hard filters and no soft selector.
+* **Mismatch**: solver point not within `tol` of any candidate.
+* **On∩On unsupported pair**: if two `on` constraints reduce to the **same** path (e.g., both `point P on line A-B`) with no second independent path, mark **not derivable**.
 
 ---
 
@@ -732,6 +765,7 @@ Each test case contains:
 
 ### 17.2 Execution pipeline
 
+> The DDC engine now **auto‑synthesizes** On∩On intersection rules (§16.4‑D) and supports the complete tangency suite (§16.4‑C). Existing tests continue to pass; additional cases gain coverage.
 ```
 for case in test_cases:
     program = parse_program(case.source)
@@ -788,6 +822,12 @@ This helps identify mirror or wrong-branch errors.
   ✅ Solver converged (residual 1.0e-8)
   ❌ DDC mismatch: Point C off by 0.04
   ```
+* DDC must validate **touchpoints** from:
+
+  * `line X-Y tangent to circle center O at T` (unique via foot‑projection).
+  * `line A-T tangent … at T` (two candidates from external point).
+* DDC must derive points constrained by **two `on` statements** (line/line, line/circle, circle/circle).
+* Bisector/median paths used in `intersect(...)` or via On∩On must be handled as **line‑like** paths.
 
 ---
 
@@ -813,6 +853,7 @@ These files are stored in `/tmp/geoscript_tests/<case_id>/` by default.
 | Max geometric deviation                 | ≤ 5e-6 × scene_scale |
 
 Any higher deviation fails the build and triggers a geometry-branch regression.
+> Tangency validations use `ε_tan = 5×tol_ddc` internally for the “distance to circle equals r” check; the **point match** still uses `tol_ddc`.
 
 ---
 
