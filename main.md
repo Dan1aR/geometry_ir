@@ -1,3 +1,11 @@
+# geoscript-ir
+
+**GeoScript IR** is a parser, validator, and desugarer for a small DSL describing **2D Euclidean geometry scenes**.
+It turns human-readable problem statements into a canonical intermediate representation that can later feed a numeric solver for automatic **nice** points positioning and TikZ generation.
+
+## BNF
+
+```
 Program   := { Stmt }
 Stmt      := Scene | Layout | Points | Obj | Placement | Annot | Target | Rules | Comment
 
@@ -64,3 +72,10 @@ Angle3    := ID '-' ID '-' ID
 
 Opts      := '[' KeyVal { ' ' KeyVal } ']'
 KeyVal    := KEY '=' (VALUE | STRING)
+
+```
+
+### Numeric solver (GeometryIR → SciPy)
+
+The `geoscript_ir.solver` module compiles validated GeoScript into a
+numeric model and optimizes the residuals with `scipy.optimize.least_squares`.
