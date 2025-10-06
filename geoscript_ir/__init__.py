@@ -19,6 +19,7 @@ from .solver import (
     normalize_point_coords,
     score_solution
 )
+from .ddc import derive_and_check
 
 __all__ = [
     'parse_program',
@@ -39,6 +40,7 @@ __all__ = [
     'Solution',
     'VariantSolveResult',
     'normalize_point_coords',
+    'derive_and_check',
     'Program',
     'Stmt',
     'Span',
