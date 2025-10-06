@@ -10,8 +10,9 @@ Drop-in replacement:
 - Unit-span gauge on orientation edge when no numeric scale is present
 """
 
+import re
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple, TypedDict
 import math
 import numbers
 
@@ -23,6 +24,604 @@ from .ast import Program, Stmt
 PointName = str
 Edge = Tuple[str, str]
 ResidualFunc = Callable[[np.ndarray], np.ndarray]
+
+
+class FunctionalRuleError(RuntimeError):
+    """Raised when a deterministic derivation rule cannot be evaluated."""
+
+
+@dataclass
+class FunctionalRule:
+    """Deterministic rule used to derive a point from other points."""
+
+    name: str
+    inputs: List[PointName]
+    compute: Callable[[Dict[PointName, Tuple[float, float]]], Tuple[float, float]]
+    source: str
+
+
+class DerivationPlan(TypedDict, total=False):
+    base_points: List[PointName]
+    derived_points: Dict[PointName, FunctionalRule]
+    ambiguous_points: List[PointName]
+    notes: List[str]
+
+
+_POINT_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
+
+def _is_point_name(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    if not value:
+        return False
+    return bool(_POINT_NAME_RE.match(value))
+
+
+def _register_point_name(order: List[PointName], seen: Set[PointName], name: PointName) -> None:
+    if name not in seen:
+        seen.add(name)
+        order.append(name)
+
+
+def _gather_point_names(obj: object, register: Callable[[PointName], None]) -> None:
+    if isinstance(obj, dict):
+        for value in obj.values():
+            _gather_point_names(value, register)
+        return
+    if isinstance(obj, (list, tuple)):
+        for value in obj:
+            _gather_point_names(value, register)
+        return
+    if _is_point_name(obj):
+        register(obj)
+
+
+def _collect_point_order(program: Program) -> List[PointName]:
+    order: List[PointName] = []
+    seen: Set[PointName] = set()
+
+    for stmt in program.stmts:
+        if stmt.kind == "points":
+            ids = stmt.data.get("ids", [])
+            if isinstance(ids, (list, tuple)):
+                for name in ids:
+                    if _is_point_name(name):
+                        _register_point_name(order, seen, name)
+
+    for stmt in program.stmts:
+        _gather_point_names(stmt.data, lambda name: _register_point_name(order, seen, name))
+        _gather_point_names(stmt.opts, lambda name: _register_point_name(order, seen, name))
+
+    return order
+
+
+def _vec2(a: Tuple[float, float], b: Tuple[float, float]) -> Tuple[float, float]:
+    return b[0] - a[0], b[1] - a[1]
+
+
+def _dot2(a: Tuple[float, float], b: Tuple[float, float]) -> float:
+    return a[0] * b[0] + a[1] * b[1]
+
+
+def _cross2(a: Tuple[float, float], b: Tuple[float, float]) -> float:
+    return a[0] * b[1] - a[1] * b[0]
+
+
+def _norm_sq2(v: Tuple[float, float]) -> float:
+    return _dot2(v, v)
+
+
+def _norm2(v: Tuple[float, float]) -> float:
+    return math.sqrt(max(_norm_sq2(v), 0.0))
+
+
+def _midpoint2(a: Tuple[float, float], b: Tuple[float, float]) -> Tuple[float, float]:
+    return (a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5
+
+
+def _rotate90(v: Tuple[float, float]) -> Tuple[float, float]:
+    return -v[1], v[0]
+
+
+@dataclass
+class _LineLikeSpec:
+    anchor: Tuple[float, float]
+    direction: Tuple[float, float]
+    kind: str  # "line", "segment", "ray"
+
+
+def _path_dependencies_for_plan(path: object) -> Set[str]:
+    deps: Set[str] = set()
+    if not isinstance(path, tuple) or len(path) != 2:
+        return deps
+    kind, payload = path
+    if kind in {"line", "segment", "ray"}:
+        if isinstance(payload, (list, tuple)):
+            for name in payload:
+                if _is_point_name(name):
+                    deps.add(name)
+        return deps
+    if kind == "perp-bisector":
+        if isinstance(payload, (list, tuple)):
+            for name in payload:
+                if _is_point_name(name):
+                    deps.add(name)
+        return deps
+    if kind == "perpendicular":
+        if isinstance(payload, dict):
+            at = payload.get("at")
+            if _is_point_name(at):
+                deps.add(at)
+            ref = payload.get("to")
+            if isinstance(ref, (list, tuple)):
+                for name in ref:
+                    if _is_point_name(name):
+                        deps.add(name)
+        return deps
+    if kind == "parallel":
+        if isinstance(payload, dict):
+            through = payload.get("through")
+            if _is_point_name(through):
+                deps.add(through)
+            ref = payload.get("to")
+            if isinstance(ref, (list, tuple)):
+                for name in ref:
+                    if _is_point_name(name):
+                        deps.add(name)
+        return deps
+    if kind == "angle-bisector":
+        if isinstance(payload, dict):
+            pts = payload.get("points")
+            if isinstance(pts, (list, tuple)):
+                for name in pts:
+                    if _is_point_name(name):
+                        deps.add(name)
+        return deps
+    if kind == "median":
+        if isinstance(payload, dict):
+            frm = payload.get("frm")
+            if _is_point_name(frm):
+                deps.add(frm)
+            to = payload.get("to")
+            if isinstance(to, (list, tuple)):
+                for name in to:
+                    if _is_point_name(name):
+                        deps.add(name)
+        return deps
+    return deps
+
+
+def _resolve_line_like(path: object, coords: Dict[PointName, Tuple[float, float]]) -> Optional[_LineLikeSpec]:
+    if not isinstance(path, tuple) or len(path) != 2:
+        return None
+    kind, payload = path
+    if kind in {"line", "segment", "ray"}:
+        if not (isinstance(payload, (list, tuple)) and len(payload) == 2):
+            return None
+        a_name, b_name = payload
+        if a_name not in coords or b_name not in coords:
+            return None
+        a = coords[a_name]
+        b = coords[b_name]
+        direction = _vec2(a, b)
+        if _norm_sq2(direction) <= 1e-12:
+            return None
+        return _LineLikeSpec(anchor=a, direction=direction, kind=kind)
+    if kind == "perp-bisector":
+        if not (isinstance(payload, (list, tuple)) and len(payload) == 2):
+            return None
+        a_name, b_name = payload
+        if a_name not in coords or b_name not in coords:
+            return None
+        a = coords[a_name]
+        b = coords[b_name]
+        mid = _midpoint2(a, b)
+        direction = _rotate90(_vec2(a, b))
+        if _norm_sq2(direction) <= 1e-12:
+            return None
+        return _LineLikeSpec(anchor=mid, direction=direction, kind="line")
+    if kind == "perpendicular":
+        if not isinstance(payload, dict):
+            return None
+        at = payload.get("at")
+        ref = payload.get("to")
+        if not (_is_point_name(at) and isinstance(ref, (list, tuple)) and len(ref) == 2):
+            return None
+        if at not in coords or ref[0] not in coords or ref[1] not in coords:
+            return None
+        base_dir = _vec2(coords[ref[0]], coords[ref[1]])
+        direction = _rotate90(base_dir)
+        if _norm_sq2(direction) <= 1e-12:
+            return None
+        return _LineLikeSpec(anchor=coords[at], direction=direction, kind="line")
+    if kind == "parallel":
+        if not isinstance(payload, dict):
+            return None
+        through = payload.get("through")
+        ref = payload.get("to")
+        if not (_is_point_name(through) and isinstance(ref, (list, tuple)) and len(ref) == 2):
+            return None
+        if through not in coords or ref[0] not in coords or ref[1] not in coords:
+            return None
+        direction = _vec2(coords[ref[0]], coords[ref[1]])
+        if _norm_sq2(direction) <= 1e-12:
+            return None
+        return _LineLikeSpec(anchor=coords[through], direction=direction, kind="line")
+    if kind == "angle-bisector":
+        if not isinstance(payload, dict):
+            return None
+        pts = payload.get("points")
+        if not (isinstance(pts, (list, tuple)) and len(pts) == 3):
+            return None
+        a_name, v_name, c_name = pts
+        if a_name not in coords or v_name not in coords or c_name not in coords:
+            return None
+        v = coords[v_name]
+        va = _vec2(v, coords[a_name])
+        vc = _vec2(v, coords[c_name])
+        na = _norm2(va)
+        nc = _norm2(vc)
+        if na <= 1e-12 or nc <= 1e-12:
+            return None
+        va_unit = (va[0] / na, va[1] / na)
+        vc_unit = (vc[0] / nc, vc[1] / nc)
+        direction = (va_unit[0] + vc_unit[0], va_unit[1] + vc_unit[1])
+        if _norm_sq2(direction) <= 1e-12:
+            return None
+        return _LineLikeSpec(anchor=v, direction=direction, kind="line")
+    if kind == "median":
+        if not isinstance(payload, dict):
+            return None
+        frm = payload.get("frm")
+        to = payload.get("to")
+        if not (_is_point_name(frm) and isinstance(to, (list, tuple)) and len(to) == 2):
+            return None
+        if frm not in coords or to[0] not in coords or to[1] not in coords:
+            return None
+        midpoint = _midpoint2(coords[to[0]], coords[to[1]])
+        direction = _vec2(coords[frm], midpoint)
+        if _norm_sq2(direction) <= 1e-12:
+            return None
+        return _LineLikeSpec(anchor=coords[frm], direction=direction, kind="line")
+    return None
+
+
+def _intersect_line_specs(a: _LineLikeSpec, b: _LineLikeSpec) -> Optional[Tuple[Tuple[float, float], float, float]]:
+    denom = _cross2(a.direction, b.direction)
+    if abs(denom) <= 1e-12:
+        return None
+    diff = (b.anchor[0] - a.anchor[0], b.anchor[1] - a.anchor[1])
+    t_a = _cross2(diff, b.direction) / denom
+    t_b = _cross2(diff, a.direction) / denom
+    point = (a.anchor[0] + t_a * a.direction[0], a.anchor[1] + t_a * a.direction[1])
+    return point, t_a, t_b
+
+
+def _rule_source(stmt: Stmt) -> str:
+    return stmt.origin or stmt.kind
+
+
+def _ensure_inputs(coords: Dict[PointName, Tuple[float, float]], inputs: Iterable[PointName]) -> None:
+    for name in inputs:
+        if name not in coords:
+            raise FunctionalRuleError(f"missing input {name}")
+
+
+def _add_candidate(
+    table: Dict[PointName, List[FunctionalRule]],
+    point: Optional[PointName],
+    rule: Optional[FunctionalRule],
+) -> None:
+    if point is None or rule is None:
+        return
+    if point not in table:
+        table[point] = []
+    table[point].append(rule)
+
+
+def _midpoint_rule(stmt: Stmt) -> Optional[Tuple[PointName, FunctionalRule]]:
+    midpoint = stmt.data.get("midpoint")
+    edge = stmt.data.get("edge") or stmt.data.get("to")
+    if not (_is_point_name(midpoint) and isinstance(edge, (list, tuple)) and len(edge) == 2):
+        return None
+    a, b = edge
+    if not (_is_point_name(a) and _is_point_name(b)):
+        return None
+
+    inputs = [a, b]
+
+    def compute(coords: Dict[PointName, Tuple[float, float]]) -> Tuple[float, float]:
+        _ensure_inputs(coords, inputs)
+        return _midpoint2(coords[a], coords[b])
+
+    rule = FunctionalRule(
+        name=f"midpoint({midpoint})",
+        inputs=inputs,
+        compute=compute,
+        source=_rule_source(stmt),
+    )
+    return midpoint, rule
+
+
+def _foot_rule(stmt: Stmt) -> Optional[Tuple[PointName, FunctionalRule]]:
+    foot = stmt.data.get("foot")
+    src = stmt.data.get("from") or stmt.data.get("at")
+    edge = stmt.data.get("edge") or stmt.data.get("to")
+    if not (
+        _is_point_name(foot)
+        and _is_point_name(src)
+        and isinstance(edge, (list, tuple))
+        and len(edge) == 2
+        and _is_point_name(edge[0])
+        and _is_point_name(edge[1])
+    ):
+        return None
+    a, b = edge
+    inputs = [a, b, src]
+
+    def compute(coords: Dict[PointName, Tuple[float, float]]) -> Tuple[float, float]:
+        _ensure_inputs(coords, inputs)
+        base_a = coords[a]
+        base_b = coords[b]
+        direction = _vec2(base_a, base_b)
+        denom = _norm_sq2(direction)
+        if denom <= 1e-12:
+            raise FunctionalRuleError("base edge degenerate")
+        vertex = coords[src]
+        t = _dot2(_vec2(base_a, vertex), direction) / denom
+        return base_a[0] + t * direction[0], base_a[1] + t * direction[1]
+
+    rule = FunctionalRule(
+        name=f"foot({foot})",
+        inputs=inputs,
+        compute=compute,
+        source=_rule_source(stmt),
+    )
+    return foot, rule
+
+
+def _diameter_rules(stmt: Stmt) -> List[Tuple[PointName, FunctionalRule]]:
+    center = stmt.data.get("center")
+    edge = stmt.data.get("edge")
+    results: List[Tuple[PointName, FunctionalRule]] = []
+    if not (
+        _is_point_name(center)
+        and isinstance(edge, (list, tuple))
+        and len(edge) == 2
+        and _is_point_name(edge[0])
+        and _is_point_name(edge[1])
+    ):
+        return results
+    a, b = edge
+
+    def center_compute(coords: Dict[PointName, Tuple[float, float]]) -> Tuple[float, float]:
+        _ensure_inputs(coords, [a, b])
+        return _midpoint2(coords[a], coords[b])
+
+    results.append(
+        (
+            center,
+            FunctionalRule(
+                name=f"diameter:center({center})",
+                inputs=[a, b],
+                compute=center_compute,
+                source=_rule_source(stmt),
+            ),
+        )
+    )
+
+    def make_endpoint_rule(target: PointName, known: PointName) -> FunctionalRule:
+        inputs = [center, known]
+
+        def compute(coords: Dict[PointName, Tuple[float, float]]) -> Tuple[float, float]:
+            _ensure_inputs(coords, inputs)
+            c = coords[center]
+            k = coords[known]
+            return 2.0 * c[0] - k[0], 2.0 * c[1] - k[1]
+
+        return FunctionalRule(
+            name=f"diameter:reflect({target})",
+            inputs=inputs,
+            compute=compute,
+            source=_rule_source(stmt),
+        )
+
+    results.append((a, make_endpoint_rule(a, b)))
+    results.append((b, make_endpoint_rule(b, a)))
+    return results
+
+
+def _line_intersection_rule(
+    point: Optional[PointName],
+    path1: object,
+    path2: object,
+    stmt: Stmt,
+) -> Optional[Tuple[PointName, FunctionalRule]]:
+    if not _is_point_name(point):
+        return None
+    deps = _path_dependencies_for_plan(path1) | _path_dependencies_for_plan(path2)
+    if not deps:
+        return None
+    inputs = sorted(deps)
+
+    def compute(coords: Dict[PointName, Tuple[float, float]]) -> Tuple[float, float]:
+        _ensure_inputs(coords, inputs)
+        spec1 = _resolve_line_like(path1, coords)
+        spec2 = _resolve_line_like(path2, coords)
+        if spec1 is None or spec2 is None:
+            raise FunctionalRuleError("paths unavailable")
+        result = _intersect_line_specs(spec1, spec2)
+        if result is None:
+            raise FunctionalRuleError("paths nearly parallel")
+        pt, t1, t2 = result
+        if spec1.kind == "segment" and not (-1e-9 <= t1 <= 1.0 + 1e-9):
+            raise FunctionalRuleError("intersection outside segment")
+        if spec1.kind == "ray" and t1 < -1e-9:
+            raise FunctionalRuleError("intersection outside ray")
+        if spec2.kind == "segment" and not (-1e-9 <= t2 <= 1.0 + 1e-9):
+            raise FunctionalRuleError("intersection outside segment")
+        if spec2.kind == "ray" and t2 < -1e-9:
+            raise FunctionalRuleError("intersection outside ray")
+        return pt
+
+    rule = FunctionalRule(
+        name=f"intersect({point})",
+        inputs=inputs,
+        compute=compute,
+        source=_rule_source(stmt),
+    )
+    return point, rule
+
+
+def _line_tangent_rule(stmt: Stmt) -> Optional[Tuple[PointName, FunctionalRule]]:
+    center = stmt.data.get("center")
+    at = stmt.data.get("at")
+    edge = stmt.data.get("edge")
+    if not (
+        _is_point_name(center)
+        and _is_point_name(at)
+        and isinstance(edge, (list, tuple))
+        and len(edge) == 2
+        and _is_point_name(edge[0])
+        and _is_point_name(edge[1])
+    ):
+        return None
+    a, b = edge
+    inputs = [center, a, b]
+
+    def compute(coords: Dict[PointName, Tuple[float, float]]) -> Tuple[float, float]:
+        _ensure_inputs(coords, inputs)
+        base = coords[a]
+        direction = _vec2(base, coords[b])
+        denom = _norm_sq2(direction)
+        if denom <= 1e-12:
+            raise FunctionalRuleError("tangent edge degenerate")
+        center_pt = coords[center]
+        t = _dot2(_vec2(base, center_pt), direction) / denom
+        return base[0] + t * direction[0], base[1] + t * direction[1]
+
+    rule = FunctionalRule(
+        name=f"tangent({at})",
+        inputs=inputs,
+        compute=compute,
+        source=_rule_source(stmt),
+    )
+    return at, rule
+
+
+def plan_derive(program: Program) -> DerivationPlan:
+    point_order = _collect_point_order(program)
+    candidates: Dict[PointName, List[FunctionalRule]] = {}
+    ambiguous: Set[PointName] = set()
+    notes: List[str] = []
+    point_on_map: Dict[PointName, List[Tuple[object, Stmt]]] = {}
+
+    def mark(point: Optional[PointName]) -> None:
+        if _is_point_name(point):
+            ambiguous.add(point)  # type: ignore[arg-type]
+
+    for stmt in program.stmts:
+        choose_val = stmt.opts.get("choose")
+        if choose_val is not None:
+            if stmt.kind == "intersect":
+                mark(stmt.data.get("at"))
+                mark(stmt.data.get("at2"))
+            elif stmt.kind in {"point_on", "foot", "perpendicular_at"}:
+                mark(stmt.data.get("point") or stmt.data.get("foot"))
+            elif stmt.kind in {"midpoint", "median_from_to"}:
+                mark(stmt.data.get("midpoint"))
+
+        if stmt.kind == "point_on":
+            point = stmt.data.get("point")
+            path = stmt.data.get("path")
+            if _is_point_name(point) and isinstance(path, tuple):
+                if choose_val is None and path[0] != "circle":
+                    point_on_map.setdefault(point, []).append((path, stmt))
+                elif choose_val is not None:
+                    mark(point)
+
+        if stmt.kind in {"midpoint", "median_from_to"}:
+            rule_info = _midpoint_rule(stmt)
+            if rule_info:
+                _add_candidate(candidates, *rule_info)
+            continue
+        if stmt.kind in {"foot", "perpendicular_at"}:
+            rule_info = _foot_rule(stmt)
+            if rule_info:
+                _add_candidate(candidates, *rule_info)
+            continue
+        if stmt.kind == "diameter":
+            for rule_info in _diameter_rules(stmt):
+                _add_candidate(candidates, *rule_info)
+            continue
+        if stmt.kind == "line_tangent_at":
+            rule_info = _line_tangent_rule(stmt)
+            if rule_info:
+                _add_candidate(candidates, *rule_info)
+            continue
+        if stmt.kind == "intersect":
+            path1 = stmt.data.get("path1")
+            path2 = stmt.data.get("path2")
+            if not (isinstance(path1, tuple) and isinstance(path2, tuple)):
+                continue
+            if path1[0] == "circle" or path2[0] == "circle":
+                mark(stmt.data.get("at"))
+                mark(stmt.data.get("at2"))
+                continue
+            rule_primary = _line_intersection_rule(stmt.data.get("at"), path1, path2, stmt)
+            rule_secondary = _line_intersection_rule(stmt.data.get("at2"), path1, path2, stmt)
+            if rule_primary:
+                _add_candidate(candidates, *rule_primary)
+            if rule_secondary:
+                _add_candidate(candidates, *rule_secondary)
+            continue
+
+    for point, entries in point_on_map.items():
+        if point in ambiguous:
+            continue
+        added = False
+        for i in range(len(entries)):
+            if added:
+                break
+            for j in range(i + 1, len(entries)):
+                path1, stmt1 = entries[i]
+                path2, stmt2 = entries[j]
+                rule_info = _line_intersection_rule(point, path1, path2, stmt1)
+                if rule_info:
+                    _add_candidate(candidates, *rule_info)
+                    added = True
+                    break
+
+    derived_points: Dict[PointName, FunctionalRule] = {}
+    for point in point_order:
+        if point in ambiguous:
+            continue
+        rules = candidates.get(point)
+        if not rules:
+            continue
+        rule = rules[0]
+        derived_points[point] = rule
+        notes.append(f"derive {point} via {rule.name}")
+
+    for point, rules in candidates.items():
+        if point in derived_points or point in ambiguous or not rules:
+            continue
+        derived_points[point] = rules[0]
+        notes.append(f"derive {point} via {rules[0].name}")
+        if point not in point_order:
+            point_order.append(point)
+
+    derived_names = set(derived_points)
+    ambiguous_points = [p for p in point_order if p in ambiguous and p not in derived_names]
+    base_points = [p for p in point_order if p not in derived_names and p not in ambiguous]
+
+    return DerivationPlan(
+        base_points=base_points,
+        derived_points=derived_points,
+        ambiguous_points=ambiguous_points,
+        notes=notes,
+    )
 
 
 @dataclass
@@ -42,6 +641,11 @@ class Model:
     residuals: List[ResidualSpec]
     gauges: List[str] = field(default_factory=list)
     scale: float = 1.0
+    variables: List[PointName] = field(default_factory=list)
+    derived: Dict[PointName, FunctionalRule] = field(default_factory=dict)
+    base_points: List[PointName] = field(default_factory=list)
+    ambiguous_points: List[PointName] = field(default_factory=list)
+    plan_notes: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -893,8 +1497,13 @@ _RESIDUAL_BUILDERS: Dict[str, Callable[[Stmt, Dict[PointName, int]], List[Residu
 }
 
 
-def translate(program: Program) -> Model:
-    """Translate a validated GeometryIR program into a numeric model."""
+def _compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
+    """Translate a validated GeometryIR program using a fixed derivation plan."""
+
+    plan_derived: Dict[PointName, FunctionalRule] = dict(plan.get("derived_points", {}) or {})
+    plan_base: List[PointName] = list(plan.get("base_points", []) or [])
+    plan_amb: List[PointName] = list(plan.get("ambiguous_points", []) or [])
+    plan_notes: List[str] = list(plan.get("notes", []) or [])
 
     order: List[PointName] = []
     seen: Dict[PointName, int] = {}
@@ -906,6 +1515,10 @@ def translate(program: Program) -> Model:
     preferred_base_edge: Optional[Edge] = None  # NEW
     carrier_edges: Set[Edge] = set()  # NEW: edges used as carriers in constraints
     circle_radius_refs: Dict[PointName, List[PointName]] = {}
+
+    for name in plan_base + plan_amb + list(plan_derived):
+        if _is_point_name(name):
+            _register_point(order, seen, name)
 
     def register_scale(value: object) -> None:
         try:
@@ -1247,7 +1860,84 @@ def translate(program: Program) -> Model:
             )
             gauges.append("unit_span=1")
 
-    return Model(points=order, index=index, residuals=residuals, gauges=gauges, scale=scene_scale)
+    derived_map = {name: rule for name, rule in plan_derived.items() if name in index}
+
+    variable_points: List[PointName] = []
+    seen_vars: Set[PointName] = set()
+    for name in plan_base + plan_amb:
+        if name in derived_map or name not in index or name in seen_vars:
+            continue
+        variable_points.append(name)
+        seen_vars.add(name)
+    for name in order:
+        if name in derived_map or name in seen_vars:
+            continue
+        variable_points.append(name)
+        seen_vars.add(name)
+
+    base_points = [name for name in plan_base if name in index and name not in derived_map]
+    ambiguous_points = [name for name in plan_amb if name in index and name not in derived_map]
+
+    return Model(
+        points=order,
+        index=index,
+        residuals=residuals,
+        gauges=gauges,
+        scale=scene_scale,
+        variables=variable_points,
+        derived=derived_map,
+        base_points=base_points,
+        ambiguous_points=ambiguous_points,
+        plan_notes=plan_notes,
+    )
+
+
+def compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
+    """Compile ``program`` into a numeric model using the provided plan."""
+
+    working_plan: DerivationPlan = {
+        "base_points": list(plan.get("base_points", []) or []),
+        "derived_points": dict(plan.get("derived_points", {}) or {}),
+        "ambiguous_points": list(plan.get("ambiguous_points", []) or []),
+        "notes": list(plan.get("notes", []) or []),
+    }
+
+    model = _compile_with_plan(program, working_plan)
+
+    # Validate plan guards at the default seed. Promote failing derived points to variables.
+    rng = np.random.default_rng(0)
+    initial_full = _initial_guess(model, rng, 0)
+    initial_vars = _extract_variable_vector(model, initial_full)
+    _, guard_failures = _assemble_full_vector(model, initial_vars)
+    if guard_failures:
+        derived = dict(working_plan.get("derived_points", {}))
+        ambiguous = list(working_plan.get("ambiguous_points", []))
+        notes = list(working_plan.get("notes", []))
+        changed = False
+        for point, reason in guard_failures:
+            if point in derived:
+                derived.pop(point)
+                if point not in ambiguous:
+                    ambiguous.append(point)
+                notes.append(f"plan degradation: promoted {point} ({reason})")
+                changed = True
+        if changed:
+            working_plan = {
+                "base_points": list(working_plan.get("base_points", [])),
+                "derived_points": derived,
+                "ambiguous_points": ambiguous,
+                "notes": notes,
+            }
+            model = _compile_with_plan(program, working_plan)
+
+    return model
+
+
+def translate(program: Program) -> Model:
+    """Translate a validated GeometryIR program into a numeric model."""
+
+    plan = plan_derive(program)
+    return compile_with_plan(program, plan)
 
 
 def _initial_guess(model: Model, rng: np.random.Generator, attempt: int) -> np.ndarray:
@@ -1375,7 +2065,91 @@ def _initial_guess(model: Model, rng: np.random.Generator, attempt: int) -> np.n
     return guess
 
 
-def _evaluate(model: Model, x: np.ndarray) -> Tuple[np.ndarray, List[Tuple[ResidualSpec, np.ndarray]]]:
+def _extract_variable_vector(model: Model, full_vec: np.ndarray) -> np.ndarray:
+    if not model.variables:
+        return np.zeros(0, dtype=float)
+    vec = np.zeros(2 * len(model.variables), dtype=float)
+    for i, name in enumerate(model.variables):
+        idx = model.index.get(name)
+        if idx is None:
+            continue
+        base = idx * 2
+        vec[2 * i] = full_vec[base]
+        vec[2 * i + 1] = full_vec[base + 1]
+    return vec
+
+
+def _evaluate_plan_coords(
+    model: Model, coords: Dict[PointName, Tuple[float, float]]
+) -> Tuple[Dict[PointName, Tuple[float, float]], List[Tuple[PointName, str]]]:
+    derived_coords: Dict[PointName, Tuple[float, float]] = {}
+    failures: List[Tuple[PointName, str]] = []
+    remaining: Dict[PointName, FunctionalRule] = dict(model.derived)
+
+    progress = True
+    while remaining and progress:
+        progress = False
+        for name, rule in list(remaining.items()):
+            if not all(dep in coords for dep in rule.inputs):
+                continue
+            try:
+                value = rule.compute(coords)
+            except FunctionalRuleError as exc:
+                failures.append((name, str(exc)))
+                remaining.pop(name)
+                progress = True
+                continue
+            coords[name] = value
+            derived_coords[name] = value
+            remaining.pop(name)
+            progress = True
+
+    for name, rule in remaining.items():
+        missing = [dep for dep in rule.inputs if dep not in coords]
+        failures.append((name, f"missing inputs: {', '.join(missing)}"))
+
+    return derived_coords, failures
+
+
+def _assemble_full_vector(
+    model: Model, variables: np.ndarray
+) -> Tuple[np.ndarray, List[Tuple[PointName, str]]]:
+    full = np.zeros(2 * len(model.points), dtype=float)
+    coords: Dict[PointName, Tuple[float, float]] = {}
+    for i, name in enumerate(model.variables):
+        idx = model.index.get(name)
+        if idx is None:
+            continue
+        base = idx * 2
+        full[base] = variables[2 * i]
+        full[base + 1] = variables[2 * i + 1]
+        coords[name] = (full[base], full[base + 1])
+
+    derived_coords, failures = _evaluate_plan_coords(model, coords)
+    for name, value in derived_coords.items():
+        idx = model.index.get(name)
+        if idx is None:
+            continue
+        base = idx * 2
+        full[base] = value[0]
+        full[base + 1] = value[1]
+
+    return full, failures
+
+
+def _full_vector_to_point_coords(
+    model: Model, full_vec: np.ndarray
+) -> Dict[PointName, Tuple[float, float]]:
+    coords: Dict[PointName, Tuple[float, float]] = {}
+    for name, idx in model.index.items():
+        base = idx * 2
+        coords[name] = (float(full_vec[base]), float(full_vec[base + 1]))
+    return coords
+
+
+def _evaluate_full(
+    model: Model, x: np.ndarray
+) -> Tuple[np.ndarray, List[Tuple[ResidualSpec, np.ndarray]]]:
     blocks: List[np.ndarray] = []
     breakdown: List[Tuple[ResidualSpec, np.ndarray]] = []
     for spec in model.residuals:
@@ -1390,6 +2164,14 @@ def _evaluate(model: Model, x: np.ndarray) -> Tuple[np.ndarray, List[Tuple[Resid
     return np.zeros(0, dtype=float), breakdown
 
 
+def _evaluate(
+    model: Model, variables: np.ndarray
+) -> Tuple[np.ndarray, List[Tuple[ResidualSpec, np.ndarray]], List[Tuple[PointName, str]]]:
+    full, failures = _assemble_full_vector(model, variables)
+    vals, breakdown = _evaluate_full(model, full)
+    return vals, breakdown, failures
+
+
 def solve(
     model: Model,
     options: SolveOptions = SolveOptions(),
@@ -1399,7 +2181,14 @@ def solve(
     rng = np.random.default_rng(options.random_seed)
     warnings: List[str] = []
     best_result: Optional[
-        Tuple[Tuple[int, float], float, np.ndarray, List[Tuple[ResidualSpec, np.ndarray]], bool]
+        Tuple[
+            Tuple[int, float],
+            float,
+            np.ndarray,
+            List[Tuple[ResidualSpec, np.ndarray]],
+            bool,
+            List[Tuple[PointName, str]],
+        ]
     ] = None
     best_residual = math.inf
 
@@ -1412,29 +2201,38 @@ def solve(
     def run_attempt(attempt_index: int) -> Tuple[float, bool]:
         nonlocal best_result, best_residual
 
-        x0 = _initial_guess(model, rng, attempt_index)
+        full_guess = _initial_guess(model, rng, attempt_index)
+        x0 = _extract_variable_vector(model, full_guess)
 
         def fun(x: np.ndarray) -> np.ndarray:
-            vals, _ = _evaluate(model, x)
+            vals, _, _ = _evaluate(model, x)
             return vals
 
-        result = least_squares(
-            fun,
-            x0,
-            method=options.method,
-            loss=options.loss,
-            max_nfev=options.max_nfev,
-            ftol=options.tol,
-            xtol=options.tol,
-            gtol=options.tol,
-        )
-        vals, breakdown = _evaluate(model, result.x)
+        if x0.size:
+            result = least_squares(
+                fun,
+                x0,
+                method=options.method,
+                loss=options.loss,
+                max_nfev=options.max_nfev,
+                ftol=options.tol,
+                xtol=options.tol,
+                gtol=options.tol,
+            )
+            vars_solution = result.x
+        else:
+            vars_solution = np.zeros(0, dtype=float)
+            class _Result:
+                success = True
+
+            result = _Result()  # type: ignore[assignment]
+        vals, breakdown, guard_failures = _evaluate(model, vars_solution)
         max_res = float(np.max(np.abs(vals))) if vals.size else 0.0
-        converged = bool(result.success and max_res <= options.tol)
+        converged = bool(getattr(result, "success", True) and max_res <= options.tol)
 
         score = (0 if converged else 1, max_res)
         if best_result is None or score < best_result[0]:
-            best_result = (score, max_res, result.x, breakdown, converged)
+            best_result = (score, max_res, vars_solution, breakdown, converged, guard_failures)
 
         best_residual = min(best_residual, max_res)
         return max_res, converged
@@ -1468,7 +2266,12 @@ def solve(
     if best_result is None:
         raise RuntimeError("solver failed to evaluate residuals")
 
-    _, max_res, best_x, breakdown, converged = best_result
+    _, max_res, best_x, breakdown, converged, guard_failures = best_result
+
+    for point, reason in guard_failures:
+        warnings.append(f"plan guard {point}: {reason}")
+
+    full_solution, _ = _assemble_full_vector(model, best_x)
 
     if not converged and _allow_relaxation:
         # Identify min-separation guards that keep nearly-coincident points apart.
@@ -1498,7 +2301,10 @@ def solve(
             idx_b = model.index.get(pair[1])
             if idx_a is None or idx_b is None:
                 continue
-            diff = best_x[2 * idx_b : 2 * idx_b + 2] - best_x[2 * idx_a : 2 * idx_a + 2]
+            diff = (
+                full_solution[2 * idx_b : 2 * idx_b + 2]
+                - full_solution[2 * idx_a : 2 * idx_a + 2]
+            )
             dist = float(math.sqrt(max(_norm_sq(diff), 0.0)))
             max_abs = float(np.max(np.abs(values)))
             if dist <= drop_threshold or max_abs >= residual_threshold:
@@ -1517,6 +2323,11 @@ def solve(
                     residuals=filtered,
                     gauges=model.gauges,
                     scale=model.scale,
+                    variables=model.variables,
+                    derived=model.derived,
+                    base_points=model.base_points,
+                    ambiguous_points=model.ambiguous_points,
+                    plan_notes=model.plan_notes,
                 )
                 relaxed_solution = solve(
                     relaxed_model,
@@ -1542,10 +2353,7 @@ def solve(
             f"solver did not converge within tolerance {options.tol:.1e}; max residual {max_res:.3e}"
         )
 
-    coords: Dict[PointName, Tuple[float, float]] = {}
-    for name in model.points:
-        idx = model.index[name] * 2
-        coords[name] = (float(best_x[idx]), float(best_x[idx + 1]))
+    coords = _full_vector_to_point_coords(model, full_solution)
 
     breakdown_info: List[Dict[str, object]] = []
     for spec, values in breakdown:
