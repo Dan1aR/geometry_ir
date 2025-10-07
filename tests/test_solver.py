@@ -1,3 +1,6 @@
+import math
+from typing import Sequence, Tuple
+
 import numpy as np
 import pytest
 
@@ -618,6 +621,29 @@ def _coords_from_guess(model, guess, name):
     return np.array([guess[idx], guess[idx + 1]])
 
 
+def _fit_circle_np(points: Sequence[np.ndarray]) -> Tuple[np.ndarray, float]:
+    if len(points) < 2:
+        raise ValueError("need at least two points")
+    if len(points) == 2:
+        center = (points[0] + points[1]) * 0.5
+        radius = float(np.linalg.norm(points[0] - center))
+        return center, radius
+    a_mat = []
+    b_vec = []
+    for pt in points:
+        x, y = float(pt[0]), float(pt[1])
+        a_mat.append([2.0 * x, 2.0 * y, 1.0])
+        b_vec.append(x * x + y * y)
+    solution, _, _, _ = np.linalg.lstsq(np.asarray(a_mat, dtype=float), np.asarray(b_vec, dtype=float), rcond=None)
+    cx, cy, c_val = solution
+    radius_sq = cx * cx + cy * cy - c_val
+    if radius_sq <= 0:
+        return _fit_circle_np(points[:2])
+    center = np.array([cx, cy])
+    radius = float(math.sqrt(radius_sq))
+    return center, radius
+
+
 def test_initial_guess_respects_gauge_and_jitter():
     plan, model = _build_plan_and_model(
         """
@@ -762,3 +788,22 @@ def test_initial_guess_ratio_hint():
     len_cd = np.linalg.norm(c - d)
     assert len_cd == pytest.approx(len_ab * (3.0 / 2.0), rel=1e-6)
     assert len_ab / len_cd == pytest.approx(2.0 / 3.0, rel=5e-2)
+
+
+def test_initial_guess_concyclic_hint():
+    plan, model = _build_plan_and_model(
+        """
+        scene "Concyclic seed"
+        layout canonical=generic scale=1
+        points A, B, C, D
+        triangle A-B-C
+        concyclic (A, B, C, D)
+        """
+    )
+
+    rng = np.random.default_rng(17)
+    guess = initial_guess(model, rng, 0, plan=plan)
+    coords = {name: _coords_from_guess(model, guess, name) for name in ("A", "B", "C", "D")}
+    center, radius = _fit_circle_np(list(coords.values()))
+    dists = [np.linalg.norm(coords[name] - center) for name in coords]
+    assert max(dists) - min(dists) <= 1e-3

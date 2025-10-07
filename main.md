@@ -1,31 +1,29 @@
-# GeoScript IR — Technical Specification (for Codex code agent)
+# GeoScript IR — Technical Specification (agent view)
 
-**GeoScript IR** is a tiny, human-readable DSL for 2D Euclidean geometry scenes.
-It parses into an AST, validates author intent, optionally desugars to canonical facts, and compiles into a numeric model solved via `scipy.optimize.least_squares`.
+GeoScript IR is a compact DSL for 2D Euclidean scenes. The toolchain parses source text into an AST, validates intent, optionally desugars to canonical primitives, and compiles a nonlinear model solved with `scipy.optimize.least_squares`.
 
 ---
 
 ## 1) Design goals
 
-1. **Intuitive planimetry** — scripts should read like contest/olympiad problems (“Trapezoid ABCD with base AD…”, “Circle with center O…”, “Find ∠DBE”, etc.).
-2. **Complete, well-posed constraint graph** — every statement contributes explicit residuals so a solver can position **nice** coordinates and keep figures non-degenerate. The translator adds robust guards: min separations, edge-length floors, tiny angular margins for near-parallels, and orientation gauges.
-3. **Separation of concerns** — parsing/printing, validation & desugaring, solver translation, and TikZ rendering are orthogonal modules. Reference prompts exist for LLM agents and for TikZ generation.
+1. **Readable problem statements.** Scripts mimic olympiad prose (“Trapezoid ABCD with base AD…”, “Circle with center O…”, “Find ∠DBE”).
+2. **Explicit, well-posed constraints.** Every statement yields residuals, while translators enforce min separations, carrier edge floors, near-parallel cushions, and orientation gauges.
+3. **Modular architecture.** Parsing/printing, validation plus desugaring, solver compilation, and TikZ export remain isolated modules with dedicated prompts.
 
 ---
 
-## 2) Lexical & identifiers
+## 2) Lexical rules
 
-* **Case**: `ID` tokens are case-insensitive and normalized to **uppercase** (e.g., `a-b` and `A-B` refer to the same segment).
-* **Strings**: double-quoted with C-style escapes.
-* **Numbers**: decimals and scientific notation; **symbolic square roots** via `sqrt(<non-negative number>)` and products like `3*sqrt(2)` are supported as **SymbolicNumber** (text + numeric value).
-* **Comments**: `#` to end of line.
+* `ID` tokens are case-insensitive; they normalize to uppercase (`a-b` ≡ `A-B`).
+* Strings use double quotes with C-style escapes.
+* Numbers accept decimals and scientific notation. Symbolic values (`sqrt(...)`, `3*sqrt(2)`) become `SymbolicNumber` (text plus numeric value).
+* `#` introduces a line comment.
 
 ---
 
 ## 3) Grammar (BNF)
 
-The Codex agent must emit scripts that conform to this grammar.
-This version introduces five solver-oriented extensions: **branch picking**, **collinear**, **concyclic**, **equal-angles**, **segment ratios**, and two new **Path** forms (perp-bisector, parallel-through).
+Programs must satisfy this grammar. Solver-facing extensions include branch picking, `collinear`, `concyclic`, `equal-angles`, `ratio`, and the `perp-bisector` / `parallel through` path forms.
 
 ```
 Program   := { Stmt }
@@ -112,25 +110,25 @@ PRODUCT   := NUMBER '*' SQRT
 BOOLEAN   := 'true' | 'false'
 ```
 
-> **Angle marking vs constraint** — `angle A-B-C` **without** `degrees=` is a *visual mark only* (no residuals). With `degrees=...` it becomes a metric constraint.
+`angle A-B-C` is only a visual mark until `degrees=` appears.
 
 ---
 
-## 4) Options (legal keys by statement)
+## 4) Legal options
 
-Only the keys below are interpreted. The parser rejects malformed option syntax; the validator rejects unknown/ill-typed options.
+Only the keys below are interpreted. The parser enforces syntax; the validator rejects unknown or mistyped options.
 
 ### Global
 
-* `rules [...]` → `no_equations_on_sides`, `no_solving`, `allow_auxiliary` (booleans).
+* `rules [...]` admits `no_equations_on_sides`, `no_solving`, `allow_auxiliary` (booleans).
 
-### Branch selection (for **Placement**: `point ... on ...`, `intersect(...) ... at ...`)
+### Branch selection (`point ... on ...`, `intersect (...) ... at ...`)
 
-* `choose=near|far` with `anchor=P` → prefer the solution nearer/farther from `P`.
-* `choose=left|right` with `ref=A-B` → prefer the point on the left/right of oriented line `AB`.
-* `choose=cw|ccw` with `anchor=P` (and optionally `ref=A-B`) → prefer clockwise/counter-clockwise branch around an anchor/reference.
+* `choose=near|far` + `anchor=P` → prefer the nearer/farther root relative to `P`.
+* `choose=left|right` + `ref=A-B` → pick the left/right side of oriented line `AB`.
+* `choose=cw|ccw` + `anchor=P` (optional `ref=A-B`) → bias clockwise/counter-clockwise around the anchor/reference.
 
-> These are **soft biases** implemented as small hinge residuals; they resolve two-root ambiguities without brittle hard constraints.
+Branch choices act as soft hinges to resolve two-root ambiguities without brittle hard constraints.
 
 ### Angles & arcs
 
@@ -140,22 +138,23 @@ Only the keys below are interpreted. The parser rejects malformed option syntax;
 * `target angle A-B-C [label="..."]`
 * `target arc P-Q on circle center O [label="?BT"]`
 
-### Segments/Edges/Polygons
+### Segments / polygons
 
 * `segment A-B [length=NUMBER|SQRT|PRODUCT | label="..."]`
 * `equal-segments (...) [label="..."]`
-* `parallel-edges (...)` (typically no extra keys)
-* `polygon/triangle/... [isosceles=atA|atB|atC]` (triangle),
-  `trapezoid [...] [bases=A-D]`, `trapezoid [isosceles=true|false]`
+* `parallel-edges (...)`
+* `polygon/triangle/... [isosceles=atA|atB|atC]`
+* `trapezoid [...] [bases=A-D]`
+* `trapezoid [isosceles=true|false]`
 
 ### Ratios
 
-* `ratio (A-B : C-D = p : q)` with positive `p,q` (numbers).
+* `ratio (A-B : C-D = p : q)` with `p>0`, `q>0`.
 
 ### Incidence groups
 
-* `collinear(A,B,C,...)` (≥3 points)
-* `concyclic(A,B,C,D,...)` (≥3 points)
+* `collinear(A,B,C,...)` with ≥3 points.
+* `concyclic(A,B,C,D,...)` with ≥3 points.
 
 ### Circles & tangency
 
@@ -163,33 +162,32 @@ Only the keys below are interpreted. The parser rejects malformed option syntax;
 * `circle through (A, B, C, ...)`
 * `tangent at T to circle center O`
 * `line X-Y tangent to circle center O at T`
-* `diameter A-B to circle center O` (no options)
+* `diameter A-B to circle center O`
 
 ### Annotations
 
 * `label point P [label="..." pos=left|right|above|below]`
-* `sidelabel A-B "..." [pos=left|right|above|below]`
-  (Renderers may also interpret `mark=midpoint` etc.)
+* `sidelabel A-B "..." [pos=left|right|above|below]` (renderers may add `mark=...`).
 
 ---
 
-## 5) High-level objects → canonical facts (desugaring rules)
+## 5) High-level objects → canonical facts
 
-To keep authoring natural, several forms **desugar** to primitive relations that the solver understands.
+High-level constructs desugar to primitive relations understood by the solver.
 
-* **triangle A-B-C** → carrier edges `AB, BC, CA`.
-* **quadrilateral A-B-C-D** → `AB, BC, CD, DA`.
-* **trapezoid A-B-C-D [bases=X-Y]** → quadrilateral + `parallel-edges (X-Y; opposite)` + a tiny **non-parallel margin** on legs; the declared base is preferred for orientation gauging.
-* **parallelogram A-B-C-D** → `parallel-edges (A-B; C-D)` + `parallel-edges (B-C; A-D)`; optional equalities if author marks them.
+* **triangle A-B-C** → carrier edges `AB`, `BC`, `CA`.
+* **quadrilateral A-B-C-D** → `AB`, `BC`, `CD`, `DA`.
+* **trapezoid A-B-C-D [bases=X-Y]** → quadrilateral + `parallel-edges (X-Y; opposite)` + a non-parallel hinge on legs; the named base is the preferred orientation gauge.
+* **parallelogram A-B-C-D** → `parallel-edges (A-B; C-D)` and `parallel-edges (B-C; A-D)`; optional equalities follow author options.
 * **rectangle** → parallelogram + `right-angle A-B-C`.
 * **square** → rectangle + `equal-segments (A-B; B-C; C-D; D-A)`.
-* **rhombus** → `equal-segments` on all sides + both pairs of parallels.
-* **collinear (P1,...,Pn)** → expand to collinearity constraints among all (`n≥3`).
-* **concyclic (P1,...,Pn)** → introduce latent center `O` and radius `R`; enforce equal radii to `O`.
-* **equal-angles (A-B-C, ... ; D-E-F, ...)** → unify all listed angles to a representative angle using `atan2`-based residuals.
-* **ratio (A-B : C-D = p : q)** → residual `q‖AB‖ − p‖CD‖ = 0`.
+* **rhombus** → `equal-segments` on all sides + both parallel pairs.
+* **collinear (P1,...,Pn)** → expand to full collinearity constraints (`n≥3`).
+* **concyclic (P1,...,Pn)** → introduce a latent center and radius; enforce equal radii.
+* **equal-angles (A-B-C, ... ; D-E-F, ...)** → tie every listed angle to a representative using `atan2` residuals.
+* **ratio (A-B : C-D = p : q)** → enforce `q‖AB‖ − p‖CD‖ = 0`.
 
-> `circle through (...)` and `circumcircle of ...` equivalently become “points share a circle” with a latent center/radius at translation time.
+`circle through (...)` and `circumcircle of ...` both introduce a shared latent center/radius.
 
 ---
 
@@ -206,9 +204,9 @@ Let `v(P)` be the 2D variable of point `P`; `AB := v(B)−v(A)`, `×` = 2D cross
 * `intersect (path1) with (path2) at X(, Y)` → both `X` (and optionally `Y`) satisfy the incidence constraints of `path1` and `path2`.
 * **Branch picking**:
 
-  * `choose=near|far, anchor=Q` → add small bias term `w*(‖XQ‖ − target)` with `target` = min/max among discrete roots.
-  * `choose=left|right, ref=A-B` → hinge on orientation sign: `max(0, s*(−sign) )` with `s=+1/-1`.
-  * `choose=cw|ccw` → small angular preference around anchor/ref.
+  * `choose=near|far, anchor=Q` → bias toward the nearer/farther intersection relative to `Q`.
+  * `choose=left|right, ref=A-B` → penalize the wrong orientation sign against oriented line `AB`.
+  * `choose=cw|ccw, anchor=Q` (optional `ref=A-B`) → prefer clockwise / counter-clockwise rotation about the anchor/reference.
 
 ### 6.2 Metric relations
 

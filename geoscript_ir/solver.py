@@ -2725,6 +2725,32 @@ def initial_guess(
                         filtered.append(pt)
                 if filtered:
                     candidates = filtered
+        if choose in {"cw", "ccw"}:
+            anchor_name = payload.get("anchor")
+            if _is_point_name(anchor_name) and anchor_name in coords:
+                anchor_pt = get_coord(anchor_name)
+                base_vec: Optional[Tuple[float, float]] = None
+                ref = payload.get("ref")
+                if (
+                    isinstance(ref, tuple)
+                    and len(ref) == 2
+                    and ref[0] in coords
+                    and ref[1] in coords
+                ):
+                    base_vec = _vec2(get_coord(ref[0]), get_coord(ref[1]))
+                if base_vec is None and point in coords:
+                    base_vec = _vec2(anchor_pt, get_coord(point))
+                if base_vec is None or _norm_sq2(base_vec) <= 1e-12:
+                    base_vec = (1.0, 0.0)
+                desired = 1.0 if choose == "ccw" else -1.0
+                filtered: List[Tuple[float, float]] = []
+                for pt in candidates:
+                    rel = (pt[0] - anchor_pt[0], pt[1] - anchor_pt[1])
+                    cross = base_vec[0] * rel[1] - base_vec[1] * rel[0]
+                    if cross * desired >= -1e-9:
+                        filtered.append(pt)
+                if filtered:
+                    candidates = filtered
         current = get_coord(point)
         candidates = sorted(
             candidates,
@@ -2895,6 +2921,74 @@ def initial_guess(
         proj = project_to_line(line_spec, get_coord(center))
         set_coord(point, proj)
 
+    def fit_circle(points: List[Tuple[float, float]]) -> Optional[Tuple[Tuple[float, float], float]]:
+        if not points:
+            return None
+        if len(points) == 1:
+            return points[0], max(base_scale, 1.0)
+        if len(points) == 2:
+            ax, ay = points[0]
+            bx, by = points[1]
+            center = ((ax + bx) * 0.5, (ay + by) * 0.5)
+            radius = 0.5 * math.hypot(bx - ax, by - ay)
+            return center, max(radius, max(base_scale * 0.25, 1e-3))
+        a_mat = []
+        b_vec = []
+        for x, y in points:
+            a_mat.append([2.0 * x, 2.0 * y, 1.0])
+            b_vec.append(x * x + y * y)
+        try:
+            solution, _, rank, _ = np.linalg.lstsq(
+                np.asarray(a_mat, dtype=float), np.asarray(b_vec, dtype=float), rcond=None
+            )
+        except np.linalg.LinAlgError:
+            solution = None
+            rank = 0
+        if solution is None or rank < 3:
+            best_pair: Optional[Tuple[Tuple[float, float], Tuple[float, float]]] = None
+            best_dist = -1.0
+            for i in range(len(points)):
+                for j in range(i + 1, len(points)):
+                    dx = points[j][0] - points[i][0]
+                    dy = points[j][1] - points[i][1]
+                    dist = dx * dx + dy * dy
+                    if dist > best_dist:
+                        best_dist = dist
+                        best_pair = (points[i], points[j])
+            if best_pair is None:
+                return None
+            return fit_circle([best_pair[0], best_pair[1]])
+        cx, cy, c_val = solution
+        radius_sq = cx * cx + cy * cy - c_val
+        if radius_sq <= 1e-12:
+            return fit_circle(points[:2])
+        radius = math.sqrt(radius_sq)
+        return (cx, cy), max(radius, 1e-3)
+
+    def apply_concyclic(payload: Dict[str, Any]) -> None:
+        names = payload.get("points")
+        if not isinstance(names, list):
+            return
+        usable = [str(name) for name in names if _is_point_name(name) and name in coords]
+        if len(usable) < 2:
+            return
+        circle = fit_circle([get_coord(name) for name in usable])
+        if not circle:
+            return
+        center, radius = circle
+        if radius <= 1e-6:
+            radius = max(base_scale * 0.5, 1.0)
+        for name in usable:
+            if name in protected:
+                continue
+            current = get_coord(name)
+            vec = (current[0] - center[0], current[1] - center[1])
+            normed = normalize_vec(vec)
+            if not normed:
+                normed = (1.0, 0.0)
+            new_pos = (center[0] + normed[0] * radius, center[1] + normed[1] * radius)
+            set_coord(name, new_pos)
+
     def safety_pass() -> None:
         min_sep = 1e-3 * base_scale
         names = list(coords.keys())
@@ -3017,6 +3111,8 @@ def initial_guess(
                 apply_perpendicular([(str(a), str(b)) for a, b in edges], hint_counts)
         elif kind == "tangent":
             apply_tangent(payload)
+        elif kind == "concyclic":
+            apply_concyclic(payload)
 
     # Stage F – tangency handled above; Stage G – safety
     safety_pass()
