@@ -19,6 +19,7 @@ from .solver import (
     Solution,
     VariantSolveResult,
     normalize_point_coords,
+    initial_guess,
     score_solution
 )
 from .ddc import derive_and_check, evaluate_ddc, DDCCheckResult
@@ -44,6 +45,7 @@ __all__ = [
     'Solution',
     'VariantSolveResult',
     'normalize_point_coords',
+    'initial_guess',
     'derive_and_check',
     'evaluate_ddc',
     'DDCCheckResult',
