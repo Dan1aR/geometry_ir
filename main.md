@@ -1292,12 +1292,12 @@ Add seeding tests to the integration flow (see §17):
   tick1/.style={postaction=decorate, decoration={markings,
       mark=at position 0.5 with {\draw (0,-\gsTick/2) -- (0,\gsTick/2);}}},
   tick2/.style={postaction=decorate, decoration={markings,
-      mark=at position 0.4 with {\draw (0,-\gsTick/2) -- (0,\gsTick/2);},
-      mark=at position 0.6 with {\draw (0,-\gsTick/2) -- (0,\gsTick/2);}}},
+      mark=at position 0.47 with {\draw (0,-\gsTick/2) -- (0,\gsTick/2);},
+      mark=at position 0.53 with {\draw (0,-\gsTick/2) -- (0,\gsTick/2);}}},
   tick3/.style={postaction=decorate, decoration={markings,
-      mark=at position 0.35 with {\draw (0,-\gsTick/2) -- (0,\gsTick/2);},
+      mark=at position 0.44 with {\draw (0,-\gsTick/2) -- (0,\gsTick/2);},
       mark=at position 0.5  with {\draw (0,-\gsTick/2) -- (0,\gsTick/2);},
-      mark=at position 0.65 with {\draw (0,-\gsTick/2) -- (0,\gsTick/2);}}},
+      mark=at position 0.56 with {\draw (0,-\gsTick/2) -- (0,\gsTick/2);}}},
 }
 % optional layers
 \pgfdeclarelayer{bg}\pgfdeclarelayer{fg}\pgfsetlayers{bg,main,fg}
