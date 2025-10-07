@@ -21,6 +21,7 @@ GS_ANGLE_SEP_PT = 2.0
 LABEL_WIDTH_EM = 0.52
 LABEL_HEIGHT_EM = 0.9
 ANGLE_LABEL_OFFSET_EM = 0.6
+EPS_LEN_FACTOR = 1e-9
 
 ANCHOR_SEQUENCE = [
     "above",
@@ -108,11 +109,59 @@ class RenderPlan:
     labels: List[LabelSpec]
     tick_overflow_edges: Dict[Tuple[str, str], bool] = field(default_factory=dict)
     helper_tick_edges: Dict[Tuple[str, str], Tuple[str, str]] = field(default_factory=dict)
+    tick_overlay_edges: Dict[Tuple[str, str], Tuple[str, str]] = field(default_factory=dict)
     carrier_lookup: Dict[Tuple[str, str], Tuple[str, str]] = field(default_factory=dict)
     angle_groups: List[List[Tuple[str, str, str]]] = field(default_factory=list)
+    angle_group_arc_counts: List[int] = field(default_factory=list)
+    right_angles: List[Tuple[str, str, str, bool]] = field(default_factory=list)
+    notes: List[str] = field(default_factory=list)
     polygon_vertices: set = field(default_factory=set)
     circle_centers: set = field(default_factory=set)
     special_points: set = field(default_factory=set)
+
+
+class _UnionFind:
+    """Simple disjoint-set structure for deterministic grouping."""
+
+    def __init__(self) -> None:
+        self._parent: Dict[Tuple[str, str], Tuple[str, str]] = {}
+        self._rank: Dict[Tuple[str, str], int] = {}
+
+    def add(self, item: Tuple[str, str]) -> None:
+        if item not in self._parent:
+            self._parent[item] = item
+            self._rank[item] = 0
+
+    def find(self, item: Tuple[str, str]) -> Tuple[str, str]:
+        parent = self._parent.get(item)
+        if parent is None:
+            self.add(item)
+            return item
+        if parent != item:
+            self._parent[item] = self.find(parent)
+        return self._parent[item]
+
+    def union(self, a: Tuple[str, str], b: Tuple[str, str]) -> None:
+        root_a = self.find(a)
+        root_b = self.find(b)
+        if root_a == root_b:
+            return
+        rank_a = self._rank[root_a]
+        rank_b = self._rank[root_b]
+        if rank_a < rank_b:
+            self._parent[root_a] = root_b
+        elif rank_a > rank_b:
+            self._parent[root_b] = root_a
+        else:
+            self._parent[root_b] = root_a
+            self._rank[root_a] += 1
+
+    def components(self) -> Dict[Tuple[str, str], List[Tuple[str, str]]]:
+        groups: Dict[Tuple[str, str], List[Tuple[str, str]]] = {}
+        for item in self._parent:
+            root = self.find(item)
+            groups.setdefault(root, []).append(item)
+        return groups
 
 
 def generate_tikz_document(
@@ -217,7 +266,7 @@ def _build_render_plan(
     ticks: List[Tuple[str, str, int]] = []
     tick_overflow_edges: Dict[Tuple[str, str], bool] = {}
     helper_tick_edges: Dict[Tuple[str, str], Tuple[str, str]] = {}
-    equal_angle_groups: List[List[Tuple[str, str, str]]] = []
+    tick_overlay_edges: Dict[Tuple[str, str], Tuple[str, str]] = {}
     angle_entries: List[Dict[str, object]] = []
     point_labels: Dict[str, LabelSpec] = {}
     side_labels: List[LabelSpec] = []
@@ -225,9 +274,41 @@ def _build_render_plan(
     circle_centers: set = set()
     special_points: set = set()
 
-    tick_group = 0
+    segment_union = _UnionFind()
+    edge_orientations: Dict[Tuple[str, str], Tuple[str, str]] = {}
+    explicit_edge_occurrence: Dict[Tuple[str, str], int] = {}
+    implicit_segment_pairs: List[Tuple[Tuple[str, str], Tuple[str, str], int]] = []
+    implicit_edge_occurrence: Dict[Tuple[str, str], int] = {}
+    segment_conflicts_logged: set = set()
 
-    for stmt in program.stmts:
+    angle_union = _UnionFind()
+    wedge_orientations: Dict[Tuple[str, Tuple[str, str]], List[Tuple[str, str, str]]] = {}
+    explicit_wedge_occurrence: Dict[Tuple[str, Tuple[str, str]], int] = {}
+    bisector_occurrence: Dict[Tuple[str, Tuple[str, str]], int] = {}
+    bisector_orientations: Dict[Tuple[str, Tuple[str, str]], Tuple[str, str, str]] = {}
+    wedge_conflicts_logged: set = set()
+
+    right_angle_marks: List[Tuple[str, str, str, bool]] = []
+    right_angle_seen: set = set()
+    diagnostics: List[str] = []
+
+    def record_edge_orientation(norm: Tuple[str, str], oriented: Tuple[str, str]) -> None:
+        edge_orientations.setdefault(norm, oriented)
+
+    def record_wedge_orientation(
+        norm: Tuple[str, Tuple[str, str]], triple: Tuple[str, str, str]
+    ) -> None:
+        entries = wedge_orientations.setdefault(norm, [])
+        if triple not in entries:
+            entries.append(triple)
+
+    def add_right_angle(a: str, b: str, c: str, force: bool) -> None:
+        key = (a, b, c)
+        if key not in right_angle_seen:
+            right_angle_seen.add(key)
+            right_angle_marks.append((a, b, c, force))
+
+    for idx, stmt in enumerate(program.stmts):
         kind = stmt.kind
         data = stmt.data
         opts = stmt.opts or {}
@@ -239,6 +320,7 @@ def _build_render_plan(
             key = _normalize_edge(edge)
             carriers.setdefault(key, (edge[0], edge[1], {}))
             carrier_lookup[key] = (edge[0], edge[1])
+            record_edge_orientation(key, (edge[0], edge[1]))
         elif kind == "diameter":
             edge = _edge_from_data(data.get("edge"))
             if not edge:
@@ -246,6 +328,7 @@ def _build_render_plan(
             key = _normalize_edge(edge)
             carriers.setdefault(key, (edge[0], edge[1], {}))
             carrier_lookup[key] = (edge[0], edge[1])
+            record_edge_orientation(key, (edge[0], edge[1]))
         elif kind in {
             "triangle",
             "quadrilateral",
@@ -263,6 +346,7 @@ def _build_render_plan(
                 key = _normalize_edge(edge)
                 carriers.setdefault(key, (edge[0], edge[1], {"source": kind}))
                 carrier_lookup[key] = (edge[0], edge[1])
+                record_edge_orientation(key, (edge[0], edge[1]))
             for ident in ids:
                 if isinstance(ident, str):
                     polygon_vertices.add(ident)
@@ -275,30 +359,35 @@ def _build_render_plan(
             if edge:
                 aux_lines.append((AuxPath("line", {"points": edge}), {}))
         elif kind == "perpendicular_at":
-            if not rules.get("allow_auxiliary", True):
-                continue
             to_edge = _edge_from_data(data.get("to"))
             at = data.get("at")
+            foot = data.get("foot")
             if to_edge and isinstance(at, str):
-                foot = data.get("foot")
+                if rules.get("allow_auxiliary", True):
+                    aux_lines.append(
+                        (
+                            AuxPath(
+                                "perpendicular",
+                                {"at": at, "to": to_edge, "foot": foot},
+                            ),
+                            {},
+                        )
+                    )
+                special_points.add(at)
                 if isinstance(foot, str):
                     special_points.add(foot)
-                special_points.add(at)
-                aux_lines.append(
-                    (
-                        AuxPath(
-                            "perpendicular",
-                            {"at": at, "to": to_edge, "foot": data.get("foot")},
-                        ),
-                        {},
-                    )
-                )
+                    add_right_angle(to_edge[0], foot, at, True)
+        elif kind == "foot":
+            foot = data.get("foot")
+            frm = data.get("from")
+            edge = _edge_from_data(data.get("edge"))
+            if isinstance(foot, str) and isinstance(frm, str) and edge:
+                special_points.add(foot)
+                add_right_angle(edge[0], foot, frm, True)
         elif kind == "parallel_through":
-            if not rules.get("allow_auxiliary", True):
-                continue
             to_edge = _edge_from_data(data.get("to"))
             through = data.get("through")
-            if to_edge and isinstance(through, str):
+            if to_edge and isinstance(through, str) and rules.get("allow_auxiliary", True):
                 aux_lines.append(
                     (
                         AuxPath("parallel", {"through": through, "to": to_edge}),
@@ -306,22 +395,48 @@ def _build_render_plan(
                     )
                 )
         elif kind == "median_from_to":
-            if not rules.get("allow_auxiliary", True):
-                continue
             frm = data.get("frm")
             midpoint = data.get("midpoint")
-            edge = _edge_from_data(data.get("to"))
-            if edge and isinstance(frm, str) and isinstance(midpoint, str):
+            base = _edge_from_data(data.get("to"))
+            if base and isinstance(frm, str) and isinstance(midpoint, str):
                 special_points.add(midpoint)
-                aux_lines.append(
-                    (
-                        AuxPath(
-                            "median",
-                            {"frm": frm, "midpoint": midpoint, "base": edge},
-                        ),
-                        {},
+                edges = [(base[0], midpoint), (midpoint, base[1])]
+                normals: List[Tuple[str, str]] = []
+                for oriented in edges:
+                    if oriented[0] == oriented[1]:
+                        continue
+                    norm = _normalize_edge(oriented)
+                    record_edge_orientation(norm, oriented)
+                    implicit_edge_occurrence.setdefault(norm, idx)
+                    normals.append(norm)
+                if len(normals) == 2:
+                    implicit_segment_pairs.append((normals[0], normals[1], idx))
+                if rules.get("allow_auxiliary", True):
+                    aux_lines.append(
+                        (
+                            AuxPath(
+                                "median",
+                                {"frm": frm, "midpoint": midpoint, "base": base},
+                            ),
+                            {},
+                        )
                     )
-                )
+        elif kind == "midpoint":
+            midpoint = data.get("midpoint")
+            base = _edge_from_data(data.get("edge"))
+            if base and isinstance(midpoint, str):
+                special_points.add(midpoint)
+                edges = [(base[0], midpoint), (midpoint, base[1])]
+                normals: List[Tuple[str, str]] = []
+                for oriented in edges:
+                    if oriented[0] == oriented[1]:
+                        continue
+                    norm = _normalize_edge(oriented)
+                    record_edge_orientation(norm, oriented)
+                    implicit_edge_occurrence.setdefault(norm, idx)
+                    normals.append(norm)
+                if len(normals) == 2:
+                    implicit_segment_pairs.append((normals[0], normals[1], idx))
         elif kind == "circle_center_radius_through":
             center = data.get("center")
             through = data.get("through")
@@ -358,42 +473,64 @@ def _build_render_plan(
                 )
             )
         elif kind == "equal_segments":
-            groups = []
-            lhs = data.get("lhs")
-            rhs = data.get("rhs")
-            if isinstance(lhs, (list, tuple)):
-                groups.append([edge for edge in lhs if _edge_from_data(edge)])
-            if isinstance(rhs, (list, tuple)):
-                groups.append([edge for edge in rhs if _edge_from_data(edge)])
-            for raw_group in groups:
-                group_edges = [(_edge_from_data(edge)) for edge in raw_group]
-                group_edges = [edge for edge in group_edges if edge]
-                if not group_edges:
-                    continue
-                tick_group += 1
-                style_index = ((tick_group - 1) % 3) + 1
-                overflow = tick_group > 3
-                for edge in group_edges:
-                    a, b = edge  # type: ignore[misc]
-                    ticks.append((a, b, style_index))
-                    key = _normalize_edge((a, b))
-                    if overflow:
-                        tick_overflow_edges[key] = True
-                    if key not in carriers:
-                        helper_tick_edges.setdefault(key, (a, b))
-        elif kind == "equal_angles":
-            lhs = data.get("lhs")
-            rhs = data.get("rhs")
-            for group in (lhs, rhs):
+            edges_in_stmt: List[Tuple[str, str]] = []
+            for group in (data.get("lhs"), data.get("rhs")):
                 if not isinstance(group, (list, tuple)):
                     continue
-                angles: List[Tuple[str, str, str]] = []
-                for angle in group:
-                    triple = _angle_triple(angle)
-                    if triple:
-                        angles.append(triple)
-                if angles:
-                    equal_angle_groups.append(angles)
+                for raw_edge in group:
+                    oriented = _edge_from_data(raw_edge)
+                    if not oriented or oriented[0] == oriented[1]:
+                        continue
+                    norm = _normalize_edge(oriented)
+                    record_edge_orientation(norm, oriented)
+                    segment_union.add(norm)
+                    edges_in_stmt.append(norm)
+                    prev = explicit_edge_occurrence.get(norm)
+                    if prev is None:
+                        explicit_edge_occurrence[norm] = idx
+                    elif prev != idx and norm not in segment_conflicts_logged:
+                        diagnostics.append(
+                            f"edge {norm[0]}-{norm[1]} declared in multiple equal-segments statements"
+                        )
+                        segment_conflicts_logged.add(norm)
+            if edges_in_stmt:
+                anchor = edges_in_stmt[0]
+                for other in edges_in_stmt[1:]:
+                    segment_union.union(anchor, other)
+        elif kind == "equal_angles":
+            wedges_in_stmt: List[Tuple[str, Tuple[str, str]]] = []
+            for group in (data.get("lhs"), data.get("rhs")):
+                if not isinstance(group, (list, tuple)):
+                    continue
+                for raw_angle in group:
+                    triple = _angle_triple(raw_angle)
+                    if not triple:
+                        continue
+                    norm = _normalize_wedge(triple)
+                    record_wedge_orientation(norm, triple)
+                    angle_union.add(norm)
+                    wedges_in_stmt.append(norm)
+                    prev = explicit_wedge_occurrence.get(norm)
+                    if prev is None:
+                        explicit_wedge_occurrence[norm] = idx
+                    elif prev != idx and norm not in wedge_conflicts_logged:
+                        diagnostics.append(
+                            f"angle at {norm[0]} declared in multiple equal-angles statements"
+                        )
+                        wedge_conflicts_logged.add(norm)
+            if wedges_in_stmt:
+                anchor = wedges_in_stmt[0]
+                for other in wedges_in_stmt[1:]:
+                    angle_union.union(anchor, other)
+        elif kind == "angle_bisector_at":
+            triple = _angle_triple(data.get("points"))
+            if triple:
+                norm = _normalize_wedge(triple)
+                record_wedge_orientation(norm, triple)
+                current = bisector_occurrence.get(norm)
+                if current is None or idx < current:
+                    bisector_occurrence[norm] = idx
+                    bisector_orientations[norm] = triple
         elif kind == "angle_at":
             triple = _angle_triple(data.get("points"))
             if not triple:
@@ -412,14 +549,7 @@ def _build_render_plan(
         elif kind == "right_angle_at":
             triple = _angle_triple(data.get("points"))
             if triple:
-                angle_entries.append(
-                    {
-                        "kind": "right",
-                        "A": triple[0],
-                        "B": triple[1],
-                        "C": triple[2],
-                    }
-                )
+                add_right_angle(triple[0], triple[1], triple[2], False)
         elif kind in {
             "target_angle",
             "target_length",
@@ -427,21 +557,94 @@ def _build_render_plan(
             "target_circle",
             "target_arc",
         }:
-            # Targets are currently ignored by the TikZ renderer.
             continue
 
-    if equal_angle_groups:
-        for group_index, group in enumerate(equal_angle_groups, start=1):
-            for triple in group:
-                angle_entries.append(
-                    {
-                        "kind": "equal",
-                        "A": triple[0],
-                        "B": triple[1],
-                        "C": triple[2],
-                        "group": group_index,
-                    }
-                )
+        for triple in _extract_angle_bisectors(data):
+            norm = _normalize_wedge(triple)
+            record_wedge_orientation(norm, triple)
+            current = bisector_occurrence.get(norm)
+            if current is None or idx < current:
+                bisector_occurrence[norm] = idx
+                bisector_orientations[norm] = triple
+
+    explicit_edges = set(explicit_edge_occurrence)
+    for edge_a, edge_b, order in implicit_segment_pairs:
+        if edge_a in explicit_edges or edge_b in explicit_edges:
+            continue
+        segment_union.add(edge_a)
+        segment_union.add(edge_b)
+        segment_union.union(edge_a, edge_b)
+        implicit_edge_occurrence.setdefault(edge_a, order)
+        implicit_edge_occurrence.setdefault(edge_b, order)
+
+    segment_components = segment_union.components()
+    ordered_segment_groups: List[List[Tuple[str, str]]] = []
+    explicit_groups: List[Tuple[int, List[Tuple[str, str]]]] = []
+    implicit_groups: List[Tuple[int, List[Tuple[str, str]]]] = []
+    for component in segment_components.values():
+        sorted_edges = sorted(component)
+        if any(edge in explicit_edges for edge in sorted_edges):
+            order = min(explicit_edge_occurrence.get(edge, math.inf) for edge in sorted_edges)
+            explicit_groups.append((order, sorted_edges))
+        else:
+            order = min(implicit_edge_occurrence.get(edge, math.inf) for edge in sorted_edges)
+            implicit_groups.append((order, sorted_edges))
+    explicit_groups.sort(key=lambda item: (item[0], tuple(item[1])))
+    implicit_groups.sort(key=lambda item: (item[0], tuple(item[1])))
+    ordered_segment_groups.extend(group for _, group in explicit_groups)
+    ordered_segment_groups.extend(group for _, group in implicit_groups)
+
+    for group_index, edges in enumerate(ordered_segment_groups, start=1):
+        style_index = ((group_index - 1) % 3) + 1
+        overflow = group_index > 3
+        for norm in edges:
+            oriented = carrier_lookup.get(norm) or edge_orientations.get(norm) or norm
+            ticks.append((oriented[0], oriented[1], style_index))
+            if overflow:
+                tick_overflow_edges[norm] = True
+                if norm in carrier_lookup:
+                    tick_overlay_edges.setdefault(norm, oriented)
+            if norm not in carrier_lookup:
+                helper_tick_edges.setdefault(norm, oriented)
+
+    angle_groups: List[List[Tuple[str, str, str]]] = []
+    angle_group_arc_counts: List[int] = []
+    angle_components = angle_union.components()
+    explicit_angle_groups: List[Tuple[int, List[Tuple[str, Tuple[str, str]]]]] = []
+    for component in angle_components.values():
+        sorted_wedges = sorted(component)
+        order = min(explicit_wedge_occurrence.get(wedge, math.inf) for wedge in sorted_wedges)
+        explicit_angle_groups.append((order, sorted_wedges))
+    explicit_angle_groups.sort(key=lambda item: (item[0], tuple(item[1])))
+
+    for idx, (_, wedges) in enumerate(explicit_angle_groups, start=1):
+        members: List[Tuple[str, str, str]] = []
+        seen_triples: set = set()
+        for wedge in wedges:
+            orientations = wedge_orientations.get(wedge)
+            if not orientations:
+                a, c = wedge[1]
+                orientations = [(a, wedge[0], c)]
+            for triple in orientations:
+                if triple not in seen_triples:
+                    members.append(triple)
+                    seen_triples.add(triple)
+        angle_groups.append(members)
+        angle_group_arc_counts.append(idx)
+
+    explicit_wedges = set(explicit_wedge_occurrence)
+    implicit_bisectors = sorted(
+        bisector_occurrence.items(), key=lambda item: (item[1], item[0])
+    )
+    for norm, _ in implicit_bisectors:
+        if norm in explicit_wedges:
+            continue
+        triple = bisector_orientations.get(norm)
+        if not triple:
+            a, c = norm[1]
+            triple = (a, norm[0], c)
+        angle_groups.append([triple])
+        angle_group_arc_counts.append(2)
 
     labels = list(point_labels.values()) + side_labels
 
@@ -456,12 +659,17 @@ def _build_render_plan(
     )
     plan.tick_overflow_edges = tick_overflow_edges
     plan.helper_tick_edges = helper_tick_edges
+    plan.tick_overlay_edges = tick_overlay_edges
     plan.carrier_lookup = carrier_lookup
-    plan.angle_groups = equal_angle_groups
+    plan.angle_groups = angle_groups
+    plan.angle_group_arc_counts = angle_group_arc_counts
+    plan.right_angles = right_angle_marks
+    plan.notes = diagnostics
     plan.polygon_vertices = polygon_vertices
     plan.circle_centers = circle_centers
     plan.special_points = special_points
     return plan
+
 
 
 def _edge_from_data(value: object) -> Optional[Tuple[str, str]]:
@@ -476,6 +684,11 @@ def _edge_from_data(value: object) -> Optional[Tuple[str, str]]:
 def _normalize_edge(edge: Tuple[str, str]) -> Tuple[str, str]:
     a, b = edge
     return (a, b) if a <= b else (b, a)
+
+
+def _normalize_wedge(triple: Tuple[str, str, str]) -> Tuple[str, Tuple[str, str]]:
+    a, b, c = triple
+    return (b, (a, c) if a <= c else (c, a))
 
 
 def _cycle_edges(ids: Tuple[str, ...]) -> Iterable[Tuple[str, str]]:
@@ -495,6 +708,32 @@ def _angle_triple(value: object) -> Optional[Tuple[str, str, str]]:
     if all(isinstance(x, str) for x in (a, b, c)):
         return (a, b, c)
     return None
+
+
+def _extract_angle_bisectors(value: object) -> List[Tuple[str, str, str]]:
+    triples: List[Tuple[str, str, str]] = []
+
+    def visit(obj: object) -> None:
+        if isinstance(obj, tuple):
+            if len(obj) == 2 and obj[0] == "angle-bisector" and isinstance(obj[1], dict):
+                payload = obj[1]
+                triple = _angle_triple(payload.get("points"))
+                if not triple:
+                    triple = _angle_triple(payload.get("points_chain"))
+                if triple:
+                    triples.append(triple)
+                    return
+            for item in obj:
+                visit(item)
+        elif isinstance(obj, list):
+            for item in obj:
+                visit(item)
+        elif isinstance(obj, dict):
+            for item in obj.values():
+                visit(item)
+
+    visit(value)
+    return triples
 
 
 def _angle_label_from_opts(
@@ -540,7 +779,11 @@ def _emit_tikz_picture(plan: RenderPlan, layout_scale: float, rules: Mapping[str
             )
         lines.append("")
 
-    tick_map = _build_tick_map(plan.ticks)
+    bbox = _coords_bbox(plan.points.values())
+    span = _scene_span(plan.points.values())
+    scene_diag = _scene_bbox_diag(bbox)
+    length_epsilon = EPS_LEN_FACTOR * scene_diag
+    tick_map = _build_tick_map(plan.ticks, plan.points, length_epsilon)
 
     lines.append("  \\begin{pgfonlayer}{main}")
     for start, end, style in plan.carriers:
@@ -550,8 +793,6 @@ def _emit_tikz_picture(plan: RenderPlan, layout_scale: float, rules: Mapping[str
         style_tokens = ["carrier"]
         for idx in tick_map.get(key, []):
             style_tokens.append(f"tick{idx}")
-        if plan.tick_overflow_edges.get(key):
-            style_tokens.append("densely dashed")
         lines.append(
             "    \\draw[{styles}] ({a}) -- ({b});".format(
                 styles=", ".join(style_tokens), a=start, b=end
@@ -577,15 +818,12 @@ def _emit_tikz_picture(plan: RenderPlan, layout_scale: float, rules: Mapping[str
     lines.append("  \\end{pgfonlayer}")
     lines.append("")
 
-    span = _scene_span(plan.points.values())
-    bbox = _coords_bbox(plan.points.values())
     point_label_map = {
         label.target: label for label in plan.labels if label.kind == "point"
     }
     side_label_specs = [label for label in plan.labels if label.kind == "side"]
 
     pt_per_unit = max(layout_scale * PT_PER_CM, 1e-6)
-    scene_diag = _scene_bbox_diag(bbox)
     scene_diag_pt = scene_diag * pt_per_unit
     base_offset_pt = max(1.8 * GS_DOT_RADIUS_PT, 0.012 * scene_diag_pt)
     base_offset_units = base_offset_pt / pt_per_unit if pt_per_unit > 0 else 0.0
@@ -599,6 +837,20 @@ def _emit_tikz_picture(plan: RenderPlan, layout_scale: float, rules: Mapping[str
         aux_lines = _emit_aux_path(path, plan.points, span, style)
         for entry in aux_lines:
             lines.append("    " + entry)
+
+    for key, oriented in plan.tick_overlay_edges.items():
+        a, b = oriented
+        if a not in plan.points or b not in plan.points:
+            continue
+        tokens = ["carrier", "draw opacity=0"]
+        for idx in tick_map.get(key, []):
+            tokens.append(f"tick{idx}")
+        tokens.append("densely dashed")
+        lines.append(
+            "    \\draw[{styles}] ({a}) -- ({b});".format(
+                styles=", ".join(tokens), a=a, b=b
+            )
+        )
 
     for key, oriented in plan.helper_tick_edges.items():
         if oriented[0] not in plan.points or oriented[1] not in plan.points:
@@ -681,12 +933,23 @@ def _emit_tikz_picture(plan: RenderPlan, layout_scale: float, rules: Mapping[str
     return "\n".join(lines)
 
 
-def _build_tick_map(ticks: Sequence[Tuple[str, str, int]]) -> Dict[Tuple[str, str], List[int]]:
+def _build_tick_map(
+    ticks: Sequence[Tuple[str, str, int]],
+    points: Mapping[str, Tuple[float, float]],
+    length_epsilon: float,
+) -> Dict[Tuple[str, str], List[int]]:
     mapping: Dict[Tuple[str, str], List[int]] = defaultdict(list)
     for a, b, idx in ticks:
+        if a not in points or b not in points:
+            continue
+        if _distance(points[a], points[b]) <= length_epsilon:
+            continue
         key = _normalize_edge((a, b))
-        if idx not in mapping[key]:
-            mapping[key].append(idx)
+        bucket = mapping[key]
+        if idx not in bucket:
+            bucket.append(idx)
+    for key in list(mapping.keys()):
+        mapping[key].sort()
     return mapping
 
 
@@ -1029,13 +1292,14 @@ def _render_angle_marks(
     coords = plan.points
 
     wedge_groups: Dict[Tuple[str, Tuple[str, str]], int] = {}
-    for group_index, group in enumerate(plan.angle_groups, start=1):
+    for idx, group in enumerate(plan.angle_groups):
+        arc_count = plan.angle_group_arc_counts[idx] if idx < len(plan.angle_group_arc_counts) else len(group)
         for A, B, C in group:
-            wedge_groups[_wedge_key(A, B, C)] = max(
-                wedge_groups.get(_wedge_key(A, B, C), 0), group_index
-            )
+            key = _wedge_key(A, B, C)
+            wedge_groups[key] = max(wedge_groups.get(key, 0), arc_count)
 
-    for group_index, group in enumerate(plan.angle_groups, start=1):
+    for idx, group in enumerate(plan.angle_groups):
+        arc_count = plan.angle_group_arc_counts[idx] if idx < len(plan.angle_group_arc_counts) else len(group)
         for A, B, C in group:
             if not _points_present((A, B, C), coords):
                 continue
@@ -1046,7 +1310,7 @@ def _render_angle_marks(
             if measure < 6.0:
                 continue
             base_radius_pt = _angle_base_radius_pt(coords, A, B, C, pt_per_unit)
-            for arc_idx in range(group_index):
+            for arc_idx in range(arc_count):
                 radius_pt = base_radius_pt + arc_idx * GS_ANGLE_SEP_PT
                 arcs.append(
                     f"\\path pic[draw, angle radius={_format_pt_dimension(radius_pt)}] {{angle={start}--{B}--{end}}};"
@@ -1055,19 +1319,10 @@ def _render_angle_marks(
     numeric_vertices: set = set()
     for entry in plan.angles:
         kind = entry.get("kind")
-        if kind == "equal":
-            continue
         A = entry.get("A")
         B = entry.get("B")
         C = entry.get("C")
         if not (isinstance(A, str) and isinstance(B, str) and isinstance(C, str)):
-            continue
-        if kind == "right":
-            if not _points_present((A, B, C), coords):
-                continue
-            arcs.append(
-                f"\\path pic[draw, angle radius=\\gsAngR] {{right angle={A}--{B}--{C}}};"
-            )
             continue
         if kind != "numeric":
             continue
@@ -1100,6 +1355,13 @@ def _render_angle_marks(
         if label_entry:
             label_entries.append(label_entry)
         numeric_vertices.add(B)
+
+    for A, B, C, force in plan.right_angles:
+        if not _points_present((A, B, C), coords):
+            continue
+        if not force and not rules.get("mark_right_angles_as_square", False):
+            continue
+        arcs.append(f"\\path pic[draw, angle radius=\\gsAngR] {{right angle={A}--{B}--{C}}};")
 
     return arcs, label_entries, boxes
 
