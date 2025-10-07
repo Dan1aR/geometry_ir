@@ -1421,6 +1421,259 @@ Populate this by walking the **desugared** program + options:
 **19.11.5 Minimal preamble**
 Replace the heavy preamble with the minimal block in 19.1; return a `standalone` document without `varwidth/adjustbox/pgfplots`.
 
+
+## 19.12 Orientation — Post‑solve “Nice” Figure Alignment (rigid only)
+
+**Goal.** After the solver converges, but **before** TikZ generation, apply a *rigid* transform (rotation, optionally a mirror/reflection; plus a neutral translation around a pivot) to all points so that common figures appear with a visually “nice” orientation:
+
+* **Trapezoid**: bases horizontal; the **smaller base is on top**.
+* **Isosceles triangle**: the **base** is horizontal.
+
+This pass does **not** change distances or angles; it only composes an isometry with the solved coordinates and then hands the re‑oriented coordinates to the TikZ renderer. No residuals are recomputed; DDC checks (§16) use the original solution.
+
+> **Integrity guarantee:** The orientation transform is an orthogonal map `Q` (`QᵀQ=I`, `det(Q)=±1`) and a translation `t`. For every point `P`, we emit `P' = Q·(P − p₀) + p₀ + t` with a pivot `p₀` (see below). Distances, angles, incidences, parallelism, and perpendicularity are preserved.
+
+---
+
+### 19.12.1 Scope & when to apply
+
+We act on **one** “main” figure if present; otherwise orientation is a no‑op.
+
+**Priority order (pick the first that exists):**
+
+1. A declared **trapezoid** (`trapezoid A-B-C-D`), preferring the one with an explicit `[bases=...]` option.
+2. A declared **triangle** that is **isosceles** (explicit `isosceles=atA|atB|atC` or implied by `equal-segments` on two sides).
+
+If multiple candidates tie within a class, choose the one with **largest area** (computed from solved coordinates); on ties, the **earliest** in source order.
+
+> No automatic detection for non‑declared shapes. If neither (1) nor (2) exists, skip orientation.
+
+---
+
+### 19.12.2 Numerical tolerances
+
+Let `scene_scale = diag(bbox(points))` from the solved coordinates.
+
+```
+ε_len   = 1e-9 * scene_scale     # length equality / base choice tolerance
+ε_ang   = 1e-9                    # radian tolerance for horizontality checks
+ε_para  = 1e-12 * scene_scale     # parallel test (cross magnitude threshold)
+```
+
+These tolerances are only used to break ties and avoid flip‑flop on nearly equal cases.
+
+---
+
+### 19.12.3 Trapezoid policy (bases horizontal; smaller base on top)
+
+**Inputs.** A quadrilateral `A–B–C–D` that the desugarer marked as a trapezoid. If `trapezoid [...] [bases=X-Y]` is present, `XY` is the **declared base**; otherwise, identify the two parallel sides.
+
+**Steps.**
+
+1. **Identify the two bases**
+   *If `[bases=X-Y]` present*: let `B₁ = (X,Y)`, `B₂ =` the opposite side parallel to `B₁`.
+   *Else*: among edges `{AB, BC, CD, DA}`, pick the **two** whose direction vectors are parallel (`|cross(u,v)| ≤ ε_para·(‖u‖+‖v‖)`).
+
+2. **Choose orientation direction (for horizontality)**
+   Let `v = direction(B₁)` if `[bases=...]` was provided; otherwise let `v` be the **average** of the two base directions (normalized, same sign).
+
+3. **Compute rotation to horizontal**
+   Let `θ = -atan2(v_y, v_x)` and `R(θ)` the rotation matrix. This makes the bases *horizontal*.
+
+4. **Apply rotation around a pivot**
+   Use the **figure centroid** as pivot: `p₀ = mean({A,B,C,D})`. Set temporary coords `P* = R(θ)·(P − p₀) + p₀` for all points `P`.
+
+5. **Decide which base is smaller and whether it is on top**
+   Compute `L₁ = ‖B₁*‖`, `L₂ = ‖B₂*‖`.
+   Let `B_small = argmin{L₁,L₂}`, `B_large = the other`.
+   Let `y_small = y(midpoint(B_small*))`, `y_large = y(midpoint(B_large*))`.
+
+6. **Flip if needed (mirror across the horizontal axis)**
+   If `y_small ≤ y_large + ε_len`: apply a vertical mirror (flip across the x‑axis) about the same pivot:
+
+   ```
+   F = diag(1, -1)
+   P' = F · (P* - p₀) + p₀
+   ```
+
+   else set `P' = P*`. Now the smaller base sits **above** the larger base.
+
+7. **(Optional) Neutral recenter**
+   No extra translation is required for TikZ. Renderers may shift by a small margin later when fitting the bbox (§19.10).
+
+**Outcome invariants (assertions):**
+
+* Both base directions are horizontal within `ε_ang`.
+* `y(midpoint(B_small')) > y(midpoint(B_large')) − ε_len`.
+* `‖P'_i − P'_j‖ = ‖P_i − P_j‖` for all named points.
+
+---
+
+### 19.12.4 Isosceles triangle policy (base horizontal)
+
+**Inputs.** `triangle A-B-C` with an explicit `isosceles=atV` (V ∈ {A,B,C}) **or** an `equal-segments` group pairing two triangle sides.
+
+**Steps.**
+
+1. **Identify the base side**
+   If `isosceles=atA`, base is `B–C` (opposite the equal legs `AB` and `AC`). Similarly for `atB`, `atC`.
+   If inferred from `equal-segments`, pick the unique side **not** in the equality pair as the base.
+
+2. **Rotate to horizontal**
+   Let `v = direction(base)`, `θ = -atan2(v_y, v_x)`, `p₀ = mean({A,B,C})`.
+   Apply `R(θ)` about `p₀`: `P' = R(θ)·(P − p₀) + p₀` for all points.
+
+3. **No forced flip**
+   We **do not** mandate “apex up”/“down”. The requirement is *only* “base horizontal”. (A future option could add `apex_up=true|false` if needed.)
+
+**Outcome invariants:**
+
+* Base direction horizontal within `ε_ang`.
+* Isometry preserved.
+
+---
+
+### 19.12.5 Edge cases & tie‑breaking
+
+* **Ambiguous bases (almost equal lengths).** If `|L₁−L₂| ≤ ε_len` in a trapezoid, treat the base named by `[bases=...]` as **authoritative**. If absent, prefer the base whose **midpoint** currently has the **smaller** y after rotation, then flip to enforce “smaller on top”. This yields stability across runs.
+* **Multiple trapezoids/triangles.** The **largest‑area** candidate wins; on equal areas within `ε_len`, pick the one that appears **earliest** in the source program.
+* **Already horizontal / already “small‑on‑top”.** The pass becomes the identity (no rotation; no flip).
+* **Degenerate/near‑parallel failures.** If a trapezoid’s “bases” cannot be identified (no pair of parallel sides within `ε_para`), skip orientation with a warning note in diagnostics.
+
+---
+
+### 19.12.6 API & integration points
+
+```python
+@dataclass
+class OrientationResult:
+    Q: np.ndarray        # 2x2 orthogonal (rotation or rotation+reflection)
+    t: np.ndarray        # 2-vector translation (usually 0)
+    kind: Literal["identity","rotation","rotation+reflection"]
+    pivot: Tuple[float,float]
+    figure: Optional[Dict[str, Any]]   # {"kind":"trapezoid"/"triangle", "ids":[...], "notes":[...]}
+    notes: List[str]
+```
+
+```python
+def orient_for_rendering(program: Program,
+                         solution: Solution) -> Tuple[Dict[str, Tuple[float,float]], OrientationResult]:
+    """
+    Returns: (coords_oriented, diagnostics) where coords_oriented maps every point id to oriented coordinates.
+    This function never mutates 'solution'; DDC and solver stats continue to reference original coordinates.
+    """
+```
+
+**Pipeline insertion (extends §17.2 & §19.11):**
+
+```python
+# after solving & (optionally) after DDC-Check
+coords = solution.point_coords
+coords, orient_diag = orient_for_rendering(program, solution)
+
+# feed the oriented coords to RenderPlan/TikZ
+render_plan = build_render_plan(program, coords)
+tikz = emit_tikz(render_plan)
+```
+
+Add a renderer option `orient="auto"|"off"|"trapezoid"|"triangle"` (default `"auto"`). If `"off"`, skip this pass. If a specific kind is forced but missing, skip with a diagnostic.
+
+---
+
+### 19.12.7 Determinism requirements
+
+* The chosen figure and transform must be **deterministic** given the program and solved coordinates. Choices rely on explicit metadata first; otherwise on stable geometric scores (area, y‑ordering), then source order.
+* The transform is computed **once** per render and applied to **all** named points (including circle centers); radii are unchanged.
+
+---
+
+### 19.12.8 Pseudocode
+
+```python
+def orient_for_rendering(program, solution):
+    pts = solution.point_coords.copy()
+
+    # --- choose main figure
+    traps = collect_declared_trapezoids(program)
+    tris  = collect_isosceles_triangles(program)  # explicit isosceles or inferred from equal-segments
+    main  = pick_main_figure(traps, tris, pts)    # priority: trapezoid > isosceles triangle
+
+    if main is None:
+        return pts, OrientationResult(Q=np.eye(2), t=np.zeros(2), kind="identity", pivot=(0,0), figure=None, notes=["no-op"])
+
+    if main.kind == "trapezoid":
+        B1, B2 = identify_bases(main, program, pts)              # respects [bases=...] if present
+        vdir   = pick_base_direction(B1, B2, prefer_declared=True)
+        p0     = centroid_of(main.vertex_ids, pts)
+        θ      = -math.atan2(vdir[1], vdir[0])
+        R      = rot2(θ)
+        ptsR   = {k: R @ (np.array(p) - p0) + p0 for k,p in pts.items()}
+
+        L1, L2 = seglen(ptsR, B1), seglen(ptsR, B2)
+        small, large = (B1, B2) if L1 <= L2 + ε_len else (B2, B1)
+        y_small = midpoint_y(ptsR, small)
+        y_large = midpoint_y(ptsR, large)
+
+        if y_small <= y_large + ε_len:
+            F  = np.diag([1.0, -1.0])
+            ptsF = {k: F @ (np.array(p) - p0) + p0 for k,p in ptsR.items()}
+            Q = F @ R; kind = "rotation+reflection"; ptsO = ptsF
+        else:
+            Q = R; kind = "rotation"; ptsO = ptsR
+
+        return ptsO, OrientationResult(Q=Q, t=np.zeros(2), kind=kind, pivot=tuple(p0), figure={"kind":"trapezoid","ids":main.vertex_ids}, notes=[])
+
+    if main.kind == "triangle" and main.is_isosceles:
+        base = find_isosceles_base(main, program, pts)
+        vdir = direction(pts, base)
+        p0   = centroid_of(main.vertex_ids, pts)
+        θ    = -math.atan2(vdir[1], vdir[0])
+        R    = rot2(θ)
+        ptsO = {k: R @ (np.array(p) - p0) + p0 for k,p in pts.items()}
+        return ptsO, OrientationResult(Q=R, t=np.zeros(2), kind="rotation", pivot=tuple(p0), figure={"kind":"triangle","ids":main.vertex_ids}, notes=[])
+```
+
+---
+
+### 19.12.9 Tests (must‑pass)
+
+1. **Trapezoid — small base on top**
+
+   ```
+   trapezoid A-B-C-D [bases=A-D]
+   ```
+
+   After orientation: `AD` and `BC` horizontal; `mid(BC).y < mid(AD).y` (or vice versa depending on naming) such that **smaller base has larger y**.
+
+2. **Trapezoid — no [bases], detect parallels**
+   Construct with bases unspecified; assert detection works and orientation matches policy.
+
+3. **Isosceles triangle — base horizontal**
+
+   ```
+   triangle A-B-C [isosceles=atA]
+   ```
+
+   After orientation: `BC` horizontal within `ε_ang`. No reflection forced.
+
+4. **No candidates**
+   Scene without trapezoid or isosceles triangle → identity transform; TikZ unchanged.
+
+5. **Determinism under near‑ties**
+   Two trapezoids same area within `ε_len` → earliest in source order is chosen; results stable across runs.
+
+6. **Distance & angle preservation**
+   For random scenes with orientation applied, assert `‖P'−Q'‖ == ‖P−Q‖` and angle at triples unchanged within `1e-12`.
+
+---
+
+### 19.12.10 Non‑goals (v1)
+
+* No translation normalization beyond pivoting; final framing is still handled by the TikZ bbox fit (§19.10).
+* No special handling for non‑isosceles triangles or other polygons.
+* No solver feedback; this is purely a rendering convenience.
+
+
 ---
 
 # 20) Rendering — Points & Angle Labels (policy + algorithms)
