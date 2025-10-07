@@ -936,12 +936,14 @@ def _format_label_text(text: str) -> str:
 
 def _format_measurement_value(value: object) -> Optional[str]:
     if isinstance(value, SymbolicNumber):
-        return value.text
+        return _latexify_math_text(value.text)
     if isinstance(value, (int, float)):
         return _format_float(float(value))
     if isinstance(value, str):
         stripped = value.strip()
-        return stripped if stripped else None
+        if not stripped:
+            return None
+        return _latexify_math_text(stripped)
     return None
 
 

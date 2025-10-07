@@ -1338,6 +1338,7 @@ Add seeding tests to the integration flow (see §17):
   ```
 
   Respect `rules[no_unicode_degree]` by always using `^\circ`. When no `degrees=` metadata exists, pick the ordering whose counter-clockwise sweep is < `180^\circ` (or closest to it if the configuration is straight/reflex) so TikZ draws the minor arc.
+  Any symbolic `degrees=` metadata first runs through the same math normalisation (`sqrt(...)` → `\sqrt{...}`) before the degree token is appended, ensuring radicals and products render correctly inside the angle label.
 * **Right angle** (`right-angle A-B-C`): always draw the square symbol at `B` via the TikZ `right angle` pic, never an arc or `$90^\circ$` label:
 
   ```tex

@@ -92,6 +92,25 @@ def test_no_unicode_degree_rule_forces_circ_symbol() -> None:
     assert "°" not in tikz
 
 
+def test_angle_symbolic_measurement_uses_latex_sqrt() -> None:
+    program = Program(
+        [
+            Stmt(
+                "angle_at",
+                Span(1, 1),
+                {"points": ("C", "B", "A")},
+                {"degrees": SymbolicNumber("sqrt(2)", value=math.sqrt(2))},
+            ),
+        ]
+    )
+    coords = {"A": (0.0, 1.0), "B": (0.0, 0.0), "C": (1.0, 0.0)}
+
+    tikz = generate_tikz_code(program, coords)
+
+    assert "\\sqrt{2}" in tikz
+    assert "sqrt(2)" not in tikz
+
+
 def test_target_angle_is_ignored_for_now() -> None:
     program = Program(
         [
