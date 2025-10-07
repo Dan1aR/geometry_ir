@@ -612,19 +612,9 @@ def _emit_tikz_picture(plan: RenderPlan, layout_scale: float, rules: Mapping[str
     for A, B, C in plan.right_angles:
         if not _points_present((A, B, C), plan.points):
             continue
-        if rules.get("mark_right_angles_as_square", False):
-            lines.append(
-                f"    \\path pic[draw, angle radius=\\gsAngR] {{right angle={A}--{B}--{C}}};"
-            )
-        else:
-            degree_token = "^\\circ" if rules.get("no_unicode_degree", False) else "°"
-            label = f"$90{degree_token}$"
-            lines.append(
-                "    \\path pic[draw, angle radius=\\gsAngR, \"{label}\"{{scale=0.9}}] {{{body}}};".format(
-                    label=label,
-                    body=f"angle={A}--{B}--{C}",
-                )
-            )
+        lines.append(
+            f"    \\path pic[draw, angle radius=\\gsAngR] {{right angle={A}--{B}--{C}}};"
+        )
 
     for A, B, C, degrees, label in plan.angle_arcs:
         if not _points_present((A, B, C), plan.points):
@@ -633,15 +623,40 @@ def _emit_tikz_picture(plan: RenderPlan, layout_scale: float, rules: Mapping[str
         if label:
             options.append(f"\"{label}\"{{scale=0.9}}")
         start, end = A, C
-        if degrees is not None:
-            orientation = _oriented_angle_degrees(plan.points, A, B, C)
-            swapped_orientation = _oriented_angle_degrees(plan.points, C, B, A)
-            target = _normalise_angle_degrees(degrees)
-            if orientation is not None and swapped_orientation is not None:
-                direct_diff = _angular_difference_degrees(orientation, target)
-                swapped_diff = _angular_difference_degrees(swapped_orientation, target)
-                if swapped_diff + 1e-4 < direct_diff:
-                    start, end = C, A
+        orientation = _oriented_angle_degrees(plan.points, A, B, C)
+        swapped_orientation = _oriented_angle_degrees(plan.points, C, B, A)
+        if orientation is not None and swapped_orientation is not None:
+            if degrees is not None:
+                target = _normalise_angle_degrees(degrees)
+                candidates = [
+                    (A, C, _normalise_angle_degrees(orientation)),
+                    (C, A, _normalise_angle_degrees(swapped_orientation)),
+                ]
+                best = min(
+                    candidates,
+                    key=lambda item: _angular_difference_degrees(item[2], target),
+                )
+                start, end = best[0], best[1]
+            else:
+                tol = 1e-4
+                candidates = [
+                    (A, C, orientation),
+                    (C, A, swapped_orientation),
+                ]
+                less_than = [cand for cand in candidates if cand[2] < 180.0 - tol]
+                if less_than:
+                    start, end = less_than[0][0], less_than[0][1]
+                else:
+                    not_reflex = [cand for cand in candidates if cand[2] <= 180.0 + tol]
+                    if not_reflex:
+                        best = min(
+                            not_reflex,
+                            key=lambda item: abs(item[2] - 180.0),
+                        )
+                        start, end = best[0], best[1]
+                    else:
+                        best = min(candidates, key=lambda item: item[2])
+                        start, end = best[0], best[1]
         lines.append(
             "    \\path pic[{opts}] {{{body}}};".format(
                 opts=", ".join(options), body=f"angle={start}--{B}--{end}"

@@ -1327,26 +1327,22 @@ Add seeding tests to the integration flow (see §17):
 
 * If `rules[no_equations_on_sides=true]`, **suppress** all auto numeric side labels. Use `sidelabel A-B "..."` to force a sloped label (`node[midway, sloped, above|below]`).
 * **Equal segments**: for each group, apply `tick1` / `tick2` / `tick3` to every segment in that group. If >3 groups, cycle ticks then add `densely dashed` to distinguish.
+* Side labels are always emitted inside math mode. We normalise `sqrt(...)` products (e.g., `3*sqrt(2)`) **only** within that LaTeX context so radicals never appear as plain text.
 
 **19.6 Angles**
 
-* **Numeric angle** (`angle A-B-C [degrees=θ]`): draw one arc at `B` via `pic`:
+* **Numeric angle** (`angle A-B-C [degrees=θ]`): choose the ray order whose counter-clockwise measurement best matches `θ`, then draw one arc at `B` via `pic`:
 
   ```tex
   \path pic[draw, angle radius=\gsAngR, "$\num{θ}$"{scale=0.9}] {angle=A--B--C};
   ```
 
-  Respect `rules[no_unicode_degree]` by always using `^\circ`.
-* **Right angle** (`right-angle A-B-C`)
+  Respect `rules[no_unicode_degree]` by always using `^\circ`. When no `degrees=` metadata exists, pick the ordering whose counter-clockwise sweep is < `180^\circ` (or closest to it if the configuration is straight/reflex) so TikZ draws the minor arc.
+* **Right angle** (`right-angle A-B-C`): always draw the square symbol at `B` via the TikZ `right angle` pic, never an arc or `$90^\circ$` label:
 
-  * If `rules[mark_right_angles_as_square=true]`: draw a square symbol at `B` (TikZ `angles` supports `right angle`):
-
-    ```tex
-    \path pic[draw, angle radius=\gsAngR] {right angle=A--B--C};
-    ```
-
-    Do **not** annotate `90^\circ`.
-  * Otherwise: use the same as “numeric angle” with label `$90^\circ$`.
+  ```tex
+  \path pic[draw, angle radius=\gsAngR] {right angle=A--B--C};
+  ```
 * **Equal angles** (`equal-angles (A-B-C, ... ; D-E-F, ...)`): for each *group*, draw **n arcs** (n=group index: 1=single, 2=double, 3=triple) at the relevant vertices. Radii are `\gsAngR`, `\gsAngR+\gsAngSep`, `\gsAngR+2\gsAngSep` for the multiple arcs, no labels.
 
 **19.7 Medians, bisectors, altitudes (marks)**
