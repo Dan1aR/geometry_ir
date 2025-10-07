@@ -6,7 +6,7 @@ import math
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple, Union
+from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 from .utils import latex_escape_keep_math
 from ..ast import Program
@@ -187,8 +187,6 @@ def _build_render_plan(
     angle_arcs: List[Tuple[str, str, str, Optional[float], Optional[str]]] = []
     point_labels: Dict[str, LabelSpec] = {}
     side_labels: List[LabelSpec] = []
-    explicit_side_edges: Set[Tuple[str, str]] = set()
-    auto_length_labels: Dict[Tuple[str, str], str] = {}
 
     tick_group = 0
 
@@ -204,10 +202,6 @@ def _build_render_plan(
             key = _normalize_edge(edge)
             carriers.setdefault(key, (edge[0], edge[1], {}))
             carrier_lookup[key] = (edge[0], edge[1])
-            if not rules.get("no_equations_on_sides", False):
-                length_text = _extract_segment_length_text(opts)
-                if length_text:
-                    auto_length_labels[key] = length_text
         elif kind == "diameter":
             edge = _edge_from_data(data.get("edge"))
             if not edge:
@@ -307,7 +301,6 @@ def _build_render_plan(
             if not edge or not isinstance(text, str):
                 continue
             pos = opts.get("pos") if isinstance(opts.get("pos"), str) else None
-            explicit_side_edges.add(_normalize_edge(edge))
             side_labels.append(
                 LabelSpec(
                     kind="side",
@@ -374,24 +367,6 @@ def _build_render_plan(
         }:
             # Targets are currently ignored by the TikZ renderer.
             continue
-
-    # Auto length labels (respect explicit sidelabel suppression)
-    for key, text in auto_length_labels.items():
-        if key in explicit_side_edges:
-            continue
-        if key not in carrier_lookup:
-            continue
-        a, b = carrier_lookup[key]
-        side_labels.append(
-            LabelSpec(
-                kind="side",
-                target=(a, b),
-                text=text,
-                position="above",
-                slope=False,
-                explicit=False,
-            )
-        )
 
     labels = list(point_labels.values()) + side_labels
 
@@ -944,19 +919,6 @@ def _format_measurement_value(value: object) -> Optional[str]:
         if not stripped:
             return None
         return _latexify_math_text(stripped)
-    return None
-
-
-def _extract_segment_length_text(
-    opts: Optional[Mapping[str, object]]
-) -> Optional[str]:
-    if not opts:
-        return None
-    for key in ("length", "distance", "value"):
-        if key in opts:
-            text = _format_measurement_value(opts[key])
-            if text:
-                return text
     return None
 
 

@@ -1325,7 +1325,7 @@ Add seeding tests to the integration flow (see §17):
 
 **19.5 Side labels vs. ticks**
 
-* If `rules[no_equations_on_sides=true]`, **suppress** all auto numeric side labels. Use `sidelabel A-B "..."` to force a sloped label (`node[midway, sloped, above|below]`).
+* `[length=...]` metadata on `segment` objects is ignored by the TikZ renderer; no automatic side equations are emitted. Use `sidelabel A-B "..."` to draw any edge text. (The legacy `rules[no_equations_on_sides]` flag no longer changes rendering but is accepted for forward compatibility.)
 * **Equal segments**: for each group, apply `tick1` / `tick2` / `tick3` to every segment in that group. If >3 groups, cycle ticks then add `densely dashed` to distinguish.
 * Side labels are always emitted inside math mode. We normalise `sqrt(...)` products (e.g., `3*sqrt(2)`) **only** within that LaTeX context so radicals never appear as plain text.
 
@@ -1394,7 +1394,7 @@ Populate this by walking the **desugared** program + options:
 * **Equal angles**: collect into groups.
 * **Right angles**: all `right-angle` statements; also synthesize from tangency if present.
 * **Angle arcs**: from `angle A-B-C [degrees=..]`.
-* **Labels**: from `label point` and `sidelabel`; suppress numeric side labels if `rules[no_equations_on_sides]`.
+* **Labels**: from `label point` and explicit `sidelabel`. Ignore any `[length=...]` metadata carried by `segment` statements when building the plan.
 *Targets are collected in the IR but presently skipped by the TikZ renderer.*
 
 **19.11.2 Suppress redundancy**

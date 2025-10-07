@@ -135,19 +135,3 @@ def test_latex_escape_preserves_math_segments() -> None:
     assert "of base" in escaped
 
 
-def test_segment_length_uses_math_formatting() -> None:
-    program = Program(
-        [
-            Stmt(
-                "segment",
-                Span(1, 1),
-                {"edge": ("A", "B")},
-                {"length": SymbolicNumber("sqrt(19)", value=math.sqrt(19))},
-            )
-        ]
-    )
-    coords = {"A": (0.0, 0.0), "B": (3.0, 0.0)}
-
-    tikz = generate_tikz_code(program, coords)
-
-    assert "\\sqrt{19}" in tikz
