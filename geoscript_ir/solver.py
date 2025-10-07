@@ -285,6 +285,7 @@ def build_seed_hints(program: Program, plan: Optional[DerivationPlan]) -> SeedHi
     global_hints: List[SeedHint] = []
     on_path_groups: Dict[str, List[SeedHint]] = defaultdict(list)
     circle_radius_refs: Dict[str, str] = {}
+    diameter_opposites: Dict[Tuple[str, str], str] = {}
 
     for stmt in program.stmts:
         data = stmt.data
@@ -295,6 +296,21 @@ def build_seed_hints(program: Program, plan: Optional[DerivationPlan]) -> SeedHi
             through = data.get("through")
             if _is_point_name(center) and _is_point_name(through):
                 circle_radius_refs.setdefault(str(center), str(through))
+            continue
+
+        if stmt.kind == "diameter":
+            center = data.get("center")
+            edge = data.get("edge")
+            if (
+                _is_point_name(center)
+                and isinstance(edge, (list, tuple))
+                and len(edge) == 2
+                and _is_point_name(edge[0])
+                and _is_point_name(edge[1])
+            ):
+                circle_radius_refs.setdefault(str(center), str(edge[0]))
+                diameter_opposites[(str(center), str(edge[0]))] = str(edge[1])
+                diameter_opposites[(str(center), str(edge[1]))] = str(edge[0])
             continue
 
         if stmt.kind == "point_on":
@@ -312,10 +328,15 @@ def build_seed_hints(program: Program, plan: Optional[DerivationPlan]) -> SeedHi
                 if fallback and not payload.get("fallback_radius_point"):
                     payload["fallback_radius_point"] = fallback
                 if stmt.origin == "desugar(diameter)":
-                    radius_point = payload.get("radius_point") or spec.get("radius_point")
-                    if _is_point_name(center) and _is_point_name(radius_point):
+                    if _is_point_name(center):
                         payload.setdefault("diameter_center", center)
-                        payload.setdefault("opposite_point", radius_point)
+                        opp = diameter_opposites.get((str(center), str(point)))
+                        if opp:
+                            payload.setdefault("opposite_point", opp)
+                        else:
+                            radius_point = payload.get("radius_point") or spec.get("radius_point")
+                            if _is_point_name(radius_point):
+                                payload.setdefault("opposite_point", radius_point)
             hint: SeedHint = {
                 "kind": "on_path",
                 "point": str(point),
@@ -798,8 +819,28 @@ def _diameter_rules(stmt: Stmt) -> List[Tuple[PointName, FunctionalRule]]:
         )
     )
 
-    # Endpoints are typically treated as variables; deriving them from the center
-    # can introduce cyclic plans.  Only expose the center reflection rule.
+    def make_endpoint_rule(known: PointName, target: PointName) -> Tuple[PointName, FunctionalRule]:
+        inputs = [center, known]
+
+        def compute(coords: Dict[PointName, Tuple[float, float]]) -> Tuple[float, float]:
+            _ensure_inputs(coords, inputs)
+            c = coords[center]
+            k = coords[known]
+            return (2.0 * c[0] - k[0], 2.0 * c[1] - k[1])
+
+        return (
+            target,
+            FunctionalRule(
+                name=f"diameter:reflect({target})",
+                inputs=inputs,
+                compute=compute,
+                source=_rule_source(stmt),
+            ),
+        )
+
+    results.append(make_endpoint_rule(a, b))
+    results.append(make_endpoint_rule(b, a))
+
     return results
 
 
@@ -2103,6 +2144,17 @@ def _compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
             through = data.get("through")
             if isinstance(center, str) and isinstance(through, str):
                 circle_radius_refs.setdefault(center, []).append(through)
+        elif stmt.kind == "diameter":
+            center = data.get("center")
+            edge = data.get("edge")
+            if (
+                isinstance(center, str)
+                and isinstance(edge, (list, tuple))
+                and len(edge) == 2
+            ):
+                first = edge[0]
+                if isinstance(first, str):
+                    circle_radius_refs.setdefault(center, []).append(first)
 
     if circle_radius_refs:
         radius_lookup = {center: refs[0] for center, refs in circle_radius_refs.items() if refs}
@@ -2117,7 +2169,16 @@ def _compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
                 if any(key in stmt.opts for key in ("radius", "distance")):
                     continue
                 radius_point = radius_lookup.get(payload)
-                if radius_point and "radius_point" not in stmt.opts:
+                if not isinstance(radius_point, str):
+                    continue
+                if stmt.origin == "desugar(diameter)":
+                    original = stmt.opts.get("radius_point")
+                    if _is_point_name(original):
+                        stmt.opts.setdefault("diameter_opposite", str(original))
+                    point_name = stmt.data.get("point")
+                    if _is_point_name(point_name) and str(point_name) != radius_point:
+                        stmt.opts["radius_point"] = radius_point
+                elif "radius_point" not in stmt.opts:
                     stmt.opts["radius_point"] = radius_point
             elif stmt.kind in {"line_tangent_at", "tangent_at"}:
                 center = stmt.data.get("center")
