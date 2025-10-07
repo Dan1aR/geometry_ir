@@ -1673,6 +1673,246 @@ def orient_for_rendering(program, solution):
 * No special handling for non‑isosceles triangles or other polygons.
 * No solver feedback; this is purely a rendering convenience.
 
+---
+
+## 19.13 Standard Notation — Equal Segments, Equal Angles & Derived Construction Marks
+
+> This section **consolidates and formalizes** how the TikZ generator renders:
+>
+> * equal **segments** (single/double/... ticks),
+> * equal **angles** (1/2/… arcs),
+> * and what **altitudes**, **angle bisectors**, and **medians** *visually* generate (right‑angle squares, equal‑angle arcs, equal‑length ticks).
+>   It complements §§19.5–19.7 and §20 by specifying **deterministic grouping, tie‑breaking, and emission** rules.
+
+### 19.13.0 Scope & invariants
+
+* A **segment** that belongs to an equality group **must** carry the same number of **ticks** as every other segment in that group (single/double/triple…).
+* An **angle** that belongs to an equality group **must** be drawn with the same number of **arcs** as every other angle in that group.
+* **Altitudes, bisectors, medians** always add their **canonical marks** even if the author did not redundantly add `equal-angles` / `equal-segments` statements:
+
+  * **Altitude**: right‑angle **square** at the **foot**.
+  * **Angle bisector** at vertex `V`: **double‑arc** at `V` (no numeric label implied).
+  * **Median** to side `A–B` with midpoint `M`: apply equal‑length **ticks** to `A–M` and `M–B`.
+
+Marks are emitted on the **visible stroke**; no auxiliary carriers are auto‑drawn unless explicitly declared (see §19.3, §19.11.2).
+
+---
+
+### 19.13.1 Inputs that create equality/marking intent
+
+**Explicit equalities**
+
+* `equal-segments (EdgeList ; EdgeList)`
+* `equal-angles   (AngleList ; AngleList)`
+
+**Implicit (derived) equalities/marks from construction objects**
+
+* `right-angle A-B-C` → right‑angle square at `B`.
+* `angle-bisector U-V-W` (path) → **double‑arc** at `V` (equal‑angle mark).
+* `median from P to A-B midpoint M` → **equal‑length** ticks on `A–M` and `M–B`.
+* `midpoint M of A-B` → **equal‑length** ticks on `A–M` and `M–B`.
+
+> These implicit visuals are **marks only**. They do not add metric constraints (solver behavior is defined in §6); they exist to make standard constructions legible.
+
+---
+
+### 19.13.2 Canonicalization & grouping (deterministic)
+
+The renderer builds **disjoint groups** for both segments and angles before emission. Determinism ensures stable tick/arc counts across runs.
+
+#### A) Equal‑**segments** groups
+
+1. **Normalize edges** as undirected, lexicographically ordered pairs: `edge(A,B) = (min(A,B), max(A,B))`.
+2. Build a **union‑find (disjoint‑set)** structure:
+
+   * For each `equal-segments (E... ; F...)`, **union** all edges in `E∪F`.
+   * For each `midpoint M of A-B` or `median ... midpoint M`, **union** `A–M` with `M–B` into an **implicit** group (unless either edge already belongs to an explicit group; see precedence below).
+3. Compute the **connected components**; each becomes one **segment equality group**.
+4. **Ordering (stable):**
+
+   * First, all groups that contain at least one edge mentioned in **explicit** `equal-segments` statements, ordered by the **first source occurrence** of any of their edges.
+   * Then, purely **implicit** groups (midpoints/medians), ordered by the **first occurrence** of their defining statement.
+5. Assign **group_index = 1,2,3,…** in that order.
+
+#### B) Equal‑**angles** groups
+
+1. **Normalize angles** as unordered wedges at the vertex: `∠(A,B,C)` is equal to `∠(C,B,A)` for **marking** purposes (we always draw the **minor** wedge; see §19.6).
+2. Build a **union‑find** over normalized wedges:
+
+   * For each `equal-angles (L ; R)`, union all angles in `L∪R`.
+   * For each `angle-bisector U-V-W`, create an **implicit** 2‑member group at `V` (the two halves around the bisector). Implemented as a single **double‑arc** at `V` (no need to enumerate half‑wedges).
+3. Components become **angle equality groups**. Order and **group_index** assignment mirror the segment rules: **explicit** groups first (by first occurrence), then **implicit bisector** marks.
+
+> **Conflict handling (angles)**: If the same wedge appears in **two explicit** groups, mark a renderer diagnostic (non‑fatal) and keep the **earliest** group’s index for drawing.
+
+---
+
+### 19.13.3 Emission rules (ticks, arcs, right‑angle squares)
+
+#### A) **Segments** — ticks
+
+* Per §19.1 styles `tick1`, `tick2`, `tick3` exist. For **group_index g ≥ 1**:
+
+  * Use `tick{ ((g-1) mod 3) + 1 }` as the **tick count**.
+  * If **g > 3**, add the stylistic qualifier `densely dashed` **only to the tick carrier stroke** (see emission note below) to visually distinguish groups that cycle the same tick count.
+* Apply the tick style to the **drawn segment**:
+
+  * If the segment is already drawn as a **carrier** (polygon side or declared `segment`), attach the tick style to that path.
+  * If it is **not otherwise drawn**, render a thin **dashed stub** of the segment solely to host the ticks (do **not** introduce new visible construction lines).
+* **Zero/near‑zero length edges** (`‖AB‖ ≤ ε_len`, §19.12.2): skip ticks.
+
+**Precedence when a segment is both explicit and implicit (median/midpoint):**
+Explicit `equal-segments` **wins** (its group_index/ticks are used). Implicit marks are suppressed to avoid double‑marking.
+
+**Emission note (g>3):**
+To avoid changing the visual of a primary carrier, emit a **second, overlay path** coincident with the segment using `draw opacity=0` + the tick decoration and `densely dashed`. This decorates ticks only, leaving the carrier’s solid stroke intact.
+
+#### B) **Angles** — arcs
+
+* For **group_index g**, draw **g concentric arcs** (no text). Radii follow §20.2:
+
+  ```
+  r_k = r0 + (k-1)*\gsAngSep,  k = 1..g,
+  r0 = clamp(0.12 * min(|BA|, |BC|), 7pt, 14pt)
+  ```
+* Always draw the **minor** wedge at the vertex (choose the ray ordering whose CCW measure is < `180^\circ`; fallbacks per §19.6).
+* If a numeric `angle A-B-C [degrees=θ|label="..."]` is **also** present for the same wedge, place its **numeric arc/label at radius `r0 + g*\gsAngSep`** (equal‑angle arcs stay **inside**).
+* **Tiny wedges** (`∠ < 6°`): skip equal‑angle arcs to avoid clutter (numeric labels may move to the external side with a leader per §20.2.1).
+
+#### C) **Right angles** — squares
+
+* `right-angle A-B-C` and **altitude** footprints always render:
+
+  ```
+  \path pic[draw, angle radius=\gsAngR] {right angle=A--B--C};
+  ```
+* **Never** draw `$90^\circ$` text for right angles (see §19.6).
+
+---
+
+### 19.13.4 Interactions, precedence & diagnostics
+
+* **Explicit vs implicit**
+  Explicit `equal-segments` / `equal-angles` **override** implicit marks at the same geometry (median/bisector). Implicit marks are suppressed when they would duplicate an explicit equality mark.
+* **Multiple explicit memberships (conflict)**
+  If an edge (or wedge) is pulled into **two** explicit groups, the renderer keeps the **earliest** group (source order) and logs a **diagnostic note** in the `RenderPlan` (non‑fatal).
+* **More than 3 groups** (segments)
+  Tick count cycles every 3; for `g>3` an overlay with `densely dashed` is added to differentiate. Angle groups **do not** need this fallback (arcs stack naturally).
+* **No carriers**
+  Ticks/arcs are marks; they **do not** force drawing of otherwise absent construction lines (except the dashed **stub** for a non‑drawn equal segment as host for ticks).
+* **Numeric angles with equal‑angles**
+  Equal‑angle arcs draw **inside**; the numeric arc and label are placed **outside** the stack (radius `r0 + g*\gsAngSep`), with collision‑avoidance per §20.2.
+
+---
+
+### 19.13.5 Data flow additions (RenderPlan)
+
+Extend the `RenderPlan` described in §19.11.1 with one optional field and clarifications:
+
+```python
+@dataclass
+class RenderPlan:
+    # (existing fields unchanged)
+    ticks: List[Tuple[str,str,int]]              # (A,B, group_index 1..)
+    equal_angle_groups: List[List[Tuple[str,str,str]]]  # groups of (A,B,C)
+    right_angles: List[Tuple[str,str,str]]       # (A,B,C), includes altitudes
+    notes: List[str]                             # renderer diagnostics (conflicts, suppressed implicit, g>3 overlays)
+```
+
+* Populate `ticks` from **explicit** groups first, then add **implicit** pairs `(A,M)` and `(M,B)` from **midpoints/medians** that do **not** collide with explicit groups.
+* Populate `equal_angle_groups` from explicit `equal-angles`; add **implicit** “bisector doubles” as single‑vertex marks (no need to enumerate two half‑wedges).
+* Populate `right_angles` from explicit `right-angle` and from **altitude** footprints.
+
+---
+
+### 19.13.6 Pseudocode (grouping & emission)
+
+```python
+# --- segments (union-find)
+edges = normalize_undirected_edges(program)
+UFs = UnionFind(edges)
+
+for stmt in equal_segments_statements:
+    for e in stmt.edges_all_lists:
+        UFs.union(e0, e)
+
+implicit_seg_pairs = []   # from midpoint/median
+for mid in midpoints_and_medians:
+    e1, e2 = (A,M), (M,B) = normalized_pairs(mid)
+    implicit_seg_pairs.append((e1,e2))
+
+# precedence: mark which edges are already explicit
+explicit_edges = set(flatten(UFs.components()))
+# merge implicit only if neither edge is explicit
+for (e1, e2) in implicit_seg_pairs:
+    if e1 not in explicit_edges and e2 not in explicit_edges:
+        UFs.union(e1, e2)
+
+groups = order_components(UFs, explicit_first=True)  # by first source occurrence
+for g_idx, comp in enumerate(groups, start=1):
+    for (A,B) in comp:
+        render_plan.ticks.append((A, B, g_idx))
+
+# --- angles (union-find)
+wedges = normalize_wedges(program)  # treat (A,B,C) == (C,B,A)
+UFa = UnionFind(wedges)
+
+for stmt in equal_angles_statements:
+    for w in stmt.wedges_all_lists:
+        UFa.union(w0, w)
+
+# implicit from bisectors: add a "double arc at V" mark
+for bis in bisector_statements:
+    render_plan.equal_angle_groups.append([("∗", bis.V, "∗")])  # marker: drawn as double-arc at V
+
+# order and assign group indices (explicit first)
+angle_groups = order_components(UFa, explicit_first=True)
+# emission later uses group index to choose arc count per-vertex
+
+# --- altitudes: right-angle squares
+for alt in altitude_like_statements:
+    A,B,C = alt.as_right_angle_triple()
+    render_plan.right_angles.append((A,B,C))
+```
+
+*(Actual emission follows §§19.11.3, 20.2 with radii, collision avoidance, and the overlay trick for `g>3` segment groups.)*
+
+---
+
+### 19.13.7 Examples (authoring → marks)
+
+**A. Explicit equal segments (2 groups) + a midpoint (implicit)**
+
+```
+equal-segments (A-B, C-D ; E-F)     # group 1 → single tick on AB, CD, EF
+equal-segments (G-H ; I-J, K-L)     # group 2 → double tick on GH, IJ, KL
+midpoint M of P-Q                    # implicit → single tick on PM and MQ (group 3)
+```
+
+**B. Equal angles + numeric angle on one member**
+
+```
+equal-angles (A-B-C, D-E-F ; G-H-I) # group 1 → single-arc at B, E, H
+angle A-B-C [degrees=30]            # numeric arc/label drawn OUTSIDE the group-1 arcs at B
+```
+
+**C. Bisector + Altitude + Median (implicit marks only)**
+
+```
+angle-bisector U-V-W                 # double-arc at V
+foot H from X to A-B                 # right-angle square at H
+median from C to A-B midpoint M      # ticks on AM and MB (equal segments implied)
+```
+
+---
+
+### 19.13.8 Acceptance checks (renderer)
+
+* **Segments**: Every edge in the same equality group uses the **same** tick count; explicit groups override implicit (median/midpoint).
+* **Angles**: Every wedge in a group shows the **same** number of arcs; numeric labels sit **outside** equal‑arc stacks.
+* **Constructions**: Altitude always shows a square; bisector a double‑arc; median/midpoint two equal‑length ticks.
+* **Determinism**: Tick/arc counts are **stable** under re‑ordering of unrelated statements; conflicts are noted in `RenderPlan.notes`.
+* **Clarity**: For `g>3` segment groups, an overlay with `densely dashed` is used to distinguish cyclic tick counts without altering the base carrier stroke.
 
 ---
 
