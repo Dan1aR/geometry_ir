@@ -1417,23 +1417,42 @@ Populate this by walking the **desugared** program + options:
 
 ### 19.11.5 **(Update) Generator hooks** — using the refined placement
 
-Replace the bullet “Angle labels: … center on bisector … increase radius …” with:
+Replace the numeric-angle bullet with:
 
 > **Angle labels (numeric) use §20.2.5.**
-> The generator must **not** increase the **arc** radius to fix collisions; it computes an **eccentricity** `e = r_lbl/r_arc` (Step A) and passes it to the `angle` pic. Only when Step A cannot produce a good placement do we switch to the **external** strategy with a short leader (Step B).
-> Equal‑angle stacks are taken into account via `g` when computing `r_arc`.
+> Keep the pic’s `angle radius` fixed; compute placement via `place_numeric_angle(…)` and emit either an internal quote (`angle eccentricity=…`) or the external `\draw` + `\node` pair.
 
-In code (Python side of codegen), add a helper:
+Add the helper and call it for every numeric angle:
 
 ```python
-def angle_label_params(A, B, C, text, g, r0, gs_ang_sep):
-    # returns dict with either:
-    # {"mode":"internal", "r_arc":..., "ecc":...}  OR
-    # {"mode":"external", "r_arc":..., "BextA":(x,y), "BextB":(x,y)}
-    ...
+def place_numeric_angle(A, B, C, text, g, r0, gs_ang_sep, scale):
+    """
+    Returns a dict with one of:
+      {"mode":"internal", "r_arc_pt":float, "ecc":float}
+      {"mode":"external", "r_arc_pt":float, "Pint":(x,y), "Ptxt":(x,y)}
+    All lengths here are in **pt**; world coordinates are in scene units (cm).
+    - r_arc_pt = r0 + g * gs_ang_sep
+    - For 'external', convert pt→world by PT_TO_UNIT = 0.03514598 * scale.
+    """
 ```
 
-and use it to emit either the `angle eccentricity=<ecc>` quote variant or the external `\node` + leader.
+Emission:
+
+```python
+if params["mode"] == "internal":
+    tikz += rf'\path pic[draw, angle radius={params["r_arc_pt"]:.2f}pt,'
+    tikz += rf'"${text}$", angle eccentricity={params["ecc"]:.4f},'
+    tikz += r' every pic quotes/.style={scale=0.9}] {angle=' + f'{A}--{B}--{C}' + '};'
+else:
+    tikz += rf'\path pic[draw, angle radius={params["r_arc_pt"]:.2f}pt] ' \
+            + '{angle=' + f'{A}--{B}--{C}' + '};'
+    (x1,y1),(x2,y2) = params["Pint"], params["Ptxt"]
+    tikz += rf'\draw[aux] ({x1:.4f}, {y1:.4f}) -- ({x2:.4f}, {y2:.4f});'
+    tikz += rf'\node[ptlabel, anchor=center] at ({x2:.4f}, {y2:.4f}) ' \
+            + '{$' + text + '$};'
+```
+
+*(The helper also returns any bounding boxes needed for later collision checks.)*
 
 ---
 
@@ -2040,135 +2059,167 @@ score(a) =
 
 ---
 
-### 20.2.5 **Numeric angle labels — adaptive, collision‑aware placement (v2)**
+### 20.2.5 Numeric angle labels — **fit‑to‑wedge** placement with bounded fallback
 
-**Motivation.** Using TikZ’s default `quotes` on the `angle` pic sometimes places the text **on** the arc (overlap) or **too far** away when we repeatedly increase the arc radius. We now:
+**Problem to solve.** TikZ’s default `quotes` sometimes places the label **on** the arc; our previous fix (only increasing `angle eccentricity`) still lets text overlap when the **chord available inside the wedge** is shorter than the text. Conversely, repeatedly inflating the radius makes labels look **too far**.
 
-* **keep the arc radius fixed** (for visual consistency),
-* place the label on the **bisector** at a **computed eccentricity** (distance from the vertex **relative** to the arc),
-* and fall back to an **external label with a short leader** for very narrow wedges.
+**Policy.** Keep the **arc radius fixed**, compute the **smallest safe radius for the text** using wedge geometry, and if that still cannot be placed cleanly (very narrow angles), switch to a **short external label** on the **external bisector** with a tiny leader.
+
+---
 
 #### Inputs per numeric angle
 
-For each `angle A-B-C [degrees=θ|label="…"]` to be rendered at vertex `B`:
+For each `angle A-B-C [degrees=θ|label="…"]`, at vertex `B`:
 
-* `ω` — the **minor** measure of `∠ABC` in **radians** (0, π).
-* `g` — number of **equal‑angle arcs** already drawn at this wedge (0 if none; see §19.13).
-* `r0` — base radius computed as in §20.2.1
-  `r0 = clamp( 0.12·min(|BA|, |BC|), 7pt, 14pt )`.
-* `r_arc` — **numeric arc radius** used for drawing this pic:
-  `r_arc = r0 + g·\gsAngSep`  (numeric arc sits **outside** any equal‑angle stack).
-* `text` — label contents (`label` if provided, else `f"{θ}^\circ"`).
+* Minor wedge `ω = ∠ABC ∈ (0,π)` in **radians** (computed from solved coordinates).
 
-Aux constants (scene‑wide):
+* `g` = number of **equal‑angle arcs** at this wedge (0 if none; see §19.13).
+
+* Base radius (same as §20.2.1):
+
+  ```
+  r0 = clamp( 0.12 * min(|BA|,|BC|), 7pt, 14pt )
+  ```
+
+* **Numeric arc radius** (always outside any equal‑angle stack):
+
+  ```
+  r_arc = r0 + g * \gsAngSep
+  ```
+
+* `text = label if provided else f"{θ}^\circ"`.
+
+**Constants (tunable, scene‑wide):**
 
 ```
-εφ = 4°                # angular margin to keep text off wedge edges
-pt_per_em = 9.0        # 1em≈9pt for \footnotesize (stable enough for placement)
-δ_clear = max(0.8·\gsAngSep, 3pt)   # min radial clearance from the arc
-cap = 2.5·\gsAngSep    # max extra radial distance allowed for "internal" labels
-tiny = 12°             # wedge threshold for forced external labeling
+εφ     = 4°     # angular side margin so text does not touch the wedge edges
+tiny   = 12°    # narrow-angle threshold ⇒ use external placement
+δclear = max(0.8·\gsAngSep, 3pt)   # radial gap between text baseline and the arc
+cap    = 2.5·\gsAngSep             # max extra radial offset allowed for "internal" text
+pt_per_em = 9.0                    # \footnotesize width scale, used in width estimate
 ```
 
-#### Step A — estimate radius that both clears the arc and fits the text
+---
 
-1. **Text width estimate (pt).**
-   `w ≈ pt_per_em · (0.52 · len(text))`
-   (0.52em per glyph is a good average for digits/degree sign in `\footnotesize`.)
+#### Step A — compute the **smallest safe internal radius** for the label
 
-2. **Radius required to fit chord inside wedge:**
-   We need a chord of length `w` strictly inside the wedge (margin `εφ`). For a circle of radius `r`, the available chord is
-   `L(r) = 2 r · sin( (ω − 2·εφ)/2 )`.
-   Solve for `r_fit`:
+1. **Estimate text width in pt**
+   (good enough for digits + degree symbol in `\footnotesize`):
 
    ```
-   ω_eff = max(ω − 2·rad(εφ), rad(5°))
-   r_fit = w / ( 2 · sin(ω_eff/2) )
+   w_pt ≈ pt_per_em * (0.52 * len(text))
    ```
 
-3. **Baseline internal radius for the label:**
+2. **Chord that fits inside the wedge.**
+   The text sits on the bisector; we need a chord of length `w_pt` **strictly inside** the wedge with a side‑margin `εφ`:
 
    ```
-   r_lbl = max( r_arc + δ_clear, r_fit )
+   ω_eff = max(ω − 2·rad(εφ), rad(5°))         # keep it positive & stable
+   L(r)  = 2 r · sin(ω_eff / 2)                # available chord at radius r
+   r_fit = w_pt / (2 · sin(ω_eff / 2))         # smallest radius that fits the text
    ```
 
-4. **Internal cap:** If `ω ≥ tiny` **and** `r_lbl ≤ r_arc + cap`, we place the label **inside** the wedge at radius `r_lbl`.
+3. **Candidate internal radius for the label baseline**:
 
-   *Emit via the `angle` pic with a computed eccentricity*
-   `e = r_lbl / r_arc` (dimensionless):
-
-   ```tex
-   \path pic[draw, angle radius=\rArc,
-             "$\text$",
-             angle eccentricity=\eLbl,
-             every pic quotes/.style={scale=0.9}] {angle=A--B--C};
+   ```
+   r_lbl = max( r_arc + δclear , r_fit )
    ```
 
-   > **Why this works:** `angle eccentricity` moves the quote **radially** along the bisector without changing the drawn arc.
-   > `δ_clear` guarantees the quote never touches the arc; `r_fit` prevents cramming.
+4. **Accept internal placement if**
 
-#### Step B — external fallback with leader (narrow or overcrowded)
+   ```
+   (ω ≥ tiny)  and  (r_lbl ≤ r_arc + cap)
+   ```
 
-If either condition holds
+   Emit the `angle` pic at **radius `r_arc`** with the label carried by
 
-* `ω < tiny`, **or**
-* `r_lbl > r_arc + cap` (text would sit uncomfortably far inside),
+   ```
+   angle eccentricity = (r_lbl / r_arc)
+   ```
 
-then render:
+   This keeps the **arc** visually consistent while moving the text just far enough.
 
-1. **Arc** at `r_arc` as usual (no quote).
-2. **Label** on the **external** bisector at
+---
+
+#### Step B — **external** fallback with a short leader
+
+If Step A fails (very narrow wedge or too much radial inflation needed), place the label on the **external bisector**:
+
+1. Draw the **numeric arc** at `r_arc` (no quote).
+2. Put the text at
 
    ```
    r_ext = r_arc + 1.6·\gsAngSep
    ```
 
-   Place a short **leader** from the arc to the label:
+   along the **external bisector**; draw a short **leader** of length `0.8·\gsAngSep` from the arc to the text.
+
+   *Vector math (performed in codegen, not in TikZ math):*
+
+   ```
+   uA   = normalize(A−B)
+   uC   = normalize(C−B)
+   uext = normalize(uA − uC)        # external bisector
+   Pint = B + (r_arc + 0.4·\gsAngSep)*uext   # leader start on external side
+   Ptxt = B + r_ext * uext                   # label position
+   ```
+
+   Emit
 
    ```tex
-   % arc
-   \path pic[draw, angle radius=\rArc] {angle=A--B--C};
-
-   % leader along external bisector (unit vector computed in codegen)
-   \draw[aux] (BextA) -- (BextB);   % 0.8·\gsAngSep long
-
-   % label at the tip
-   \node[ptlabel, anchor=center] at (BextB) {$\text$};
+   \draw[aux] (Pint) -- (Ptxt);  \node[ptlabel] at (Ptxt) {$\text$};
    ```
 
-   *Implementation notes:* The codegen computes the **internal** and **external** bisector unit vectors numerically:
+**Unit conversion.** `\gsAngSep`, `r0`, `r_arc` are **TeX lengths (pt)** while coordinates are in TikZ **cm**.
+The generator must multiply any **length** used to build `(Pint)`/`(Ptxt)` by
 
-   ```
-   uA = (A−B)/‖A−B‖, uC = (C−B)/‖C−B‖
-   u_int = normalize(uA + uC)            # internal bisector
-   u_ext = normalize(uA − uC)            # external bisector
-   BextA = B + (r_arc + 0.4·\gsAngSep) · u_ext
-   BextB = B + (r_ext)                  · u_ext
-   ```
+```
+PT_TO_UNIT = (1pt in cm) * tikzpicture_scale
+           = 0.03514598 * scale
+```
 
-   Use **absolute coordinates** in the emitted TikZ for `(BextA)` / `(BextB)` to keep this pure-TikZ.
-
-#### Step C — local collision check (lightweight)
-
-Before finalizing the inside placement in **Step A**, test the label box (axis‑aligned rectangle centered at the candidate) against:
-
-* drawn **segments/rays** within a small neighborhood of `B`,
-* drawn **circles** through `B` (outward normal).
-
-If it overlaps, increase `r_lbl ← r_lbl + 0.4·\gsAngSep` and retry up to **2** times.
-If still failing, treat as **external** (Step B).
-
-> This keeps labels from touching nearby strokes **without** pushing them arbitrarily far, solving the “too far” look.
-
-#### Invariants guaranteed by v2
-
-* Numeric angle label never intersects its own arc (≥ `δ_clear` radial gap).
-* For normal wedges (`ω ≥ 12°`) the label sits **no farther than** `r_arc + 2.5·\gsAngSep`.
-  Narrow wedges use **external + leader** instead of pushing text away.
-* If equal‑angle arcs exist, the numeric arc/label always sits **outside** that stack (unchanged from §19.13).
+before adding to world coordinates.
 
 ---
 
+#### Step C — micro collision probe (local only)
+
+Before accepting **internal** placement from Step A, probe the label box (axis‑aligned rectangle centered at the candidate point) against **nearby** drawn strokes:
+
+* the two rays at `B` (`BA` and `BC`), within distance `≤ r_lbl + 1.2·\gsAngSep`;
+* any circle drawn through `B` (outward normal).
+
+If overlap is detected, try `r_lbl ← r_lbl + 0.4·\gsAngSep` up to **two** times.
+If still overlapping, fall back to **Step B**.
+
+**Guarantees with this policy**
+
+* The label baseline is at least `δclear` away from its own arc.
+* Labels never get pushed arbitrarily far: internal offset is **capped** (`cap`), otherwise we choose the neat **external** variant.
+* When equal‑angle arcs are present (`g>0`), the numeric arc and label remain **outside** that stack.
+
+---
+
+### 20.2.6 Acceptance checks (must‑pass)
+
+For each rendered numeric angle:
+
+1. **Arc clearance**: minimal radial distance from label baseline to its **own arc** `≥ δclear`.
+2. **Bounded offset**: if internal, `r_lbl ≤ r_arc + cap`; if external, leader length `≈ 0.8·\gsAngSep`.
+3. **Equal‑angle stack**: when `g>0`, numeric arc is at `r0 + g·\gsAngSep` (no radius inflation).
+4. **Narrow angles** (`ω < 12°`): label is external with a leader.
+5. **Units**: for `scale≠1`, PT→world conversion is honored (visual regression test).
+
+---
+
+### Rationale for the examples you shared
+
+* **Small/medium wedges (e.g., 38°, 50°, 69°)**: `r_fit` dominates, pushing the text just far enough so the **chord** fits; it no longer sits on the arc.
+* **Large wedge with nearby strokes (110° at B)**: internal fits (`r_fit ≤ r_arc + cap`) unless a local collision is detected; otherwise external fallback.
+* **Stacked equal‑angle arcs (96° at C)**: numeric arc radius stays **outside** the three arcs; the label sits just beyond, not on top of them.
+* **Very narrow wedge (30° near a circle)**: always external with a short leader, avoiding awkward distant labels.
+
+---
 ### 20.2.6 **Acceptance checks (renderer)**
 
 Add to the renderer test matrix:

@@ -12,8 +12,9 @@ from geoscript_ir.tikz_codegen import (
 from geoscript_ir.tikz_codegen.generator import (
     GS_ANGLE_SEP_PT,
     PT_PER_CM,
+    PT_TO_UNIT_BASE,
     _angle_base_radius_pt,
-    angle_label_params,
+    place_numeric_angle,
 )
 
 
@@ -154,32 +155,76 @@ def test_numeric_angle_narrow_uses_external_leader() -> None:
     assert "angle radius=7.00pt" in tikz
 
 
-def test_angle_label_params_internal_clearance() -> None:
+def test_place_numeric_angle_internal_clearance_and_cap() -> None:
     coords = {"A": (1.0, 0.0), "B": (0.0, 0.0), "C": (0.0, 1.0)}
-    pt_per_unit = PT_PER_CM
-    base_radius_pt = _angle_base_radius_pt(coords, "A", "B", "C", pt_per_unit)
-    params = angle_label_params(
-        coords,
-        "A",
-        "B",
-        "C",
-        "$30^\\circ$",
+    base_radius_pt = _angle_base_radius_pt(coords, "A", "B", "C", PT_PER_CM)
+    params = place_numeric_angle(
+        coords["A"],
+        coords["B"],
+        coords["C"],
+        "30^\\circ",
         0,
         base_radius_pt,
         GS_ANGLE_SEP_PT,
-        measure_deg=90.0,
-        pt_per_unit=pt_per_unit,
-        segments=[],
-        circles=[],
-        placed_boxes=[],
+        1.0,
     )
 
-    assert params is not None
     assert params["mode"] == "internal"
     delta_clear = max(0.8 * GS_ANGLE_SEP_PT, 3.0)
     cap = 2.5 * GS_ANGLE_SEP_PT
     assert params["r_label_pt"] - params["r_arc_pt"] >= delta_clear - 1e-6
     assert params["r_label_pt"] <= params["r_arc_pt"] + cap + 1e-6
+
+
+def test_place_numeric_angle_external_leader_length() -> None:
+    tiny = math.radians(2.0)
+    coords = {
+        "A": (math.cos(tiny), math.sin(tiny)),
+        "B": (0.0, 0.0),
+        "C": (1.0, 0.0),
+    }
+    base_radius_pt = _angle_base_radius_pt(coords, "A", "B", "C", PT_PER_CM)
+    params = place_numeric_angle(
+        coords["A"],
+        coords["B"],
+        coords["C"],
+        "15^\\circ",
+        0,
+        base_radius_pt,
+        GS_ANGLE_SEP_PT,
+        1.0,
+    )
+
+    assert params["mode"] == "external"
+    leader = math.hypot(
+        params["Ptxt"][0] - params["Pint"][0],
+        params["Ptxt"][1] - params["Pint"][1],
+    )
+    expected = 0.8 * GS_ANGLE_SEP_PT * PT_TO_UNIT_BASE
+    assert math.isclose(leader, expected, rel_tol=5e-2)
+
+
+def test_place_numeric_angle_respects_scale_conversion() -> None:
+    coords = {"A": (1.0, 0.0), "B": (0.0, 0.0), "C": (0.0, 1.0)}
+    base_radius_pt = _angle_base_radius_pt(coords, "A", "B", "C", PT_PER_CM * 0.5)
+    params = place_numeric_angle(
+        coords["A"],
+        coords["B"],
+        coords["C"],
+        "45^\\circ",
+        1,
+        base_radius_pt,
+        GS_ANGLE_SEP_PT,
+        0.5,
+    )
+
+    assert params["r_arc_pt"] == base_radius_pt + GS_ANGLE_SEP_PT
+    assert params["mode"] == "internal"
+    center = params.get("center")
+    assert center is not None
+    dist = math.hypot(center[0] - coords["B"][0], center[1] - coords["B"][1])
+    expected = params["r_label_pt"] * PT_TO_UNIT_BASE * 0.5
+    assert math.isclose(dist, expected, rel_tol=1e-6)
 
 
 def test_equal_angle_stack_offsets_numeric_arc() -> None:
