@@ -63,12 +63,9 @@ def test_equal_segments_apply_tick_style() -> None:
     assert "tick1" in tikz
 
 
-def test_rules_toggle_right_angle_square() -> None:
+def test_right_angle_marks_render_by_default() -> None:
     program = Program(
-        [
-            Stmt("rules", Span(1, 1), {}, {"mark_right_angles_as_square": True}),
-            Stmt("right_angle_at", Span(2, 1), {"points": ("A", "B", "C")}),
-        ]
+        [Stmt("right_angle_at", Span(1, 1), {"points": ("A", "B", "C")})]
     )
     coords = {"A": (0.0, 1.0), "B": (0.0, 0.0), "C": (1.0, 0.0)}
 
@@ -77,11 +74,10 @@ def test_rules_toggle_right_angle_square() -> None:
     assert "right angle=A--B--C" in tikz
 
 
-def test_no_unicode_degree_rule_forces_circ_symbol() -> None:
+def test_angle_measure_uses_circ_symbol() -> None:
     program = Program(
         [
-            Stmt("rules", Span(1, 1), {}, {"no_unicode_degree": True}),
-            Stmt("angle_at", Span(2, 1), {"points": ("C", "B", "A")}, {"degrees": 30}),
+            Stmt("angle_at", Span(1, 1), {"points": ("C", "B", "A")}, {"degrees": 30}),
         ]
     )
     coords = {"A": (0.0, 1.0), "B": (0.0, 0.0), "C": (1.0, 0.0)}

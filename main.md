@@ -122,7 +122,7 @@ Only the keys below are interpreted. The parser rejects malformed option syntax;
 
 ### Global
 
-* `rules [...]` → `no_unicode_degree`, `no_equations_on_sides`, `no_solving`, `allow_auxiliary` (booleans).
+* `rules [...]` → `no_equations_on_sides`, `no_solving`, `allow_auxiliary` (booleans).
 
 ### Branch selection (for **Placement**: `point ... on ...`, `intersect(...) ... at ...`)
 
@@ -1266,7 +1266,7 @@ Add seeding tests to the integration flow (see §17):
 * **Visual clarity** with minimal ink: only draw declared carriers and essential construction lines.
 * **Notation completeness**: equal‑segments ticks, equal‑angles arcs, and right‑angle squares are standardized.
 * **Predictable layering** so labels/marks are legible.
-* **Rule‑aware** rendering: respect `rules[...]` flags (`no_equations_on_sides`, `no_unicode_degree`, etc.).
+* **Rule‑aware** rendering: respect `rules[...]` flags (`no_equations_on_sides`, `allow_auxiliary`, etc.).
 
 ---
 
@@ -1337,7 +1337,7 @@ Add seeding tests to the integration flow (see §17):
   \path pic[draw, angle radius=\gsAngR, "$\num{θ}$"{scale=0.9}] {angle=A--B--C};
   ```
 
-  Respect `rules[no_unicode_degree]` by always using `^\circ`. When no `degrees=` metadata exists, pick the ordering whose counter-clockwise sweep is < `180^\circ` (or closest to it if the configuration is straight/reflex) so TikZ draws the minor arc.
+  Always use `^\circ`. When no `degrees=` metadata exists, pick the ordering whose counter-clockwise sweep is < `180^\circ` (or closest to it if the configuration is straight/reflex) so TikZ draws the minor arc.
   Any symbolic `degrees=` metadata first runs through the same math normalisation (`sqrt(...)` → `\sqrt{...}`) before the degree token is appended, ensuring radicals and products render correctly inside the angle label.
 * **Right angle** (`right-angle A-B-C`): always draw the square symbol at `B` via the TikZ `right angle` pic, never an arc or `$90^\circ$` label:
 
@@ -1409,13 +1409,12 @@ Populate this by walking the **desugared** program + options:
 * **Right-angle squares**: use TikZ `pic` right‑angle symbol.
 * **Equal‑angles**: for group *g*, draw `g` arcs at radius `\gsAngR + (k-1)\gsAngSep` (`k=1..g`) with no labels.
 * **Ticks**: apply `tick{g}` style to the **segment** draw command; if the segment is not otherwise drawn (e.g., it’s only an abstract equality), draw the segment **thin dashed** only for the tick mark, or place two small ticks floating near endpoints (simpler: lightly draw the segment).
-* **Angle labels**: always `$\,^\circ$` (LaTeX degree), respecting `no_unicode_degree`.
+* **Angle labels**: always `$\,^\circ$` (LaTeX degree).
 * *(Targets currently produce no additional drawing commands.)*
 
 **19.11.4 Rules mapping**
 
 * `rules[no_equations_on_sides]` → drop numeric edge labels unless created by explicit `sidelabel`.
-* `rules[no_unicode_degree]` → no Unicode “°”; always `^\circ`.
 * `rules[allow_auxiliary]` → if `false`, don’t draw bisector/median/altitude carriers unless explicitly declared as `segment/line/ray`; draw only marks.
 
 **19.11.5 Minimal preamble**
@@ -1930,7 +1929,7 @@ This appendix extends §19 (Rendering Contract) with **deterministic, collision-
 * **Only render what’s declared.** Numeric angles are drawn **only** when the program has `angle A-B-C [degrees=…]` or `target angle …`. Do **not** infer the third triangle angle.
 * **No duplicates.** A segment appears at most once (carrier or aux). Ticks/marks are drawn **once**, on the visible stroke.
 * **Right angle**: draw a square; never print `90^\circ`.
-* **Degree symbol**: always use `^\circ` (respects `no_unicode_degree` and avoids Unicode).
+* **Degree symbol**: always use `^\circ` to avoid Unicode.
 
 ---
 

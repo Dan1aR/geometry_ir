@@ -26,8 +26,7 @@ GEOSCRIPT_TO_TIKZ_PROMPT = dedent(
       * Annotations: `label point ...`, `sidelabel ...` and their option payloads.
       * Targets: `target angle ...`, `target length ...`, `target point ...`, `target circle (...)`,
         `target area (...)`, `target arc ...`.
-      * Renderer rules in `rules [...]` control styling hints (e.g. `no_unicode_degree`,
-        `mark_right_angles_as_square`).
+      * Renderer rules in `rules [...]` control styling hints (e.g. `no_equations_on_sides`).
 
     OUTPUT CONTRACT
     - Respond with TikZ wrapped exactly once in `<tikz>` and `</tikz>`.
@@ -98,7 +97,7 @@ GEOSCRIPT_TO_TIKZ_PROMPT = dedent(
     - `equal-segments`: apply tick or double-tick styles consistently across each group.
     - `angle A-B-C` and `right-angle A-B-C`: render with `\draw pic{angle = ...}` or
       `\draw pic{right angle = ...}`. If an explicit degree measure appears in options, show it as
-      math text (e.g. `"$30^{\circ}$"`). Obey rule toggles such as `mark_right_angles_as_square`.
+      math text (e.g. `"$30^{\circ}$"`). Mark right angles with squares.
 
     ANNOTATIONS & LABELS
     - `label point P [pos=...] [label="text"]`: attach the label according to the direction hint
@@ -108,7 +107,7 @@ GEOSCRIPT_TO_TIKZ_PROMPT = dedent(
     - `sidelabel A-B "text" [pos=...]`: place the text at the segment midpoint. Always wrap
       sidelabel text in math mode (`{ $<text>$ }`). Do not insert '=' inside the text unless GeoScript
       explicitly requests it.
-    - Respect rules such as `no_unicode_degree=true`; always emit `^\circ` inside math mode.
+    - Always emit `^\circ` inside math mode for degree measurements.
 
     TARGET HIGHLIGHTS
     - `target angle`: draw a dashed pic arc with a "?" or supplied `label=` inside the wedge.
@@ -194,7 +193,6 @@ GEOSCRIPT_TO_TIKZ_PROMPT = dedent(
     line A-C tangent to circle center O at C
     point T on circle center O
     target arc B-T on circle center O [label="?BT"]
-    rules [no_unicode_degree=true mark_right_angles_as_square=true]
     </geoscript>
 
     TikZ (schematic excerpt):

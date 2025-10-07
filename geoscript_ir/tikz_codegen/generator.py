@@ -113,7 +113,7 @@ class RenderPlan:
     carrier_lookup: Dict[Tuple[str, str], Tuple[str, str]] = field(default_factory=dict)
     angle_groups: List[List[Tuple[str, str, str]]] = field(default_factory=list)
     angle_group_arc_counts: List[int] = field(default_factory=list)
-    right_angles: List[Tuple[str, str, str, bool]] = field(default_factory=list)
+    right_angles: List[Tuple[str, str, str]] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
     polygon_vertices: set = field(default_factory=set)
     circle_centers: set = field(default_factory=set)
@@ -241,9 +241,7 @@ def _extract_layout_scale(program: Program) -> float:
 
 def _extract_rules(program: Program) -> Dict[str, bool]:
     rules: Dict[str, bool] = {
-        "mark_right_angles_as_square": False,
         "no_equations_on_sides": False,
-        "no_unicode_degree": False,
         "allow_auxiliary": True,
     }
     for stmt in program.stmts:
@@ -288,7 +286,7 @@ def _build_render_plan(
     bisector_orientations: Dict[Tuple[str, Tuple[str, str]], Tuple[str, str, str]] = {}
     wedge_conflicts_logged: set = set()
 
-    right_angle_marks: List[Tuple[str, str, str, bool]] = []
+    right_angle_marks: List[Tuple[str, str, str]] = []
     right_angle_seen: set = set()
     diagnostics: List[str] = []
 
@@ -302,11 +300,11 @@ def _build_render_plan(
         if triple not in entries:
             entries.append(triple)
 
-    def add_right_angle(a: str, b: str, c: str, force: bool) -> None:
+    def add_right_angle(a: str, b: str, c: str) -> None:
         key = (a, b, c)
         if key not in right_angle_seen:
             right_angle_seen.add(key)
-            right_angle_marks.append((a, b, c, force))
+            right_angle_marks.append((a, b, c))
 
     for idx, stmt in enumerate(program.stmts):
         kind = stmt.kind
@@ -402,14 +400,14 @@ def _build_render_plan(
                 special_points.add(at)
                 if isinstance(foot, str):
                     special_points.add(foot)
-                    add_right_angle(to_edge[0], foot, at, True)
+                    add_right_angle(to_edge[0], foot, at)
         elif kind == "foot":
             foot = data.get("foot")
             frm = data.get("from")
             edge = _edge_from_data(data.get("edge"))
             if isinstance(foot, str) and isinstance(frm, str) and edge:
                 special_points.add(foot)
-                add_right_angle(edge[0], foot, frm, True)
+                add_right_angle(edge[0], foot, frm)
         elif kind == "parallel_through":
             to_edge = _edge_from_data(data.get("to"))
             through = data.get("through")
@@ -585,7 +583,7 @@ def _build_render_plan(
             triple = _angle_triple(data.get("points"))
             if not triple:
                 continue
-            label, numeric = _angle_label_from_opts(opts, rules)
+            label, numeric = _angle_label_from_opts(opts)
             angle_entries.append(
                 {
                     "kind": "numeric",
@@ -599,7 +597,7 @@ def _build_render_plan(
         elif kind == "right_angle_at":
             triple = _angle_triple(data.get("points"))
             if triple:
-                add_right_angle(triple[0], triple[1], triple[2], False)
+                add_right_angle(triple[0], triple[1], triple[2])
         elif kind in {
             "target_angle",
             "target_length",
@@ -786,9 +784,7 @@ def _extract_angle_bisectors(value: object) -> List[Tuple[str, str, str]]:
     return triples
 
 
-def _angle_label_from_opts(
-    opts: Mapping[str, object], rules: Mapping[str, bool]
-) -> Tuple[Optional[str], Optional[float]]:
+def _angle_label_from_opts(opts: Mapping[str, object]) -> Tuple[Optional[str], Optional[float]]:
     if not opts:
         return None, None
     if "degrees" in opts:
@@ -796,19 +792,16 @@ def _angle_label_from_opts(
         numeric = _coerce_float(opts.get("degrees"))
         if text:
             text = text.strip()
-            degree_token = "^\\circ" if rules.get("no_unicode_degree", False) else "°"
+            degree_token = "^\\circ"
             if text.startswith("$") and text.endswith("$"):
                 inner = text[1:-1]
                 if "\\circ" not in inner and "°" not in inner:
                     text = f"${inner}{degree_token}$"
-                elif rules.get("no_unicode_degree", False):
-                    text = text.replace("°", "^\\circ")
             else:
                 if "\\circ" not in text and "°" not in text:
                     text = f"${text}{degree_token}$"
                 else:
-                    if rules.get("no_unicode_degree", False):
-                        text = text.replace("°", "^\\circ")
+                    text = text.replace("°", "^\\circ")
                     if not text.startswith("$"):
                         text = f"${text}$"
         return text, numeric
@@ -1406,10 +1399,8 @@ def _render_angle_marks(
             label_entries.append(label_entry)
         numeric_vertices.add(B)
 
-    for A, B, C, force in plan.right_angles:
+    for A, B, C in plan.right_angles:
         if not _points_present((A, B, C), coords):
-            continue
-        if not force and not rules.get("mark_right_angles_as_square", False):
             continue
         arcs.append(f"\\path pic[draw, angle radius=\\gsAngR] {{right angle={A}--{B}--{C}}};")
 
