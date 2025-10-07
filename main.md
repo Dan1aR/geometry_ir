@@ -1307,7 +1307,7 @@ Add seeding tests to the integration flow (see §17):
 
 1. **bg**: light fills (rare)
 2. **main**: carriers — polygon sides, declared segments, circles
-3. **fg**: construction lines (aux), angle/segment marks, labels, target highlights
+3. **fg**: construction lines (aux), angle/segment marks, labels
 
 **19.3 What to draw (and what **not** to draw)**
 
@@ -1358,8 +1358,7 @@ Add seeding tests to the integration flow (see §17):
 
 **19.9 Targets & highlights**
 
-* **Target angle/arc**: re‑draw that arc **on the foreground** with thicker width (`line width=\gsLW+0.2pt`) and (optionally) a mild color (`black!85`) and a label `"?"` if `label="?"` is set in the IR.
-* **Target length / point / circle**: annotate minimally (e.g., halo box “?” near the object), but **do not** print equations on sides unless forced via `sidelabel`.
+*The TikZ renderer currently ignores `target ...` statements; no foreground question-mark overlays or emphasis marks are emitted.*
 
 **19.10 Bounds & scaling**
 
@@ -1383,7 +1382,6 @@ class RenderPlan:
     right_angles: List[Tuple[str,str,str]]         # (A,B,C)
     angle_arcs: List[Tuple[str,str,str, Optional[float], Optional[str]]] # (A,B,C, degrees?, label)
     labels: List[LabelSpec]                        # point & side labels
-    highlights: List[HighlightSpec]                # targets
 ```
 
 Populate this by walking the **desugared** program + options:
@@ -1396,7 +1394,7 @@ Populate this by walking the **desugared** program + options:
 * **Right angles**: all `right-angle` statements; also synthesize from tangency if present.
 * **Angle arcs**: from `angle A-B-C [degrees=..]`.
 * **Labels**: from `label point` and `sidelabel`; suppress numeric side labels if `rules[no_equations_on_sides]`.
-* **Highlights**: from `target ...`.
+*Targets are collected in the IR but presently skipped by the TikZ renderer.*
 
 **19.11.2 Suppress redundancy**
 
@@ -1411,7 +1409,7 @@ Populate this by walking the **desugared** program + options:
 * **Equal‑angles**: for group *g*, draw `g` arcs at radius `\gsAngR + (k-1)\gsAngSep` (`k=1..g`) with no labels.
 * **Ticks**: apply `tick{g}` style to the **segment** draw command; if the segment is not otherwise drawn (e.g., it’s only an abstract equality), draw the segment **thin dashed** only for the tick mark, or place two small ticks floating near endpoints (simpler: lightly draw the segment).
 * **Angle labels**: always `$\,^\circ$` (LaTeX degree), respecting `no_unicode_degree`.
-* **Targets**: re‑draw highlighted arc/edge/point on `fg` with `line width=\gsLW+0.2pt`.
+* *(Targets currently produce no additional drawing commands.)*
 
 **19.11.4 Rules mapping**
 

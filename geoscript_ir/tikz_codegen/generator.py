@@ -60,12 +60,6 @@ class LabelSpec:
 
 
 @dataclass
-class HighlightSpec:
-    kind: str  # "angle", "length", "point", "circle", "arc"
-    payload: Dict[str, object]
-
-
-@dataclass
 class AuxPath:
     kind: str
     data: Dict[str, object] = field(default_factory=dict)
@@ -82,7 +76,6 @@ class RenderPlan:
     right_angles: List[Tuple[str, str, str]]
     angle_arcs: List[Tuple[str, str, str, Optional[float], Optional[str]]]
     labels: List[LabelSpec]
-    highlights: List[HighlightSpec]
     tick_overflow_edges: Dict[Tuple[str, str], bool] = field(default_factory=dict)
     helper_tick_edges: Dict[Tuple[str, str], Tuple[str, str]] = field(default_factory=dict)
     carrier_lookup: Dict[Tuple[str, str], Tuple[str, str]] = field(default_factory=dict)
@@ -196,7 +189,6 @@ def _build_render_plan(
     side_labels: List[LabelSpec] = []
     explicit_side_edges: Set[Tuple[str, str]] = set()
     auto_length_labels: Dict[Tuple[str, str], str] = {}
-    highlights: List[HighlightSpec] = []
 
     tick_group = 0
 
@@ -373,51 +365,15 @@ def _build_render_plan(
             triple = _angle_triple(data.get("points"))
             if triple:
                 right_angles.append(triple)
-        elif kind == "target_angle":
-            triple = _angle_triple(data.get("points"))
-            if not triple:
-                continue
-            label = opts.get("label") if isinstance(opts.get("label"), str) else "?"
-            highlights.append(
-                HighlightSpec(
-                    kind="angle",
-                    payload={"points": triple, "label": label},
-                )
-            )
-        elif kind == "target_length":
-            edge = _edge_from_data(data.get("edge"))
-            if not edge:
-                continue
-            label = opts.get("label") if isinstance(opts.get("label"), str) else "?"
-            highlights.append(
-                HighlightSpec(
-                    kind="length",
-                    payload={"edge": edge, "label": label},
-                )
-            )
-        elif kind == "target_point":
-            point = data.get("point")
-            if isinstance(point, str):
-                label = opts.get("label") if isinstance(opts.get("label"), str) else "?"
-                highlights.append(
-                    HighlightSpec(kind="point", payload={"point": point, "label": label})
-                )
-        elif kind == "target_circle":
-            text = data.get("text")
-            label = opts.get("label") if isinstance(opts.get("label"), str) else (text or "?")
-            highlights.append(HighlightSpec(kind="circle", payload={"label": label}))
-        elif kind == "target_arc":
-            A = data.get("A")
-            B = data.get("B")
-            center = data.get("center")
-            if all(isinstance(x, str) for x in (A, B, center)):
-                label = opts.get("label") if isinstance(opts.get("label"), str) else "?"
-                highlights.append(
-                    HighlightSpec(
-                        kind="arc",
-                        payload={"points": (A, center, B), "label": label},
-                    )
-                )
+        elif kind in {
+            "target_angle",
+            "target_length",
+            "target_point",
+            "target_circle",
+            "target_arc",
+        }:
+            # Targets are currently ignored by the TikZ renderer.
+            continue
 
     # Auto length labels (respect explicit sidelabel suppression)
     for key, text in auto_length_labels.items():
@@ -449,7 +405,6 @@ def _build_render_plan(
         right_angles=right_angles,
         angle_arcs=angle_arcs,
         labels=labels,
-        highlights=highlights,
     )
     plan.tick_overflow_edges = tick_overflow_edges
     plan.helper_tick_edges = helper_tick_edges
@@ -663,12 +618,6 @@ def _emit_tikz_picture(plan: RenderPlan, layout_scale: float, rules: Mapping[str
             )
         )
 
-    for highlight in plan.highlights:
-        lines.extend(
-            "    " + entry
-            for entry in _emit_highlight(highlight, plan, rules, span)
-        )
-
     for name in sorted(plan.points.keys()):
         lines.append(f"    \\fill ({name}) circle (\\gsDotR);")
         label_spec = point_label_map.get(name)
@@ -818,94 +767,6 @@ def _emit_aux_path(
     return []
 
 
-def _emit_highlight(
-    highlight: HighlightSpec,
-    plan: RenderPlan,
-    rules: Mapping[str, bool],
-    span: float,
-) -> List[str]:
-    kind = highlight.kind
-    payload = highlight.payload
-    entries: List[str] = []
-    if kind == "angle":
-        points = payload.get("points")
-        label = payload.get("label")
-        triple = _angle_triple(points)
-        if triple and _points_present(triple, plan.points):
-            formatted = _format_label_text(label if isinstance(label, str) else "?")
-            entries.append(
-                "\\path pic[draw, line width=\\gsLW+0.2pt, angle radius=\\gsAngR, \"{label}\"{{scale=0.95}}] {{{body}}};".format(
-                    label=formatted,
-                    body=f"angle={triple[0]}--{triple[1]}--{triple[2]}",
-                )
-            )
-    elif kind == "length":
-        edge = _edge_from_data(payload.get("edge"))
-        label = payload.get("label")
-        if edge and _points_present(edge, plan.points):
-            entries.append(
-                "\\draw[carrier, line width=\\gsLW+0.2pt] ({a}) -- ({b});".format(
-                    a=edge[0], b=edge[1]
-                )
-            )
-            formatted = _format_label_text(label if isinstance(label, str) else "?")
-            entries.append(
-                "\\node[ptlabel] at ($({a})!0.5!({b})$) {{{text}}};".format(
-                    a=edge[0], b=edge[1], text=formatted
-                )
-            )
-    elif kind == "point":
-        point = payload.get("point")
-        label = payload.get("label")
-        if isinstance(point, str) and point in plan.points:
-            radius = "1.6\\gsDotR"
-            entries.append(
-                "\\draw[aux, line width=\\gsLW+0.2pt] ({pt}) circle ({radius});".format(
-                    pt=point, radius=radius
-                )
-            )
-            formatted = _format_label_text(label if isinstance(label, str) else "?")
-            entries.append(
-                "\\node[ptlabel, above] at ({pt}) {{{text}}};".format(
-                    pt=point, text=formatted
-                )
-            )
-    elif kind == "circle":
-        label = payload.get("label")
-        formatted = _format_label_text(label if isinstance(label, str) else "?")
-        for center, through, _ in plan.circles:
-            if center not in plan.points or through not in plan.points:
-                continue
-            radius = _distance(plan.points[center], plan.points[through])
-            if radius <= 0:
-                continue
-            entries.append(
-                "\\draw[circle, line width=\\gsLW+0.2pt] ({center}) circle ({radius});".format(
-                    center=center, radius=_format_float(radius)
-                )
-            )
-        if plan.circles and formatted:
-            center_name = plan.circles[0][0]
-            entries.append(
-                "\\node[ptlabel, above] at ({center}) {{{text}}};".format(
-                    center=center_name, text=formatted
-                )
-            )
-    elif kind == "arc":
-        points = payload.get("points")
-        label = payload.get("label")
-        if isinstance(points, (list, tuple)) and len(points) == 3:
-            A, O, B = points
-            if _points_present((A, O, B), plan.points):
-                entries.append(
-                    "\\path pic[draw, line width=\\gsLW+0.2pt, \"{label}\"{{scale=0.95}}] {{{body}}};".format(
-                        label=_format_label_text(label if isinstance(label, str) else "?"),
-                        body=f"angle={A}--{O}--{B}",
-                    )
-                )
-    return entries
-
-
 def _points_present(names: Sequence[str], coords: Mapping[str, Tuple[float, float]]) -> bool:
     return all(isinstance(name, str) and name in coords for name in names)
 
@@ -1049,7 +910,7 @@ def _convert_sqrt_expressions(text: str) -> Tuple[str, bool]:
             inner_converted, ok = _convert_sqrt_expressions(inner_raw)
             if not ok:
                 return text, False
-            result.append(r"\\sqrt{" + inner_converted + "}")
+            result.append(r"\sqrt{" + inner_converted + "}")
             changed = True
             continue
         result.append(text[i])

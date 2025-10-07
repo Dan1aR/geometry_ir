@@ -92,7 +92,7 @@ def test_no_unicode_degree_rule_forces_circ_symbol() -> None:
     assert "°" not in tikz
 
 
-def test_target_angle_highlight_reuses_foreground() -> None:
+def test_target_angle_is_ignored_for_now() -> None:
     program = Program(
         [
             Stmt("target_angle", Span(1, 1), {"points": ("C", "B", "A")}),
@@ -102,8 +102,8 @@ def test_target_angle_highlight_reuses_foreground() -> None:
 
     tikz = generate_tikz_code(program, coords)
 
-    assert "line width=\\gsLW+0.2pt" in tikz
-    assert "angle=C--B--A" in tikz
+    assert "line width=\\gsLW+0.2pt" not in tikz
+    assert "angle=C--B--A" not in tikz
 
 
 def test_latex_escape_preserves_math_segments() -> None:
