@@ -11,10 +11,7 @@ circle center O2 radius-through K
 circle center O3 radius-through E
 intersect (line O2-O3) with (circle center O2) at F [choose=near anchor=O3]
 point F on circle center O3
-right-angle K-O1-E
-
-segment O1-O3
-segment O1-O2
+right-angle K-O1-E [mark=square]
 
 segment O3-F [length=6]
 segment O2-F [length=4]
