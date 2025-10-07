@@ -1278,6 +1278,14 @@ def _layout_point_labels(
 ) -> Tuple[Dict[str, Dict[str, Optional[str]]], List[Tuple[Tuple[float, float, float, float], str]]]:
     inc_lines = _build_incident_lines_map(plan)
     inc_circles = _build_incident_circles_map(plan)
+    center_circle_geoms: Dict[str, List[Tuple[Tuple[float, float], float]]] = defaultdict(list)
+    for center, through, _ in plan.circles:
+        if center not in plan.points or through not in plan.points:
+            continue
+        radius = _distance(plan.points[center], plan.points[through])
+        if radius <= 0:
+            continue
+        center_circle_geoms[center].append((plan.points[center], radius))
     boxes = list(placed_boxes)
     result: Dict[str, Dict[str, Optional[str]]] = {}
     offset_units = base_offset_units if base_offset_units > 0 else 0.05
@@ -1303,13 +1311,19 @@ def _layout_point_labels(
             result[name] = {"anchor": explicit_anchor, "text": formatted, "leader": None}
             continue
 
+        effective_circle_geoms = circle_geoms
+        skip_geoms = center_circle_geoms.get(name)
+        if skip_geoms:
+            effective_circle_geoms = [
+                geom for geom in circle_geoms if geom not in skip_geoms
+            ]
         anchor, center, w, h, leader_end, _ = _place_point_label(
             name,
             point,
             raw_text,
             offset_units,
             segments,
-            circle_geoms,
+            effective_circle_geoms,
             boxes,
             inc_lines.get(name, []),
             inc_circles.get(name, []),
