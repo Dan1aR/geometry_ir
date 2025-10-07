@@ -626,15 +626,25 @@ def _emit_tikz_picture(plan: RenderPlan, layout_scale: float, rules: Mapping[str
                 )
             )
 
-    for A, B, C, _, label in plan.angle_arcs:
+    for A, B, C, degrees, label in plan.angle_arcs:
         if not _points_present((A, B, C), plan.points):
             continue
         options = ["draw", "angle radius=\\gsAngR"]
         if label:
             options.append(f"\"{label}\"{{scale=0.9}}")
+        start, end = A, C
+        if degrees is not None:
+            orientation = _oriented_angle_degrees(plan.points, A, B, C)
+            swapped_orientation = _oriented_angle_degrees(plan.points, C, B, A)
+            target = _normalise_angle_degrees(degrees)
+            if orientation is not None and swapped_orientation is not None:
+                direct_diff = _angular_difference_degrees(orientation, target)
+                swapped_diff = _angular_difference_degrees(swapped_orientation, target)
+                if swapped_diff + 1e-4 < direct_diff:
+                    start, end = C, A
         lines.append(
             "    \\path pic[{opts}] {{{body}}};".format(
-                opts=", ".join(options), body=f"angle={A}--{B}--{C}"
+                opts=", ".join(options), body=f"angle={start}--{B}--{end}"
             )
         )
 
@@ -936,6 +946,43 @@ def _perp_vector(vec: Tuple[float, float]) -> Optional[Tuple[float, float]]:
 
 def _vector_length(vec: Tuple[float, float]) -> float:
     return math.hypot(vec[0], vec[1])
+
+
+def _oriented_angle_degrees(
+    coords: Mapping[str, Tuple[float, float]],
+    a: str,
+    b: str,
+    c: str,
+) -> Optional[float]:
+    if not all(name in coords for name in (a, b, c)):
+        return None
+    origin = coords[b]
+    vec1 = _vector(origin, coords[a])
+    vec2 = _vector(origin, coords[c])
+    len1 = _vector_length(vec1)
+    len2 = _vector_length(vec2)
+    if len1 <= 1e-9 or len2 <= 1e-9:
+        return None
+    cross = vec1[0] * vec2[1] - vec1[1] * vec2[0]
+    dot = vec1[0] * vec2[0] + vec1[1] * vec2[1]
+    angle = math.degrees(math.atan2(cross, dot))
+    if angle < 0:
+        angle += 360.0
+    return angle
+
+
+def _normalise_angle_degrees(value: float) -> float:
+    angle = value % 360.0
+    if angle < 0:
+        angle += 360.0
+    if math.isclose(angle, 0.0, abs_tol=1e-9) and value > 0:
+        return 360.0
+    return angle
+
+
+def _angular_difference_degrees(a: float, b: float) -> float:
+    diff = abs(a - b) % 360.0
+    return min(diff, 360.0 - diff)
 
 
 def _extend_line(
