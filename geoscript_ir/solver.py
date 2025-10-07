@@ -284,10 +284,18 @@ def build_seed_hints(program: Program, plan: Optional[DerivationPlan]) -> SeedHi
     by_point: Dict[str, List[SeedHint]] = defaultdict(list)
     global_hints: List[SeedHint] = []
     on_path_groups: Dict[str, List[SeedHint]] = defaultdict(list)
+    circle_radius_refs: Dict[str, str] = {}
 
     for stmt in program.stmts:
         data = stmt.data
         opts = stmt.opts
+
+        if stmt.kind == "circle_center_radius_through":
+            center = data.get("center")
+            through = data.get("through")
+            if _is_point_name(center) and _is_point_name(through):
+                circle_radius_refs.setdefault(str(center), str(through))
+            continue
 
         if stmt.kind == "point_on":
             point = data.get("point")
@@ -298,6 +306,16 @@ def build_seed_hints(program: Program, plan: Optional[DerivationPlan]) -> SeedHi
             if not spec:
                 continue
             payload = _normalize_hint_payload(opts)
+            if spec.get("kind") == "circle":
+                center = spec.get("center")
+                fallback = circle_radius_refs.get(center) if isinstance(center, str) else None
+                if fallback and not payload.get("fallback_radius_point"):
+                    payload["fallback_radius_point"] = fallback
+                if stmt.origin == "desugar(diameter)":
+                    radius_point = payload.get("radius_point") or spec.get("radius_point")
+                    if _is_point_name(center) and _is_point_name(radius_point):
+                        payload.setdefault("diameter_center", center)
+                        payload.setdefault("opposite_point", radius_point)
             hint: SeedHint = {
                 "kind": "on_path",
                 "point": str(point),
@@ -780,24 +798,8 @@ def _diameter_rules(stmt: Stmt) -> List[Tuple[PointName, FunctionalRule]]:
         )
     )
 
-    def make_endpoint_rule(target: PointName, known: PointName) -> FunctionalRule:
-        inputs = [center, known]
-
-        def compute(coords: Dict[PointName, Tuple[float, float]]) -> Tuple[float, float]:
-            _ensure_inputs(coords, inputs)
-            c = coords[center]
-            k = coords[known]
-            return 2.0 * c[0] - k[0], 2.0 * c[1] - k[1]
-
-        return FunctionalRule(
-            name=f"diameter:reflect({target})",
-            inputs=inputs,
-            compute=compute,
-            source=_rule_source(stmt),
-        )
-
-    results.append((a, make_endpoint_rule(a, b)))
-    results.append((b, make_endpoint_rule(b, a)))
+    # Endpoints are typically treated as variables; deriving them from the center
+    # can introduce cyclic plans.  Only expose the center reflection rule.
     return results
 
 
@@ -2463,7 +2465,10 @@ def initial_guess(
             return _LineLikeSpec(anchor=get_coord(v), direction=direction, kind="line")
         return None
 
-    def circle_from_path(path: Optional[PathSpec]) -> Optional[Tuple[Tuple[float, float], float]]:
+    def circle_from_path(
+        path: Optional[PathSpec],
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Tuple[Tuple[float, float], float]]:
         if not path or path.get("kind") != "circle":
             return None
         center_name = path.get("center")
@@ -2478,8 +2483,18 @@ def initial_guess(
             radius_point = path.get("radius_point")
             if _is_point_name(radius_point) and radius_point in coords:
                 radius = _norm2(_vec2(center, get_coord(radius_point)))
+        if (radius is None or radius <= 1e-9) and payload:
+            fallback = payload.get("radius_point") or payload.get("fallback_radius_point")
+            if _is_point_name(fallback) and fallback in coords:
+                radius = _norm2(_vec2(center, get_coord(fallback)))
+        if (radius is None or radius <= 1e-9) and model.primary_gauge_edge:
+            a, b = model.primary_gauge_edge
+            if a in coords and b in coords:
+                alt = _norm2(_vec2(get_coord(a), get_coord(b)))
+                if alt > 1e-9:
+                    radius = alt
         if radius is None or radius <= 1e-9:
-            return None
+            radius = max(base_scale, 1.0)
         return center, radius
 
     def project_to_line(spec: _LineLikeSpec, point: Tuple[float, float]) -> Tuple[float, float]:
@@ -2503,7 +2518,11 @@ def initial_guess(
         vec = (current[0] - center[0], current[1] - center[1])
         if _norm_sq2(vec) > 1e-12:
             return vec
-        radius_point = payload.get("radius_point") or path.get("radius_point")
+        radius_point = (
+            payload.get("radius_point")
+            or path.get("radius_point")
+            or payload.get("fallback_radius_point")
+        )
         if _is_point_name(radius_point) and radius_point in coords:
             return _vec2(center, get_coord(radius_point))
         return (1.0, 0.0)
@@ -2516,10 +2535,27 @@ def initial_guess(
             return
         payload = hint.get("payload", {})
         if path.get("kind") == "circle":
-            circle = circle_from_path(path)
+            circle = circle_from_path(path, payload)
             if not circle:
                 return
             center, radius = circle
+            opp_name = payload.get("opposite_point") if isinstance(payload, dict) else None
+            diam_center = payload.get("diameter_center") if isinstance(payload, dict) else None
+            if (
+                _is_point_name(opp_name)
+                and _is_point_name(diam_center)
+                and diam_center in coords
+                and opp_name in coords
+            ):
+                vec = _vec2(get_coord(diam_center), get_coord(opp_name))
+                normed_vec = normalize_vec(vec)
+                if normed_vec:
+                    mirrored = (
+                        get_coord(diam_center)[0] - normed_vec[0] * radius,
+                        get_coord(diam_center)[1] - normed_vec[1] * radius,
+                    )
+                    set_coord(point, mirrored)
+                    return
             direction = circle_direction(path, payload, point)
             normed = normalize_vec(direction)
             if not normed:
@@ -2929,6 +2965,17 @@ def initial_guess(
         derived_coords, _ = _evaluate_plan_coords(model, dict(coords))
         for name, value in derived_coords.items():
             set_coord(name, value)
+
+    # Stage H – reproject onto structural paths after metric nudges/safety
+    if by_point:
+        for point, hints_for_point in by_point.items():
+            for hint in hints_for_point:
+                if hint.get("kind") == "on_path":
+                    apply_on_path(point, hint)
+        for point, hints_for_point in by_point.items():
+            for hint in hints_for_point:
+                if hint.get("kind") == "intersect":
+                    apply_intersection(point, hint)
 
     # Optional rotation when no gauge edge on reseed attempts
     if attempt > 0 and model.primary_gauge_edge is None:
