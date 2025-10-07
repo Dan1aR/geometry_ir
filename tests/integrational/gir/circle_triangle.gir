@@ -2,7 +2,7 @@
 scene "Diametr MK, MP = PK; find angle POM"
 layout canonical=generic scale=1
 points M, K, O, P
-rules [no_solving=true allow_auxiliary=false no_unicode_degree=true mark_right_angles_as_square=true no_equations_on_sides=true]
+rules [no_solving=true allow_auxiliary=false no_equations_on_sides=true]
 # Окружность с центром O; M на окружности
 circle center O radius-through M
 # Точки K и P на этой окружности

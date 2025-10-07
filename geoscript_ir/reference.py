@@ -230,7 +230,7 @@ This reduces variables → cleaner, faster solves and less plot jitter.
 
   * `label point P [label="P" pos=above]`
   * `sidelabel A-B "5" [pos=below]`
-* Right angles: `right-angle A-B-C [mark=square]` (or set `rules [mark_right_angles_as_square=true]`).
+* Right angles: `right-angle A-B-C [mark=square]`.
 * Avoid clutter: don’t label every side; prefer key ones.
 * Keep segments from collapsing: choose canonicals that don’t create near-parallel duplicates; if needed, add a simple `segment` or `equal-segments` to stabilize shape.
 

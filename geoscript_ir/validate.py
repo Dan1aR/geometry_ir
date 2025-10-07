@@ -105,7 +105,7 @@ def validate(prog: Program) -> None:
                 raise ValidationError(f'[line {s.span.line}, col {s.span.col}] circle through needs >=3 distinct points')
         elif k == 'rules':
             for key, val in s.opts.items():
-                if key not in ('no_unicode_degree','mark_right_angles_as_square','no_equations_on_sides','no_solving','allow_auxiliary'):
+                if key not in ('no_equations_on_sides','no_solving','allow_auxiliary'):
                     raise ValidationError(f'[line {s.span.line}, col {s.span.col}] unknown rules option "{key}"')
                 if not isinstance(val, bool):
                     raise ValidationError(f'[line {s.span.line}, col {s.span.col}] rules option "{key}" must be boolean')
