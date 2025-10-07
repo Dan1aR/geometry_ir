@@ -16,11 +16,11 @@ from ..orientation import apply_orientation
 
 PT_PER_CM = 28.3464567
 FOOTNOTE_EM_PT = 8.0
+ANGLE_LABEL_PT_PER_EM = 9.0
 GS_DOT_RADIUS_PT = 1.4
 GS_ANGLE_SEP_PT = 2.0
 LABEL_WIDTH_EM = 0.52
 LABEL_HEIGHT_EM = 0.9
-ANGLE_LABEL_OFFSET_EM = 0.6
 EPS_LEN_FACTOR = 1e-9
 
 ANCHOR_SEQUENCE = [
@@ -916,7 +916,6 @@ def _emit_tikz_picture(plan: RenderPlan, layout_scale: float, rules: Mapping[str
         segments,
         circle_geoms,
         pt_per_unit,
-        base_offset_units,
         placed_label_boxes,
     )
     for arc_line in angle_arc_lines:
@@ -1326,7 +1325,6 @@ def _render_angle_marks(
     segments: Sequence[Tuple[Tuple[float, float], Tuple[float, float]]],
     circle_geoms: Sequence[Tuple[Tuple[float, float], float]],
     pt_per_unit: float,
-    base_offset_units: float,
     placed_boxes: List[Tuple[Tuple[float, float, float, float], str]],
 ) -> Tuple[List[str], List[Dict[str, str]], List[Tuple[Tuple[float, float, float, float], str]]]:
     arcs: List[str] = []
@@ -1377,26 +1375,70 @@ def _render_angle_marks(
         start, end, measure = choice
         base_radius_pt = _angle_base_radius_pt(coords, A, B, C, pt_per_unit)
         offset_count = wedge_groups.get(_wedge_key(A, B, C), 0)
-        initial_radius_pt = base_radius_pt + offset_count * GS_ANGLE_SEP_PT
-        radius_pt, label_entry, boxes = _place_numeric_angle_label(
+        numeric_arc_radius_pt = base_radius_pt + offset_count * GS_ANGLE_SEP_PT
+        label_text = entry.get("label")
+        if not isinstance(label_text, str) or not label_text.strip():
+            arcs.append(
+                f"\\path pic[draw, angle radius={_format_pt_dimension(numeric_arc_radius_pt)}] {{angle={start}--{B}--{end}}};"
+            )
+            numeric_vertices.add(B)
+            continue
+
+        params = angle_label_params(
             coords,
             A,
             B,
             C,
-            initial_radius_pt,
-            entry.get("label"),
-            measure,
-            segments,
-            circle_geoms,
-            boxes,
-            pt_per_unit,
-            base_offset_units,
+            label_text,
+            offset_count,
+            base_radius_pt,
+            GS_ANGLE_SEP_PT,
+            measure_deg=measure,
+            pt_per_unit=pt_per_unit,
+            segments=segments,
+            circles=circle_geoms,
+            placed_boxes=boxes,
         )
-        arcs.append(
-            f"\\path pic[draw, angle radius={_format_pt_dimension(radius_pt)}] {{angle={start}--{B}--{end}}};"
-        )
-        if label_entry:
-            label_entries.append(label_entry)
+
+        if not params:
+            arcs.append(
+                f"\\path pic[draw, angle radius={_format_pt_dimension(numeric_arc_radius_pt)}] {{angle={start}--{B}--{end}}};"
+            )
+            numeric_vertices.add(B)
+            continue
+
+        radius_pt = params["r_arc_pt"]
+        rect = params.get("rect")
+        if rect is not None:
+            boxes.append((rect, "angle"))
+
+        if params["mode"] == "internal":
+            ecc = params.get("ecc", 1.0)
+            arcs.append(
+                f"\\path pic[draw, angle radius={_format_pt_dimension(radius_pt)}, \"{label_text}\", "
+                f"angle eccentricity={_format_float(ecc)}, every pic quotes/.style={{scale=0.9}}] "
+                f"{{angle={start}--{B}--{end}}};"
+            )
+        else:
+            arcs.append(
+                f"\\path pic[draw, angle radius={_format_pt_dimension(radius_pt)}] {{angle={start}--{B}--{end}}};"
+            )
+            leader_start = params.get("leader_start")
+            leader_end = params.get("leader_end")
+            node_pos = params.get("node_pos")
+            entry_dict: Dict[str, str] = {}
+            if leader_start and leader_end:
+                entry_dict["leader"] = (
+                    f"\\draw[aux] ({_format_float(leader_start[0])}, {_format_float(leader_start[1])}) "
+                    f"-- ({_format_float(leader_end[0])}, {_format_float(leader_end[1])});"
+                )
+            if node_pos:
+                entry_dict["node"] = (
+                    f"\\node[ptlabel, anchor=center] at ({_format_float(node_pos[0])}, "
+                    f"{_format_float(node_pos[1])}) {{{label_text}}};"
+                )
+            if entry_dict:
+                label_entries.append(entry_dict)
         numeric_vertices.add(B)
 
     for A, B, C in plan.right_angles:
@@ -1407,103 +1449,111 @@ def _render_angle_marks(
     return arcs, label_entries, boxes
 
 
-def _place_numeric_angle_label(
+def angle_label_params(
     coords: Mapping[str, Tuple[float, float]],
     a: str,
     b: str,
     c: str,
-    initial_radius_pt: float,
-    label_text: Optional[str],
-    measure: float,
+    label_text: str,
+    equal_arc_count: int,
+    base_radius_pt: float,
+    gs_ang_sep_pt: float,
+    *,
+    measure_deg: float,
+    pt_per_unit: float,
     segments: Sequence[Tuple[Tuple[float, float], Tuple[float, float]]],
     circles: Sequence[Tuple[Tuple[float, float], float]],
-    placed_boxes: List[Tuple[Tuple[float, float, float, float], str]],
-    pt_per_unit: float,
-    base_offset_units: float,
-) -> Tuple[float, Optional[Dict[str, str]], List[Tuple[Tuple[float, float, float, float], str]]]:
-    if not isinstance(label_text, str) or not label_text.strip():
-        return initial_radius_pt, None, placed_boxes
+    placed_boxes: Sequence[Tuple[Tuple[float, float, float, float], str]],
+) -> Optional[Dict[str, object]]:
+    if not (isinstance(label_text, str) and label_text.strip()):
+        return None
+    if any(name not in coords for name in (a, b, c)):
+        return None
 
-    width, height = _estimate_label_dimensions(label_text, pt_per_unit)
+    # Scene unit conversion helpers
+    scale = pt_per_unit if pt_per_unit > 0 else 1.0
+
+    # Base numeric arc radius respects equal-angle stacks
+    r_arc_pt = base_radius_pt + max(equal_arc_count, 0) * gs_ang_sep_pt
+
+    # --- Step A: estimate radius clearance ---
+    approx_len = _approximate_text_length(label_text)
+    text_width_pt = ANGLE_LABEL_PT_PER_EM * LABEL_WIDTH_EM * approx_len
+    text_height_pt = FOOTNOTE_EM_PT * LABEL_HEIGHT_EM
+
+    omega_minor_deg = measure_deg
+    if omega_minor_deg > 180.0:
+        omega_minor_deg = 360.0 - omega_minor_deg
+    omega_minor_deg = max(omega_minor_deg, 1e-3)
+    omega_rad = math.radians(omega_minor_deg)
+
+    eps_phi_rad = math.radians(4.0)
+    omega_eff = max(omega_rad - 2.0 * eps_phi_rad, math.radians(5.0))
+    sin_half = math.sin(omega_eff / 2.0)
+    if sin_half <= 1e-6:
+        sin_half = 1e-6
+    r_fit_pt = text_width_pt / (2.0 * sin_half)
+
+    delta_clear = max(0.8 * gs_ang_sep_pt, 3.0)
+    cap_pt = 2.5 * gs_ang_sep_pt
+    tiny_rad = math.radians(12.0)
+
+    r_label_pt = max(r_arc_pt + delta_clear, r_fit_pt)
+
     internal_dir, external_dir = _bisector_directions(coords, a, b, c)
-    label_offset_pt = ANGLE_LABEL_OFFSET_EM * FOOTNOTE_EM_PT
+    width_units = text_width_pt / scale
+    height_units = text_height_pt / scale
 
-    radius_pt = initial_radius_pt
-    final_center: Optional[Tuple[float, float]] = None
-    final_rect: Optional[Tuple[float, float, float, float]] = None
-    boxes = list(placed_boxes)
-    overlaps_major = False
+    center_units: Optional[Tuple[float, float]] = None
+    rect: Optional[Tuple[float, float, float, float]] = None
 
     for attempt in range(3):
-        radius_pt = initial_radius_pt + attempt * GS_ANGLE_SEP_PT
-        label_radius_pt = radius_pt + label_offset_pt
-        label_radius_units = label_radius_pt / pt_per_unit if pt_per_unit > 0 else radius_pt
-        center = (
-            coords[b][0] + internal_dir[0] * label_radius_units,
-            coords[b][1] + internal_dir[1] * label_radius_units,
+        center_units = (
+            coords[b][0] + internal_dir[0] * (r_label_pt / scale),
+            coords[b][1] + internal_dir[1] * (r_label_pt / scale),
         )
-        rect = _rect_from_center(center, width, height)
-        overlaps = _label_overlap_flags(rect, segments, circles, boxes)
+        rect = _rect_from_center(center_units, width_units, height_units)
+        overlaps = _label_overlap_flags(rect, segments, circles, placed_boxes)
         if not any(overlaps):
-            final_center = center
-            final_rect = rect
             break
-        overlaps_major = overlaps_major or overlaps[0] or overlaps[1] or overlaps[2]
+        center_units = None
+        rect = None
+        r_label_pt += 0.4 * gs_ang_sep_pt
+    else:
+        center_units = None
 
-    leader_line: Optional[str] = None
-    if final_center is None:
-        overlaps_major = True
-        for attempt in range(3):
-            radius_pt = initial_radius_pt + (3 + attempt) * GS_ANGLE_SEP_PT
-            label_radius_pt = radius_pt + label_offset_pt
-            label_radius_units = label_radius_pt / pt_per_unit if pt_per_unit > 0 else radius_pt
-            center = (
-                coords[b][0] + external_dir[0] * label_radius_units,
-                coords[b][1] + external_dir[1] * label_radius_units,
-            )
-            rect = _rect_from_center(center, width, height)
-            overlaps = _label_overlap_flags(rect, segments, circles, boxes)
-            if not any(overlaps):
-                final_center = center
-                final_rect = rect
-                break
-        if final_center is None:
-            label_radius_pt = radius_pt + label_offset_pt
-            label_radius_units = label_radius_pt / pt_per_unit if pt_per_unit > 0 else radius_pt
-            final_center = (
-                coords[b][0] + external_dir[0] * label_radius_units,
-                coords[b][1] + external_dir[1] * label_radius_units,
-            )
-            final_rect = _rect_from_center(final_center, width, height)
-        leader_length = base_offset_units * 0.6 if base_offset_units > 0 else 0.0
-        if leader_length <= 0:
-            leader_length = min(
-                math.hypot(width, height) * 0.6,
-                max(0.6, math.hypot(width, height)),
-            )
-        leader_tip = (
-            coords[b][0] + external_dir[0] * leader_length,
-            coords[b][1] + external_dir[1] * leader_length,
-        )
-        leader_line = "\\draw[aux] ({b}) -- ({x}, {y});".format(
-            b=b,
-            x=_format_float(leader_tip[0]),
-            y=_format_float(leader_tip[1]),
-        )
+    if center_units and rect and omega_rad >= tiny_rad and r_label_pt <= r_arc_pt + cap_pt:
+        ecc = r_label_pt / r_arc_pt if r_arc_pt > 1e-6 else 1.0
+        return {
+            "mode": "internal",
+            "r_arc_pt": r_arc_pt,
+            "ecc": ecc,
+            "center": center_units,
+            "rect": rect,
+            "r_label_pt": r_label_pt,
+        }
 
-    if final_center is None or final_rect is None:
-        return radius_pt, None, boxes
-
-    node_line = "\\node[ptlabel] at ({x}, {y}) {{{text}}};".format(
-        x=_format_float(final_center[0]),
-        y=_format_float(final_center[1]),
-        text=label_text,
+    # --- Step B: external fallback with leader ---
+    r_ext_pt = r_arc_pt + 1.6 * gs_ang_sep_pt
+    start_units = (
+        coords[b][0] + external_dir[0] * ((r_arc_pt + 0.4 * gs_ang_sep_pt) / scale),
+        coords[b][1] + external_dir[1] * ((r_arc_pt + 0.4 * gs_ang_sep_pt) / scale),
     )
-    boxes.append((final_rect, "angle"))
-    entry: Dict[str, str] = {"node": node_line}
-    if leader_line:
-        entry["leader"] = leader_line
-    return radius_pt, entry, boxes
+    tip_units = (
+        coords[b][0] + external_dir[0] * (r_ext_pt / scale),
+        coords[b][1] + external_dir[1] * (r_ext_pt / scale),
+    )
+    rect = _rect_from_center(tip_units, width_units, height_units)
+
+    return {
+        "mode": "external",
+        "r_arc_pt": r_arc_pt,
+        "leader_start": start_units,
+        "leader_end": tip_units,
+        "node_pos": tip_units,
+        "rect": rect,
+        "r_label_pt": r_ext_pt,
+    }
 
 
 def _points_present(names: Sequence[str], coords: Mapping[str, Tuple[float, float]]) -> bool:

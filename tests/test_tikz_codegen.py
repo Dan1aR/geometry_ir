@@ -9,6 +9,12 @@ from geoscript_ir.tikz_codegen import (
     generate_tikz_document,
     latex_escape_keep_math,
 )
+from geoscript_ir.tikz_codegen.generator import (
+    GS_ANGLE_SEP_PT,
+    PT_PER_CM,
+    _angle_base_radius_pt,
+    angle_label_params,
+)
 
 
 def _basic_program() -> Program:
@@ -106,6 +112,115 @@ def test_angle_symbolic_measurement_uses_latex_sqrt() -> None:
     assert "\\sqrt{2}" in tikz
     assert "sqrt(2)" not in tikz
 
+
+def test_numeric_angle_internal_uses_eccentricity() -> None:
+    program = Program(
+        [
+            Stmt("angle_at", Span(1, 1), {"points": ("A", "B", "C")}, {"degrees": 60}),
+        ]
+    )
+    coords = {"A": (0.0, 1.0), "B": (0.0, 0.0), "C": (1.0, 0.0)}
+
+    tikz = generate_tikz_code(program, coords)
+
+    assert "angle eccentricity=" in tikz
+    assert "every pic quotes/.style={scale=0.9}" in tikz
+    assert "\\draw[aux]" not in tikz
+
+
+def test_numeric_angle_narrow_uses_external_leader() -> None:
+    tiny = math.radians(2.0)
+    program = Program(
+        [
+            Stmt(
+                "angle_at",
+                Span(1, 1),
+                {"points": ("A", "B", "C")},
+                {"degrees": 15},
+            ),
+        ]
+    )
+    coords = {
+        "A": (math.cos(tiny), math.sin(tiny)),
+        "B": (0.0, 0.0),
+        "C": (1.0, 0.0),
+    }
+
+    tikz = generate_tikz_code(program, coords)
+
+    assert "angle eccentricity=" not in tikz
+    assert "\\draw[aux]" in tikz
+    assert "\\node[ptlabel, anchor=center]" in tikz
+    assert "angle radius=7.00pt" in tikz
+
+
+def test_angle_label_params_internal_clearance() -> None:
+    coords = {"A": (1.0, 0.0), "B": (0.0, 0.0), "C": (0.0, 1.0)}
+    pt_per_unit = PT_PER_CM
+    base_radius_pt = _angle_base_radius_pt(coords, "A", "B", "C", pt_per_unit)
+    params = angle_label_params(
+        coords,
+        "A",
+        "B",
+        "C",
+        "$30^\\circ$",
+        0,
+        base_radius_pt,
+        GS_ANGLE_SEP_PT,
+        measure_deg=90.0,
+        pt_per_unit=pt_per_unit,
+        segments=[],
+        circles=[],
+        placed_boxes=[],
+    )
+
+    assert params is not None
+    assert params["mode"] == "internal"
+    delta_clear = max(0.8 * GS_ANGLE_SEP_PT, 3.0)
+    cap = 2.5 * GS_ANGLE_SEP_PT
+    assert params["r_label_pt"] - params["r_arc_pt"] >= delta_clear - 1e-6
+    assert params["r_label_pt"] <= params["r_arc_pt"] + cap + 1e-6
+
+
+def test_equal_angle_stack_offsets_numeric_arc() -> None:
+    program = Program(
+        [
+            Stmt(
+                "equal_angles",
+                Span(1, 1),
+                {"lhs": [("P", "Q", "R")], "rhs": [("S", "T", "U")]},
+            ),
+            Stmt(
+                "equal_angles",
+                Span(2, 1),
+                {"lhs": [("A", "B", "C")], "rhs": [("D", "B", "E")]},
+            ),
+            Stmt(
+                "angle_at",
+                Span(3, 1),
+                {"points": ("A", "B", "C")},
+                {"degrees": 45},
+            ),
+        ]
+    )
+    coords = {
+        "A": (0.0, 1.0),
+        "B": (0.0, 0.0),
+        "C": (1.0, 0.0),
+        "D": (-1.0, 0.0),
+        "E": (0.0, -1.0),
+        "P": (-1.0, -1.0),
+        "Q": (-2.0, 0.0),
+        "R": (-1.0, 1.0),
+        "S": (1.5, -1.0),
+        "T": (2.0, 0.5),
+        "U": (1.5, 1.0),
+    }
+
+    tikz = generate_tikz_code(program, coords)
+
+    assert "angle radius=11.00pt" in tikz
+    assert "angle eccentricity=" in tikz
 
 def test_target_angle_is_ignored_for_now() -> None:
     program = Program(
