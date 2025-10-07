@@ -148,6 +148,44 @@ def test_midpoint_adds_equal_length_ticks() -> None:
     assert "\\draw[aux, tick1]" in tikz
 
 
+def test_point_on_segment_midpoint_mark_adds_ticks() -> None:
+    program = Program(
+        [
+            Stmt(
+                "point_on",
+                Span(1, 1),
+                {"point": "M", "path": ("segment", ("A", "B"))},
+                {"mark": "midpoint"},
+            ),
+        ]
+    )
+    coords = {"A": (0.0, 0.0), "B": (2.0, 0.0), "M": (1.0, 0.0)}
+
+    tikz = generate_tikz_code(program, coords)
+
+    assert "\\draw[aux, tick1] (A) -- (M);" in tikz
+    assert "\\draw[aux, tick1] (M) -- (B);" in tikz
+
+
+def test_isosceles_triangle_adds_ticks_on_legs() -> None:
+    program = Program(
+        [
+            Stmt(
+                "triangle",
+                Span(1, 1),
+                {"ids": ["A", "B", "C"]},
+                {"isosceles": "atB"},
+            ),
+        ]
+    )
+    coords = {"A": (0.0, 0.0), "B": (1.0, 1.5), "C": (2.0, 0.0)}
+
+    tikz = generate_tikz_code(program, coords)
+
+    assert "\\draw[carrier, tick1] (A) -- (B);" in tikz
+    assert "\\draw[carrier, tick1] (B) -- (C);" in tikz
+
+
 def test_equal_segments_overflow_uses_overlay_path() -> None:
     program = Program(
         [

@@ -1711,6 +1711,8 @@ Marks are emitted on the **visible stroke**; no auxiliary carriers are auto‑dr
 * `angle-bisector U-V-W` (path) → **double‑arc** at `V` (equal‑angle mark).
 * `median from P to A-B midpoint M` → **equal‑length** ticks on `A–M` and `M–B`.
 * `midpoint M of A-B` → **equal‑length** ticks on `A–M` and `M–B`.
+* `point M on segment A-B [mark=midpoint]` → same midpoint tick pair on `A–M` and `M–B`.
+* `triangle U-V-W [isosceles=atV]` → **equal‑length** ticks on the two **legs incident to `V`**.
 
 > These implicit visuals are **marks only**. They do not add metric constraints (solver behavior is defined in §6); they exist to make standard constructions legible.
 
@@ -1726,7 +1728,8 @@ The renderer builds **disjoint groups** for both segments and angles before emis
 2. Build a **union‑find (disjoint‑set)** structure:
 
    * For each `equal-segments (E... ; F...)`, **union** all edges in `E∪F`.
-   * For each `midpoint M of A-B` or `median ... midpoint M`, **union** `A–M` with `M–B` into an **implicit** group (unless either edge already belongs to an explicit group; see precedence below).
+   * For each `midpoint M of A-B`, `point M on segment A-B [mark=midpoint]`, or `median ... midpoint M`, **union** `A–M` with `M–B` into an **implicit** group (unless either edge already belongs to an explicit group; see precedence below).
+   * For each `triangle U-V-W [isosceles=atV]`, **union** the two **legs adjacent to `V`** into an implicit group (suppressed if either leg is already explicit).
 3. Compute the **connected components**; each becomes one **segment equality group**.
 4. **Ordering (stable):**
 
@@ -1819,7 +1822,7 @@ class RenderPlan:
     notes: List[str]                             # renderer diagnostics (conflicts, suppressed implicit, g>3 overlays)
 ```
 
-* Populate `ticks` from **explicit** groups first, then add **implicit** pairs `(A,M)` and `(M,B)` from **midpoints/medians** that do **not** collide with explicit groups.
+* Populate `ticks` from **explicit** groups first, then add **implicit** pairs `(A,M)` and `(M,B)` from **midpoints/medians/point-on midpoint marks**, plus the **isosceles legs** `(V,U)` and `(V,W)` that do **not** collide with explicit groups.
 * Populate `equal_angle_groups` from explicit `equal-angles`; add **implicit** “bisector doubles” as single‑vertex marks (no need to enumerate two half‑wedges).
 * Populate `right_angles` from explicit `right-angle` and from **altitude** footprints.
 

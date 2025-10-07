@@ -350,6 +350,32 @@ def _build_render_plan(
             for ident in ids:
                 if isinstance(ident, str):
                     polygon_vertices.add(ident)
+            if kind == "triangle":
+                apex = opts.get("isosceles") if isinstance(opts.get("isosceles"), str) else None
+                if isinstance(apex, str) and len(ids) == 3:
+                    apex = apex.strip()
+                    apex_key = apex[-1] if apex.startswith("at") and len(apex) == 3 else None
+                    if apex_key in {"A", "B", "C"}:
+                        vertex_map = {"A": ids[0], "B": ids[1], "C": ids[2]}
+                        apex_vertex = vertex_map.get(apex_key)
+                        if all(isinstance(v, str) for v in ids) and apex_vertex in ids:
+                            pairs = []
+                            if apex_key == "A":
+                                pairs = [(ids[0], ids[1]), (ids[0], ids[2])]
+                            elif apex_key == "B":
+                                pairs = [(ids[1], ids[0]), (ids[1], ids[2])]
+                            elif apex_key == "C":
+                                pairs = [(ids[2], ids[0]), (ids[2], ids[1])]
+                            normals: List[Tuple[str, str]] = []
+                            for oriented in pairs:
+                                if oriented[0] == oriented[1]:
+                                    continue
+                                norm = _normalize_edge(oriented)
+                                record_edge_orientation(norm, oriented)
+                                implicit_edge_occurrence.setdefault(norm, idx)
+                                normals.append(norm)
+                            if len(normals) == 2:
+                                implicit_segment_pairs.append((normals[0], normals[1], idx))
         elif kind == "ray":
             edge = _edge_from_data(data.get("ray"))
             if edge:
@@ -437,6 +463,30 @@ def _build_render_plan(
                     normals.append(norm)
                 if len(normals) == 2:
                     implicit_segment_pairs.append((normals[0], normals[1], idx))
+        elif kind == "point_on":
+            point = data.get("point")
+            path = data.get("path")
+            if (
+                isinstance(point, str)
+                and isinstance(path, tuple)
+                and len(path) == 2
+                and path[0] == "segment"
+            ):
+                base = _edge_from_data(path[1])
+                mark = opts.get("mark") if isinstance(opts.get("mark"), str) else None
+                if base and mark == "midpoint":
+                    special_points.add(point)
+                    edges = [(base[0], point), (point, base[1])]
+                    normals: List[Tuple[str, str]] = []
+                    for oriented in edges:
+                        if oriented[0] == oriented[1]:
+                            continue
+                        norm = _normalize_edge(oriented)
+                        record_edge_orientation(norm, oriented)
+                        implicit_edge_occurrence.setdefault(norm, idx)
+                        normals.append(norm)
+                    if len(normals) == 2:
+                        implicit_segment_pairs.append((normals[0], normals[1], idx))
         elif kind == "circle_center_radius_through":
             center = data.get("center")
             through = data.get("through")
