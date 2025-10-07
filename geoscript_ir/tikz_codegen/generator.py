@@ -11,6 +11,7 @@ from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Uni
 from .utils import latex_escape_keep_math
 from ..ast import Program
 from ..numbers import SymbolicNumber
+from ..orientation import apply_orientation
 
 
 PT_PER_CM = 28.3464567
@@ -142,7 +143,8 @@ def generate_tikz_code(
 ) -> str:
     """Generate TikZ code that respects the rendering contract."""
 
-    coords = _prepare_coordinates(point_coords, normalize=normalize)
+    oriented_coords, _ = apply_orientation(program, point_coords)
+    coords = _prepare_coordinates(oriented_coords, normalize=normalize)
     if not isinstance(program, Program):
         raise TypeError("program must be an instance of Program")
 
