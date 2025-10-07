@@ -135,3 +135,136 @@ def test_latex_escape_preserves_math_segments() -> None:
     assert "of base" in escaped
 
 
+def test_midpoint_adds_equal_length_ticks() -> None:
+    program = Program(
+        [
+            Stmt("midpoint", Span(1, 1), {"midpoint": "M", "edge": ("A", "B")}),
+        ]
+    )
+    coords = {"A": (0.0, 0.0), "B": (2.0, 0.0), "M": (1.0, 0.0)}
+
+    tikz = generate_tikz_code(program, coords)
+
+    assert "\\draw[aux, tick1]" in tikz
+
+
+def test_point_on_segment_midpoint_mark_adds_ticks() -> None:
+    program = Program(
+        [
+            Stmt(
+                "point_on",
+                Span(1, 1),
+                {"point": "M", "path": ("segment", ("A", "B"))},
+                {"mark": "midpoint"},
+            ),
+        ]
+    )
+    coords = {"A": (0.0, 0.0), "B": (2.0, 0.0), "M": (1.0, 0.0)}
+
+    tikz = generate_tikz_code(program, coords)
+
+    assert "\\draw[aux, tick1] (A) -- (M);" in tikz
+    assert "\\draw[aux, tick1] (M) -- (B);" in tikz
+
+
+def test_isosceles_triangle_adds_ticks_on_legs() -> None:
+    program = Program(
+        [
+            Stmt(
+                "triangle",
+                Span(1, 1),
+                {"ids": ["A", "B", "C"]},
+                {"isosceles": "atB"},
+            ),
+        ]
+    )
+    coords = {"A": (0.0, 0.0), "B": (1.0, 1.5), "C": (2.0, 0.0)}
+
+    tikz = generate_tikz_code(program, coords)
+
+    assert "\\draw[carrier, tick1] (A) -- (B);" in tikz
+    assert "\\draw[carrier, tick1] (B) -- (C);" in tikz
+
+
+def test_equal_segments_overflow_uses_overlay_path() -> None:
+    program = Program(
+        [
+            Stmt("segment", Span(1, 1), {"edge": ("A", "B")}),
+            Stmt("segment", Span(2, 1), {"edge": ("C", "D")}),
+            Stmt("segment", Span(3, 1), {"edge": ("E", "F")}),
+            Stmt("segment", Span(4, 1), {"edge": ("G", "H")}),
+            Stmt("segment", Span(5, 1), {"edge": ("I", "J")}),
+            Stmt("segment", Span(6, 1), {"edge": ("K", "L")}),
+            Stmt("segment", Span(7, 1), {"edge": ("M", "N")}),
+            Stmt("segment", Span(8, 1), {"edge": ("P", "Q")}),
+            Stmt("equal_segments", Span(1, 1), {"lhs": [("A", "B")], "rhs": [("C", "D")]}),
+            Stmt("equal_segments", Span(2, 1), {"lhs": [("E", "F")], "rhs": [("G", "H")]}),
+            Stmt("equal_segments", Span(3, 1), {"lhs": [("I", "J")], "rhs": [("K", "L")]}),
+            Stmt("equal_segments", Span(4, 1), {"lhs": [("M", "N")], "rhs": [("P", "Q")]}),
+        ]
+    )
+    coords = {
+        "A": (0.0, 0.0),
+        "B": (1.0, 0.0),
+        "C": (0.0, 1.0),
+        "D": (1.0, 1.0),
+        "E": (0.0, 2.0),
+        "F": (1.0, 2.0),
+        "G": (0.0, 3.0),
+        "H": (1.0, 3.0),
+        "I": (0.0, 4.0),
+        "J": (1.0, 4.0),
+        "K": (0.0, 5.0),
+        "L": (1.0, 5.0),
+        "M": (0.0, 6.0),
+        "N": (1.0, 6.0),
+        "P": (0.0, 7.0),
+        "Q": (1.0, 7.0),
+    }
+
+    tikz = generate_tikz_code(program, coords)
+
+    assert "draw opacity=0" in tikz
+    assert "carrier, densely dashed" not in tikz
+
+
+def test_angle_bisector_draws_double_arc() -> None:
+    program = Program(
+        [
+            Stmt(
+                "intersect",
+                Span(1, 1),
+                {
+                    "path1": ("angle-bisector", {"points": ("A", "C", "B")}),
+                    "path2": ("segment", ("A", "B")),
+                    "at": "D",
+                    "at2": None,
+                },
+            )
+        ]
+    )
+    coords = {"A": (0.0, 0.0), "B": (2.0, 0.0), "C": (0.5, 1.5), "D": (0.0, 0.0)}
+
+    tikz = generate_tikz_code(program, coords)
+
+    assert tikz.count("angle radius=") == 2
+
+
+def test_foot_adds_right_angle_square_without_rule() -> None:
+    program = Program(
+        [
+            Stmt("foot", Span(1, 1), {"foot": "H", "from": "C", "edge": ("A", "B")}),
+        ]
+    )
+    coords = {
+        "A": (0.0, 0.0),
+        "B": (2.0, 0.0),
+        "C": (0.5, 2.0),
+        "H": (0.5, 0.0),
+    }
+
+    tikz = generate_tikz_code(program, coords)
+
+    assert "right angle=A--H--C" in tikz or "right angle=C--H--A" in tikz
+
+

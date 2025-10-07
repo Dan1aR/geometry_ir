@@ -1290,14 +1290,14 @@ Add seeding tests to the integration flow (see §17):
   circle/.style={line width=\gsLW},
   aux/.style={line width=\gsLWaux, dash pattern=on 3pt off 2pt},
   tick1/.style={postaction=decorate, decoration={markings,
-      mark=at position 0.5 with {\draw (-\gsTick/2,0)--(\gsTick/2,0);}}},
+      mark=at position 0.5 with {\draw (0,-\gsTick/2) -- (0,\gsTick/2);}}},
   tick2/.style={postaction=decorate, decoration={markings,
-      mark=at position 0.4 with {\draw (-\gsTick/2,0)--(\gsTick/2,0);},
-      mark=at position 0.6 with {\draw (-\gsTick/2,0)--(\gsTick/2,0);}}},
+      mark=at position 0.47 with {\draw (0,-\gsTick/2) -- (0,\gsTick/2);},
+      mark=at position 0.53 with {\draw (0,-\gsTick/2) -- (0,\gsTick/2);}}},
   tick3/.style={postaction=decorate, decoration={markings,
-      mark=at position 0.35 with {\draw (-\gsTick/2,0)--(\gsTick/2,0);},
-      mark=at position 0.5  with {\draw (-\gsTick/2,0)--(\gsTick/2,0);},
-      mark=at position 0.65 with {\draw (-\gsTick/2,0)--(\gsTick/2,0);}}},
+      mark=at position 0.44 with {\draw (0,-\gsTick/2) -- (0,\gsTick/2);},
+      mark=at position 0.5  with {\draw (0,-\gsTick/2) -- (0,\gsTick/2);},
+      mark=at position 0.56 with {\draw (0,-\gsTick/2) -- (0,\gsTick/2);}}},
 }
 % optional layers
 \pgfdeclarelayer{bg}\pgfdeclarelayer{fg}\pgfsetlayers{bg,main,fg}
@@ -1711,6 +1711,8 @@ Marks are emitted on the **visible stroke**; no auxiliary carriers are auto‑dr
 * `angle-bisector U-V-W` (path) → **double‑arc** at `V` (equal‑angle mark).
 * `median from P to A-B midpoint M` → **equal‑length** ticks on `A–M` and `M–B`.
 * `midpoint M of A-B` → **equal‑length** ticks on `A–M` and `M–B`.
+* `point M on segment A-B [mark=midpoint]` → same midpoint tick pair on `A–M` and `M–B`.
+* `triangle U-V-W [isosceles=atV]` → **equal‑length** ticks on the two **legs incident to `V`**.
 
 > These implicit visuals are **marks only**. They do not add metric constraints (solver behavior is defined in §6); they exist to make standard constructions legible.
 
@@ -1726,7 +1728,8 @@ The renderer builds **disjoint groups** for both segments and angles before emis
 2. Build a **union‑find (disjoint‑set)** structure:
 
    * For each `equal-segments (E... ; F...)`, **union** all edges in `E∪F`.
-   * For each `midpoint M of A-B` or `median ... midpoint M`, **union** `A–M` with `M–B` into an **implicit** group (unless either edge already belongs to an explicit group; see precedence below).
+   * For each `midpoint M of A-B`, `point M on segment A-B [mark=midpoint]`, or `median ... midpoint M`, **union** `A–M` with `M–B` into an **implicit** group (unless either edge already belongs to an explicit group; see precedence below).
+   * For each `triangle U-V-W [isosceles=atV]`, **union** the two **legs adjacent to `V`** into an implicit group (suppressed if either leg is already explicit).
 3. Compute the **connected components**; each becomes one **segment equality group**.
 4. **Ordering (stable):**
 
@@ -1760,6 +1763,8 @@ The renderer builds **disjoint groups** for both segments and angles before emis
   * If the segment is already drawn as a **carrier** (polygon side or declared `segment`), attach the tick style to that path.
   * If it is **not otherwise drawn**, render a thin **dashed stub** of the segment solely to host the ticks (do **not** introduce new visible construction lines).
 * **Zero/near‑zero length edges** (`‖AB‖ ≤ ε_len`, §19.12.2): skip ticks.
+
+> **Tick orientation.** Each `tick*` style draws **perpendicular strokes** (local y-axis in the mark frame) so the dash is visible across the carrier instead of hiding along it.
 
 **Precedence when a segment is both explicit and implicit (median/midpoint):**
 Explicit `equal-segments` **wins** (its group_index/ticks are used). Implicit marks are suppressed to avoid double‑marking.
@@ -1819,7 +1824,7 @@ class RenderPlan:
     notes: List[str]                             # renderer diagnostics (conflicts, suppressed implicit, g>3 overlays)
 ```
 
-* Populate `ticks` from **explicit** groups first, then add **implicit** pairs `(A,M)` and `(M,B)` from **midpoints/medians** that do **not** collide with explicit groups.
+* Populate `ticks` from **explicit** groups first, then add **implicit** pairs `(A,M)` and `(M,B)` from **midpoints/medians/point-on midpoint marks**, plus the **isosceles legs** `(V,U)` and `(V,W)` that do **not** collide with explicit groups.
 * Populate `equal_angle_groups` from explicit `equal-angles`; add **implicit** “bisector doubles” as single‑vertex marks (no need to enumerate two half‑wedges).
 * Populate `right_angles` from explicit `right-angle` and from **altitude** footprints.
 
