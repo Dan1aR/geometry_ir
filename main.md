@@ -1258,3 +1258,173 @@ Add seeding tests to the integration flow (see §17):
 * Using `equal-angles` to orient directions at the seed (non-trivial; defer).
 
 ---
+
+### 19) TikZ Rendering — Style & Codegen Contract
+
+**19.0 Goals**
+
+* **Visual clarity** with minimal ink: only draw declared carriers and essential construction lines.
+* **Notation completeness**: equal‑segments ticks, equal‑angles arcs, and right‑angle squares are standardized.
+* **Predictable layering** so labels/marks are legible.
+* **Rule‑aware** rendering: respect `rules[...]` flags (`mark_right_angles_as_square`, `no_equations_on_sides`, `no_unicode_degree`, etc.).
+
+---
+
+**19.1 Preamble & libraries (minimal)**
+
+```tex
+\documentclass[border=2pt]{standalone}
+\usepackage{tikz}
+\usetikzlibrary{calc,angles,quotes,intersections,decorations.markings,arrows.meta,positioning}
+\tikzset{
+  % global sizes (scale-aware; override per scene if needed)
+  gs/dot radius/.store in=\gsDotR,       gs/dot radius=1.4pt,
+  gs/line width/.store in=\gsLW,         gs/line width=0.8pt,
+  gs/aux width/.store  in=\gsLWaux,      gs/aux width=0.6pt,
+  gs/angle radius/.store in=\gsAngR,     gs/angle radius=8pt,
+  gs/angle sep/.store   in=\gsAngSep,    gs/angle sep=2pt,
+  gs/tick len/.store   in=\gsTick,       gs/tick len=4pt,
+  point/.style={circle,fill=black,inner sep=0pt,minimum size=0pt},
+  ptlabel/.style={font=\footnotesize, inner sep=1pt},
+  carrier/.style={line width=\gsLW},
+  circle/.style={line width=\gsLW},
+  aux/.style={line width=\gsLWaux, dash pattern=on 3pt off 2pt},
+  tick1/.style={postaction=decorate, decoration={markings,
+      mark=at position 0.5 with {\draw (-\gsTick/2,0)--(\gsTick/2,0);}}},
+  tick2/.style={postaction=decorate, decoration={markings,
+      mark=at position 0.4 with {\draw (-\gsTick/2,0)--(\gsTick/2,0);},
+      mark=at position 0.6 with {\draw (-\gsTick/2,0)--(\gsTick/2,0);}}},
+  tick3/.style={postaction=decorate, decoration={markings,
+      mark=at position 0.35 with {\draw (-\gsTick/2,0)--(\gsTick/2,0);},
+      mark=at position 0.5  with {\draw (-\gsTick/2,0)--(\gsTick/2,0);},
+      mark=at position 0.65 with {\draw (-\gsTick/2,0)--(\gsTick/2,0);}}},
+}
+% optional layers
+\pgfdeclarelayer{bg}\pgfdeclarelayer{fg}\pgfsetlayers{bg,main,fg}
+```
+
+**19.2 Painter’s order**
+
+1. **bg**: light fills (rare)
+2. **main**: carriers — polygon sides, declared segments, circles
+3. **fg**: construction lines (aux), angle/segment marks, labels, target highlights
+
+**19.3 What to draw (and what **not** to draw)**
+
+* **Polygons** (`triangle`, `quadrilateral`, `trapezoid`, …): draw *only* their carrier edges with `carrier` style (no diagonals unless declared or used for an explicit intersection to place a visible point).
+* **Segments explicitly declared**: draw with `carrier`.
+* **Lines/Rays**: draw as **auxiliary** (extend beyond endpoints; `aux` style). Rays get `-{Latex[length=2mm]}` heads.
+* **Intersections**: if `X` is defined by `intersect(Path1, Path2)`, render both carriers as `aux` **only if** they are not already drawn elsewhere; otherwise, omit.
+* **Circles**: draw with `circle` style. Do **not** auto-draw radii to all named points; draw a radius only if explicitly present, or needed for a right-angle mark at a tangent touchpoint.
+* **Feet / medians / bisectors**: draw their carrier lines `aux` only if they appear in a `segment`/`ray`/`line` object or define a visible point; otherwise render only the **mark** (e.g., right‑angle square at the foot).
+
+**19.4 Point symbols & labels**
+
+* Each named point: `\fill (P) circle (\gsDotR);` then `\node[ptlabel,<anchor>] at (P){$P$};`
+* Default **anchor heuristic**: choose `above` if the point is on the lower half of the bbox, `below` if on the upper half; break ties using local edge directions to avoid overlap. Honor explicit `label point P [pos=...]`.
+
+**19.5 Side labels vs. ticks**
+
+* If `rules[no_equations_on_sides=true]`, **suppress** all auto numeric side labels. Use `sidelabel A-B "..."` to force a sloped label (`node[midway, sloped, above|below]`).
+* **Equal segments**: for each group, apply `tick1` / `tick2` / `tick3` to every segment in that group. If >3 groups, cycle ticks then add `densely dashed` to distinguish.
+
+**19.6 Angles**
+
+* **Numeric angle** (`angle A-B-C [degrees=θ]`): draw one arc at `B` via `pic`:
+
+  ```tex
+  \path pic[draw, angle radius=\gsAngR, "$\num{θ}$"{scale=0.9}] {angle=A--B--C};
+  ```
+
+  Respect `rules[no_unicode_degree]` by always using `^\circ`.
+* **Right angle** (`right-angle A-B-C`)
+
+  * If `rules[mark_right_angles_as_square=true]`: draw a square symbol at `B` (TikZ `angles` supports `right angle`):
+
+    ```tex
+    \path pic[draw, angle radius=\gsAngR] {right angle=A--B--C};
+    ```
+
+    Do **not** annotate `90^\circ`.
+  * Otherwise: use the same as “numeric angle” with label `$90^\circ$`.
+* **Equal angles** (`equal-angles (A-B-C, ... ; D-E-F, ...)`): for each *group*, draw **n arcs** (n=group index: 1=single, 2=double, 3=triple) at the relevant vertices. Radii are `\gsAngR`, `\gsAngR+\gsAngSep`, `\gsAngR+2\gsAngSep` for the multiple arcs, no labels.
+
+**19.7 Medians, bisectors, altitudes (marks)**
+
+* **Median** `median from V to A-B midpoint M`: draw `V–M` if `segment`/`line` is present; otherwise omit the line. Optionally mark `M` with a small notch on `AB`.
+* **Angle bisector** at `B`: draw the **double‑arc** mark at `B` (no line) unless explicitly requested as a `line`/`segment`.
+* **Altitude** / **foot** `foot H from X to A-B`: draw a **right‑angle square** at `H` and draw `X–H` as `aux` *only if* altitude line is declared or needed to show a construction.
+
+**19.8 Tangency**
+
+* `tangent at T to circle center O`: draw tangent **line** (aux) through `T`, draw the **radius** `O–T` (carrier or aux), and a **right‑angle square** at `T`.
+* `line X-Y tangent to circle center O at T`: same; if there’s no radius elsewhere, draw `O–T` thin to support the square.
+
+**19.9 Targets & highlights**
+
+* **Target angle/arc**: re‑draw that arc **on the foreground** with thicker width (`line width=\gsLW+0.2pt`) and (optionally) a mild color (`black!85`) and a label `"?"` if `label="?"` is set in the IR.
+* **Target length / point / circle**: annotate minimally (e.g., halo box “?” near the object), but **do not** print equations on sides unless forced via `sidelabel`.
+
+**19.10 Bounds & scaling**
+
+* Compute bbox over all *drawn* primitives; add a 5–8 mm margin and avoid wrapper packages. Use `standalone` class borders to fit tightly.
+
+**19.11 Implementation plan (changes to `tikz_codegen/generator.py`)**
+
+> Keep generator responsibilities **separate** from solving. Build a small **RenderPlan** (like your DDC plan) and then emit TikZ from that plan.
+
+**19.11.1 Build a `RenderPlan` (new)**
+
+```python
+@dataclass
+class RenderPlan:
+    points: Dict[str, Tuple[float,float]]
+    carriers: List[Tuple[str,str,Dict]]            # edges to draw (style=carrier)
+    aux_lines: List[Tuple[PathSpec, Dict]]         # lines/rays to draw (style=aux)
+    circles: List[Tuple[str,str,Dict]]             # (center, witness) -> circle style
+    ticks: List[Tuple[str,str,int]]                # (A,B, group_index 1..3)
+    equal_angle_groups: List[List[Tuple[str,str,str]]]  # per group: [(A,B,C),...]
+    right_angles: List[Tuple[str,str,str]]         # (A,B,C)
+    angle_arcs: List[Tuple[str,str,str, Optional[float], Optional[str]]] # (A,B,C, degrees?, label)
+    labels: List[LabelSpec]                        # point & side labels
+    highlights: List[HighlightSpec]                # targets
+```
+
+Populate this by walking the **desugared** program + options:
+
+* **Carriers**: all declared `segment` and polygon sides.
+* **Aux**: `line`/`ray` used for *explicitly drawn* carriers or to make an intersection visible; also bisector/median/altitude carriers *only* if they were explicitly declared.
+* **Circles**: only as declared.
+* **Ticks**: expand `equal-segments` into grouped edges (index groups 1..3; wrap if >3).
+* **Equal angles**: collect into groups.
+* **Right angles**: all `right-angle` statements; also synthesize from tangency if present.
+* **Angle arcs**: from `angle A-B-C [degrees=..]`.
+* **Labels**: from `label point` and `sidelabel`; suppress numeric side labels if `rules[no_equations_on_sides]`.
+* **Highlights**: from `target ...`.
+
+**19.11.2 Suppress redundancy**
+
+* **Do not** add any `O–P` radius unless: (a) explicitly declared as a `segment`/`line`, or (b) required for a tangency right‑angle square.
+* **Do not** draw connectors between arbitrary point pairs that aren’t in `carriers` or `aux_lines`.
+
+**19.11.3 Layered emission**
+
+* Emit in painter’s order (19.2).
+* Use the standardized styles from 19.1 exactly once per document.
+* **Right-angle squares**: use TikZ `pic` right‑angle symbol when `mark_right_angles_as_square=true`.
+* **Equal‑angles**: for group *g*, draw `g` arcs at radius `\gsAngR + (k-1)\gsAngSep` (`k=1..g`) with no labels.
+* **Ticks**: apply `tick{g}` style to the **segment** draw command; if the segment is not otherwise drawn (e.g., it’s only an abstract equality), draw the segment **thin dashed** only for the tick mark, or place two small ticks floating near endpoints (simpler: lightly draw the segment).
+* **Angle labels**: always `$\,^\circ$` (LaTeX degree), respecting `no_unicode_degree`.
+* **Targets**: re‑draw highlighted arc/edge/point on `fg` with `line width=\gsLW+0.2pt`.
+
+**19.11.4 Rules mapping**
+
+* `rules[mark_right_angles_as_square]` → choose square vs numeric “90°”.
+* `rules[no_equations_on_sides]` → drop numeric edge labels unless created by explicit `sidelabel`.
+* `rules[no_unicode_degree]` → no Unicode “°”; always `^\circ`.
+* `rules[allow_auxiliary]` → if `false`, don’t draw bisector/median/altitude carriers unless explicitly declared as `segment/line/ray`; draw only marks.
+
+**19.11.5 Minimal preamble**
+Replace the heavy preamble with the minimal block in 19.1; return a `standalone` document without `varwidth/adjustbox/pgfplots`.
+
+---
