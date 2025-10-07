@@ -1290,14 +1290,14 @@ Add seeding tests to the integration flow (see §17):
   circle/.style={line width=\gsLW},
   aux/.style={line width=\gsLWaux, dash pattern=on 3pt off 2pt},
   tick1/.style={postaction=decorate, decoration={markings,
-      mark=at position 0.5 with {\draw (-\gsTick/2,0)--(\gsTick/2,0);}}},
+      mark=at position 0.5 with {\draw (0,-\gsTick/2) -- (0,\gsTick/2);}}},
   tick2/.style={postaction=decorate, decoration={markings,
-      mark=at position 0.4 with {\draw (-\gsTick/2,0)--(\gsTick/2,0);},
-      mark=at position 0.6 with {\draw (-\gsTick/2,0)--(\gsTick/2,0);}}},
+      mark=at position 0.4 with {\draw (0,-\gsTick/2) -- (0,\gsTick/2);},
+      mark=at position 0.6 with {\draw (0,-\gsTick/2) -- (0,\gsTick/2);}}},
   tick3/.style={postaction=decorate, decoration={markings,
-      mark=at position 0.35 with {\draw (-\gsTick/2,0)--(\gsTick/2,0);},
-      mark=at position 0.5  with {\draw (-\gsTick/2,0)--(\gsTick/2,0);},
-      mark=at position 0.65 with {\draw (-\gsTick/2,0)--(\gsTick/2,0);}}},
+      mark=at position 0.35 with {\draw (0,-\gsTick/2) -- (0,\gsTick/2);},
+      mark=at position 0.5  with {\draw (0,-\gsTick/2) -- (0,\gsTick/2);},
+      mark=at position 0.65 with {\draw (0,-\gsTick/2) -- (0,\gsTick/2);}}},
 }
 % optional layers
 \pgfdeclarelayer{bg}\pgfdeclarelayer{fg}\pgfsetlayers{bg,main,fg}
@@ -1763,6 +1763,8 @@ The renderer builds **disjoint groups** for both segments and angles before emis
   * If the segment is already drawn as a **carrier** (polygon side or declared `segment`), attach the tick style to that path.
   * If it is **not otherwise drawn**, render a thin **dashed stub** of the segment solely to host the ticks (do **not** introduce new visible construction lines).
 * **Zero/near‑zero length edges** (`‖AB‖ ≤ ε_len`, §19.12.2): skip ticks.
+
+> **Tick orientation.** Each `tick*` style draws **perpendicular strokes** (local y-axis in the mark frame) so the dash is visible across the carrier instead of hiding along it.
 
 **Precedence when a segment is both explicit and implicit (median/midpoint):**
 Explicit `equal-segments` **wins** (its group_index/ticks are used). Implicit marks are suppressed to avoid double‑marking.

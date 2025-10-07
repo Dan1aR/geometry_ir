@@ -62,14 +62,14 @@ standalone_tpl = r"""\documentclass[border=2pt]{standalone}
   circle/.style={line width=\gsLW},
   aux/.style={line width=\gsLWaux, dash pattern=on 3pt off 2pt},
   tick1/.style={postaction=decorate, decoration={markings,
-      mark=at position 0.5 with {\draw (-\gsTick/2,0)--(\gsTick/2,0);}}},
+      mark=at position 0.5 with {\draw (0,-\gsTick/2) -- (0,\gsTick/2);}}},
   tick2/.style={postaction=decorate, decoration={markings,
-      mark=at position 0.4 with {\draw (-\gsTick/2,0)--(\gsTick/2,0);},
-      mark=at position 0.6 with {\draw (-\gsTick/2,0)--(\gsTick/2,0);}}},
+      mark=at position 0.4 with {\draw (0,-\gsTick/2) -- (0,\gsTick/2);},
+      mark=at position 0.6 with {\draw (0,-\gsTick/2) -- (0,\gsTick/2);}}},
   tick3/.style={postaction=decorate, decoration={markings,
-      mark=at position 0.35 with {\draw (-\gsTick/2,0)--(\gsTick/2,0);},
-      mark=at position 0.5  with {\draw (-\gsTick/2,0)--(\gsTick/2,0);},
-      mark=at position 0.65 with {\draw (-\gsTick/2,0)--(\gsTick/2,0);}}},
+      mark=at position 0.35 with {\draw (0,-\gsTick/2) -- (0,\gsTick/2);},
+      mark=at position 0.5  with {\draw (0,-\gsTick/2) -- (0,\gsTick/2);},
+      mark=at position 0.65 with {\draw (0,-\gsTick/2) -- (0,\gsTick/2);}}},
 }
 %% optional layers
 \pgfdeclarelayer{bg}\pgfdeclarelayer{fg}\pgfsetlayers{bg,main,fg}
