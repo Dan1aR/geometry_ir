@@ -13,6 +13,36 @@ from ..ast import Program
 from ..numbers import SymbolicNumber
 
 
+PT_PER_CM = 28.3464567
+FOOTNOTE_EM_PT = 8.0
+GS_DOT_RADIUS_PT = 1.4
+GS_ANGLE_SEP_PT = 2.0
+LABEL_WIDTH_EM = 0.52
+LABEL_HEIGHT_EM = 0.9
+ANGLE_LABEL_OFFSET_EM = 0.6
+
+ANCHOR_SEQUENCE = [
+    "above",
+    "above right",
+    "right",
+    "below right",
+    "below",
+    "below left",
+    "left",
+    "above left",
+]
+
+ANCHOR_DIRECTIONS: Dict[str, Tuple[float, float]] = {
+    "above": (0.0, 1.0),
+    "below": (0.0, -1.0),
+    "left": (-1.0, 0.0),
+    "right": (1.0, 0.0),
+    "above right": (math.sqrt(0.5), math.sqrt(0.5)),
+    "below right": (math.sqrt(0.5), -math.sqrt(0.5)),
+    "below left": (-math.sqrt(0.5), -math.sqrt(0.5)),
+    "above left": (-math.sqrt(0.5), math.sqrt(0.5)),
+}
+
 standalone_tpl = r"""\documentclass[border=2pt]{standalone}
 \usepackage{tikz}
 \usetikzlibrary{calc,angles,quotes,intersections,decorations.markings,arrows.meta,positioning}
@@ -57,6 +87,7 @@ class LabelSpec:
     position: Optional[str] = None
     slope: bool = False
     explicit: bool = False
+    leader: Optional[Tuple[float, float]] = None
 
 
 @dataclass
@@ -72,13 +103,15 @@ class RenderPlan:
     aux_lines: List[Tuple[AuxPath, Dict[str, object]]]
     circles: List[Tuple[str, str, Dict[str, object]]]
     ticks: List[Tuple[str, str, int]]
-    equal_angle_groups: List[List[Tuple[str, str, str]]]
-    right_angles: List[Tuple[str, str, str]]
-    angle_arcs: List[Tuple[str, str, str, Optional[float], Optional[str]]]
+    angles: List[Dict[str, object]]
     labels: List[LabelSpec]
     tick_overflow_edges: Dict[Tuple[str, str], bool] = field(default_factory=dict)
     helper_tick_edges: Dict[Tuple[str, str], Tuple[str, str]] = field(default_factory=dict)
     carrier_lookup: Dict[Tuple[str, str], Tuple[str, str]] = field(default_factory=dict)
+    angle_groups: List[List[Tuple[str, str, str]]] = field(default_factory=list)
+    polygon_vertices: set = field(default_factory=set)
+    circle_centers: set = field(default_factory=set)
+    special_points: set = field(default_factory=set)
 
 
 def generate_tikz_document(
@@ -183,10 +216,12 @@ def _build_render_plan(
     tick_overflow_edges: Dict[Tuple[str, str], bool] = {}
     helper_tick_edges: Dict[Tuple[str, str], Tuple[str, str]] = {}
     equal_angle_groups: List[List[Tuple[str, str, str]]] = []
-    right_angles: List[Tuple[str, str, str]] = []
-    angle_arcs: List[Tuple[str, str, str, Optional[float], Optional[str]]] = []
+    angle_entries: List[Dict[str, object]] = []
     point_labels: Dict[str, LabelSpec] = {}
     side_labels: List[LabelSpec] = []
+    polygon_vertices: set = set()
+    circle_centers: set = set()
+    special_points: set = set()
 
     tick_group = 0
 
@@ -224,8 +259,11 @@ def _build_render_plan(
                 continue
             for edge in _cycle_edges(tuple(ids)):
                 key = _normalize_edge(edge)
-                carriers.setdefault(key, (edge[0], edge[1], {}))
+                carriers.setdefault(key, (edge[0], edge[1], {"source": kind}))
                 carrier_lookup[key] = (edge[0], edge[1])
+            for ident in ids:
+                if isinstance(ident, str):
+                    polygon_vertices.add(ident)
         elif kind == "ray":
             edge = _edge_from_data(data.get("ray"))
             if edge:
@@ -240,6 +278,10 @@ def _build_render_plan(
             to_edge = _edge_from_data(data.get("to"))
             at = data.get("at")
             if to_edge and isinstance(at, str):
+                foot = data.get("foot")
+                if isinstance(foot, str):
+                    special_points.add(foot)
+                special_points.add(at)
                 aux_lines.append(
                     (
                         AuxPath(
@@ -268,6 +310,7 @@ def _build_render_plan(
             midpoint = data.get("midpoint")
             edge = _edge_from_data(data.get("to"))
             if edge and isinstance(frm, str) and isinstance(midpoint, str):
+                special_points.add(midpoint)
                 aux_lines.append(
                     (
                         AuxPath(
@@ -282,6 +325,7 @@ def _build_render_plan(
             through = data.get("through")
             if isinstance(center, str) and isinstance(through, str):
                 circles.setdefault((center, through), {})
+                circle_centers.add(center)
         elif kind == "label_point":
             point = data.get("point")
             if not isinstance(point, str):
@@ -353,11 +397,27 @@ def _build_render_plan(
             if not triple:
                 continue
             label, numeric = _angle_label_from_opts(opts, rules)
-            angle_arcs.append((triple[0], triple[1], triple[2], numeric, label))
+            angle_entries.append(
+                {
+                    "kind": "numeric",
+                    "A": triple[0],
+                    "B": triple[1],
+                    "C": triple[2],
+                    "degrees": numeric,
+                    "label": label,
+                }
+            )
         elif kind == "right_angle_at":
             triple = _angle_triple(data.get("points"))
             if triple:
-                right_angles.append(triple)
+                angle_entries.append(
+                    {
+                        "kind": "right",
+                        "A": triple[0],
+                        "B": triple[1],
+                        "C": triple[2],
+                    }
+                )
         elif kind in {
             "target_angle",
             "target_length",
@@ -368,6 +428,19 @@ def _build_render_plan(
             # Targets are currently ignored by the TikZ renderer.
             continue
 
+    if equal_angle_groups:
+        for group_index, group in enumerate(equal_angle_groups, start=1):
+            for triple in group:
+                angle_entries.append(
+                    {
+                        "kind": "equal",
+                        "A": triple[0],
+                        "B": triple[1],
+                        "C": triple[2],
+                        "group": group_index,
+                    }
+                )
+
     labels = list(point_labels.values()) + side_labels
 
     plan = RenderPlan(
@@ -376,14 +449,16 @@ def _build_render_plan(
         aux_lines=aux_lines,
         circles=[(center, through, style) for (center, through), style in circles.items()],
         ticks=ticks,
-        equal_angle_groups=equal_angle_groups,
-        right_angles=right_angles,
-        angle_arcs=angle_arcs,
+        angles=angle_entries,
         labels=labels,
     )
     plan.tick_overflow_edges = tick_overflow_edges
     plan.helper_tick_edges = helper_tick_edges
     plan.carrier_lookup = carrier_lookup
+    plan.angle_groups = equal_angle_groups
+    plan.polygon_vertices = polygon_vertices
+    plan.circle_centers = circle_centers
+    plan.special_points = special_points
     return plan
 
 
@@ -507,6 +582,16 @@ def _emit_tikz_picture(plan: RenderPlan, layout_scale: float, rules: Mapping[str
     }
     side_label_specs = [label for label in plan.labels if label.kind == "side"]
 
+    pt_per_unit = max(layout_scale * PT_PER_CM, 1e-6)
+    scene_diag = _scene_bbox_diag(bbox)
+    scene_diag_pt = scene_diag * pt_per_unit
+    base_offset_pt = max(1.8 * GS_DOT_RADIUS_PT, 0.012 * scene_diag_pt)
+    base_offset_units = base_offset_pt / pt_per_unit if pt_per_unit > 0 else 0.0
+
+    segments = _collect_segments(plan)
+    circle_geoms = _collect_circle_geoms(plan)
+    placed_label_boxes: List[Tuple[Tuple[float, float, float, float], str]] = []
+
     lines.append("  \\begin{pgfonlayer}{fg}")
     for path, style in plan.aux_lines:
         aux_lines = _emit_aux_path(path, plan.points, span, style)
@@ -527,81 +612,48 @@ def _emit_tikz_picture(plan: RenderPlan, layout_scale: float, rules: Mapping[str
             )
         )
 
-    for group_index, group in enumerate(plan.equal_angle_groups, start=1):
-        for A, B, C in group:
-            if not _points_present((A, B, C), plan.points):
-                continue
-            for arc_idx in range(group_index):
-                radius_expr = f"\\gsAngR+{arc_idx}*\\gsAngSep"
-                lines.append(
-                    "    \\path pic[draw, angle radius={radius}] {{{body}}};".format(
-                        radius=radius_expr, body=f"angle={A}--{B}--{C}"
-                    )
-                )
+    angle_arc_lines, angle_label_entries, placed_label_boxes = _render_angle_marks(
+        plan,
+        layout_scale,
+        rules,
+        segments,
+        circle_geoms,
+        pt_per_unit,
+        base_offset_units,
+        placed_label_boxes,
+    )
+    for arc_line in angle_arc_lines:
+        lines.append("    " + arc_line)
+    for entry in angle_label_entries:
+        leader = entry.get("leader")
+        if leader:
+            lines.append("    " + leader)
+        lines.append("    " + entry["node"])
 
-    for A, B, C in plan.right_angles:
-        if not _points_present((A, B, C), plan.points):
-            continue
-        lines.append(
-            f"    \\path pic[draw, angle radius=\\gsAngR] {{right angle={A}--{B}--{C}}};"
-        )
-
-    for A, B, C, degrees, label in plan.angle_arcs:
-        if not _points_present((A, B, C), plan.points):
-            continue
-        options = ["draw", "angle radius=\\gsAngR"]
-        if label:
-            options.append(f"\"{label}\"{{scale=0.9}}")
-        start, end = A, C
-        orientation = _oriented_angle_degrees(plan.points, A, B, C)
-        swapped_orientation = _oriented_angle_degrees(plan.points, C, B, A)
-        if orientation is not None and swapped_orientation is not None:
-            if degrees is not None:
-                target = _normalise_angle_degrees(degrees)
-                candidates = [
-                    (A, C, _normalise_angle_degrees(orientation)),
-                    (C, A, _normalise_angle_degrees(swapped_orientation)),
-                ]
-                best = min(
-                    candidates,
-                    key=lambda item: _angular_difference_degrees(item[2], target),
-                )
-                start, end = best[0], best[1]
-            else:
-                tol = 1e-4
-                candidates = [
-                    (A, C, orientation),
-                    (C, A, swapped_orientation),
-                ]
-                less_than = [cand for cand in candidates if cand[2] < 180.0 - tol]
-                if less_than:
-                    start, end = less_than[0][0], less_than[0][1]
-                else:
-                    not_reflex = [cand for cand in candidates if cand[2] <= 180.0 + tol]
-                    if not_reflex:
-                        best = min(
-                            not_reflex,
-                            key=lambda item: abs(item[2] - 180.0),
-                        )
-                        start, end = best[0], best[1]
-                    else:
-                        best = min(candidates, key=lambda item: item[2])
-                        start, end = best[0], best[1]
-        lines.append(
-            "    \\path pic[{opts}] {{{body}}};".format(
-                opts=", ".join(options), body=f"angle={start}--{B}--{end}"
-            )
-        )
+    point_layouts, placed_label_boxes = _layout_point_labels(
+        plan,
+        point_label_map,
+        bbox,
+        base_offset_units,
+        pt_per_unit,
+        segments,
+        circle_geoms,
+        placed_label_boxes,
+    )
 
     for name in sorted(plan.points.keys()):
         lines.append(f"    \\fill ({name}) circle (\\gsDotR);")
-        label_spec = point_label_map.get(name)
-        anchor = label_spec.position if label_spec and label_spec.position else _default_point_anchor(plan.points[name], bbox)
-        text = label_spec.text if label_spec else name
-        formatted = _format_label_text(text)
-        anchor_token = anchor if anchor else "above"
+        info = point_layouts.get(name)
+        if info and info.get("leader"):
+            lines.append("    " + info["leader"])
+        if info:
+            anchor = info.get("anchor") or "above"
+            formatted = info.get("text") or _format_label_text(name)
+        else:
+            anchor = _default_point_anchor(plan.points[name], bbox)
+            formatted = _format_label_text(name)
         lines.append(
-            f"    \\node[ptlabel,{anchor_token}] at ({name}) {{{formatted}}};"
+            f"    \\node[ptlabel,{anchor}] at ({name}) {{{formatted}}};"
         )
 
     for label in side_label_specs:
@@ -742,8 +794,669 @@ def _emit_aux_path(
     return []
 
 
+def _scene_bbox_diag(bbox: Tuple[float, float, float, float]) -> float:
+    min_x, max_x, min_y, max_y = bbox
+    return math.hypot(max_x - min_x, max_y - min_y)
+
+
+def _collect_segments(plan: RenderPlan) -> List[Tuple[Tuple[float, float], Tuple[float, float]]]:
+    segments: List[Tuple[Tuple[float, float], Tuple[float, float]]] = []
+    seen: set = set()
+    for start, end, _ in plan.carriers:
+        if start not in plan.points or end not in plan.points:
+            continue
+        key = _normalize_edge((start, end))
+        if key in seen:
+            continue
+        seen.add(key)
+        segments.append((plan.points[start], plan.points[end]))
+    for _, oriented in plan.helper_tick_edges.items():
+        a, b = oriented
+        if a in plan.points and b in plan.points:
+            segments.append((plan.points[a], plan.points[b]))
+    return segments
+
+
+def _collect_circle_geoms(plan: RenderPlan) -> List[Tuple[Tuple[float, float], float]]:
+    circles: List[Tuple[Tuple[float, float], float]] = []
+    for center, through, _ in plan.circles:
+        if center not in plan.points or through not in plan.points:
+            continue
+        radius = _distance(plan.points[center], plan.points[through])
+        if radius > 0:
+            circles.append((plan.points[center], radius))
+    return circles
+
+
+def _wedge_key(a: str, b: str, c: str) -> Tuple[str, Tuple[str, str]]:
+    return (b, tuple(sorted((a, c))))
+
+
+def _angle_base_radius_pt(
+    coords: Mapping[str, Tuple[float, float]],
+    a: str,
+    b: str,
+    c: str,
+    pt_per_unit: float,
+) -> float:
+    if not all(name in coords for name in (a, b, c)):
+        return 8.0
+    ba = _distance(coords[b], coords[a])
+    bc = _distance(coords[b], coords[c])
+    min_len_pt = min(ba, bc) * pt_per_unit if pt_per_unit > 0 else 0.0
+    base = 0.12 * min_len_pt
+    return max(7.0, min(14.0, base if base > 0 else 8.0))
+
+
+def _format_pt_dimension(value: float) -> str:
+    return f"{value:.2f}pt"
+
+
+def _choose_angle_orientation(
+    coords: Mapping[str, Tuple[float, float]],
+    a: str,
+    b: str,
+    c: str,
+    target_degrees: Optional[float],
+) -> Optional[Tuple[str, str, float]]:
+    orientation = _oriented_angle_degrees(coords, a, b, c)
+    swapped = _oriented_angle_degrees(coords, c, b, a)
+    if orientation is None or swapped is None:
+        return None
+    candidates = [
+        (a, c, _normalise_angle_degrees(orientation)),
+        (c, a, _normalise_angle_degrees(swapped)),
+    ]
+    if target_degrees is not None:
+        target = _normalise_angle_degrees(target_degrees)
+        best = min(
+            candidates,
+            key=lambda item: _angular_difference_degrees(item[2], target),
+        )
+        return best
+    tol = 1e-4
+    less_than = [cand for cand in candidates if cand[2] < 180.0 - tol]
+    if less_than:
+        return less_than[0]
+    not_reflex = [cand for cand in candidates if cand[2] <= 180.0 + tol]
+    if not_reflex:
+        return min(not_reflex, key=lambda item: abs(item[2] - 180.0))
+    return min(candidates, key=lambda item: item[2])
+
+
+def _bisector_directions(
+    coords: Mapping[str, Tuple[float, float]],
+    a: str,
+    b: str,
+    c: str,
+) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+    v1 = _normalise_vector(_vector(coords[b], coords[a])) if a in coords and b in coords else None
+    v2 = _normalise_vector(_vector(coords[b], coords[c])) if c in coords and b in coords else None
+    if v1 is None or v2 is None:
+        return (0.0, 1.0), (0.0, -1.0)
+    internal = _normalise_vector((v1[0] + v2[0], v1[1] + v2[1]))
+    external = _normalise_vector((v1[0] - v2[0], v1[1] - v2[1]))
+    if internal is None:
+        perp = _perp_vector(v1)
+        internal = perp if perp is not None else (0.0, 1.0)
+    if external is None:
+        external = (-internal[0], -internal[1])
+    return internal, external
+
+
+def _approximate_text_length(text: str) -> int:
+    cleaned = re.sub(r"\\[a-zA-Z]+", "", text)
+    cleaned = cleaned.replace("{", "").replace("}", "")
+    cleaned = cleaned.replace("$", "")
+    cleaned = cleaned.replace("^", "")
+    cleaned = cleaned.replace("_", "")
+    cleaned = cleaned.strip()
+    return max(len(cleaned), 1)
+
+
+def _estimate_label_dimensions(text: str, pt_per_unit: float) -> Tuple[float, float]:
+    length = _approximate_text_length(text)
+    width_pt = LABEL_WIDTH_EM * FOOTNOTE_EM_PT * length
+    height_pt = LABEL_HEIGHT_EM * FOOTNOTE_EM_PT
+    if pt_per_unit <= 0:
+        return width_pt, height_pt
+    return (width_pt / pt_per_unit, height_pt / pt_per_unit)
+
+
+def _rect_from_center(
+    center: Tuple[float, float], width: float, height: float
+) -> Tuple[float, float, float, float]:
+    half_w = 0.5 * width
+    half_h = 0.5 * height
+    return (
+        center[0] - half_w,
+        center[0] + half_w,
+        center[1] - half_h,
+        center[1] + half_h,
+    )
+
+
+def _point_in_rect(point: Tuple[float, float], rect: Tuple[float, float, float, float]) -> bool:
+    x, y = point
+    return rect[0] - 1e-9 <= x <= rect[1] + 1e-9 and rect[2] - 1e-9 <= y <= rect[3] + 1e-9
+
+
+def _rect_intersects_rect(
+    r1: Tuple[float, float, float, float],
+    r2: Tuple[float, float, float, float],
+) -> bool:
+    return not (r1[1] < r2[0] or r2[1] < r1[0] or r1[3] < r2[2] or r2[3] < r1[2])
+
+
+def _orientation(p: Tuple[float, float], q: Tuple[float, float], r: Tuple[float, float]) -> float:
+    return (q[1] - p[1]) * (r[0] - q[0]) - (q[0] - p[0]) * (r[1] - q[1])
+
+
+def _segments_intersect(
+    p1: Tuple[float, float],
+    p2: Tuple[float, float],
+    q1: Tuple[float, float],
+    q2: Tuple[float, float],
+) -> bool:
+    o1 = _orientation(p1, p2, q1)
+    o2 = _orientation(p1, p2, q2)
+    o3 = _orientation(q1, q2, p1)
+    o4 = _orientation(q1, q2, p2)
+    if o1 == 0 and _point_in_rect(q1, (min(p1[0], p2[0]), max(p1[0], p2[0]), min(p1[1], p2[1]), max(p1[1], p2[1]))):
+        return True
+    if o2 == 0 and _point_in_rect(q2, (min(p1[0], p2[0]), max(p1[0], p2[0]), min(p1[1], p2[1]), max(p1[1], p2[1]))):
+        return True
+    if o3 == 0 and _point_in_rect(p1, (min(q1[0], q2[0]), max(q1[0], q2[0]), min(q1[1], q2[1]), max(q1[1], q2[1]))):
+        return True
+    if o4 == 0 and _point_in_rect(p2, (min(q1[0], q2[0]), max(q1[0], q2[0]), min(q1[1], q2[1]), max(q1[1], q2[1]))):
+        return True
+    return (o1 > 0) != (o2 > 0) and (o3 > 0) != (o4 > 0)
+
+
+def _segment_intersects_rect(
+    seg_start: Tuple[float, float],
+    seg_end: Tuple[float, float],
+    rect: Tuple[float, float, float, float],
+) -> bool:
+    if _point_in_rect(seg_start, rect) or _point_in_rect(seg_end, rect):
+        return True
+    corners = [
+        (rect[0], rect[2]),
+        (rect[1], rect[2]),
+        (rect[1], rect[3]),
+        (rect[0], rect[3]),
+    ]
+    edges = list(zip(corners, corners[1:] + corners[:1]))
+    return any(_segments_intersect(seg_start, seg_end, e1, e2) for e1, e2 in edges)
+
+
+def _circle_rect_intersects(
+    center: Tuple[float, float], radius: float, rect: Tuple[float, float, float, float]
+) -> bool:
+    closest_x = min(max(center[0], rect[0]), rect[1])
+    closest_y = min(max(center[1], rect[2]), rect[3])
+    distance = math.hypot(center[0] - closest_x, center[1] - closest_y)
+    return distance <= radius + 1e-6
+
+
+def _label_overlap_flags(
+    rect: Tuple[float, float, float, float],
+    segments: Sequence[Tuple[Tuple[float, float], Tuple[float, float]]],
+    circles: Sequence[Tuple[Tuple[float, float], float]],
+    placed_boxes: Sequence[Tuple[Tuple[float, float, float, float], str]],
+) -> Tuple[bool, bool, bool]:
+    overlaps_edges = any(_segment_intersects_rect(seg[0], seg[1], rect) for seg in segments)
+    overlaps_circles = any(_circle_rect_intersects(center, radius, rect) for center, radius in circles)
+    overlaps_labels = any(_rect_intersects_rect(rect, other) for other, _ in placed_boxes)
+    return overlaps_edges, overlaps_circles, overlaps_labels
+
+
+def _render_angle_marks(
+    plan: RenderPlan,
+    layout_scale: float,
+    rules: Mapping[str, bool],
+    segments: Sequence[Tuple[Tuple[float, float], Tuple[float, float]]],
+    circle_geoms: Sequence[Tuple[Tuple[float, float], float]],
+    pt_per_unit: float,
+    base_offset_units: float,
+    placed_boxes: List[Tuple[Tuple[float, float, float, float], str]],
+) -> Tuple[List[str], List[Dict[str, str]], List[Tuple[Tuple[float, float, float, float], str]]]:
+    arcs: List[str] = []
+    label_entries: List[Dict[str, str]] = []
+    boxes = list(placed_boxes)
+    coords = plan.points
+
+    wedge_groups: Dict[Tuple[str, Tuple[str, str]], int] = {}
+    for group_index, group in enumerate(plan.angle_groups, start=1):
+        for A, B, C in group:
+            wedge_groups[_wedge_key(A, B, C)] = max(
+                wedge_groups.get(_wedge_key(A, B, C), 0), group_index
+            )
+
+    for group_index, group in enumerate(plan.angle_groups, start=1):
+        for A, B, C in group:
+            if not _points_present((A, B, C), coords):
+                continue
+            choice = _choose_angle_orientation(coords, A, B, C, None)
+            if not choice:
+                continue
+            start, end, measure = choice
+            if measure < 6.0:
+                continue
+            base_radius_pt = _angle_base_radius_pt(coords, A, B, C, pt_per_unit)
+            for arc_idx in range(group_index):
+                radius_pt = base_radius_pt + arc_idx * GS_ANGLE_SEP_PT
+                arcs.append(
+                    f"\\path pic[draw, angle radius={_format_pt_dimension(radius_pt)}] {{angle={start}--{B}--{end}}};"
+                )
+
+    numeric_vertices: set = set()
+    for entry in plan.angles:
+        kind = entry.get("kind")
+        if kind == "equal":
+            continue
+        A = entry.get("A")
+        B = entry.get("B")
+        C = entry.get("C")
+        if not (isinstance(A, str) and isinstance(B, str) and isinstance(C, str)):
+            continue
+        if kind == "right":
+            if not _points_present((A, B, C), coords):
+                continue
+            arcs.append(
+                f"\\path pic[draw, angle radius=\\gsAngR] {{right angle={A}--{B}--{C}}};"
+            )
+            continue
+        if kind != "numeric":
+            continue
+        if B in numeric_vertices or not _points_present((A, B, C), coords):
+            continue
+        choice = _choose_angle_orientation(coords, A, B, C, entry.get("degrees"))
+        if not choice:
+            continue
+        start, end, measure = choice
+        base_radius_pt = _angle_base_radius_pt(coords, A, B, C, pt_per_unit)
+        offset_count = wedge_groups.get(_wedge_key(A, B, C), 0)
+        initial_radius_pt = base_radius_pt + offset_count * GS_ANGLE_SEP_PT
+        radius_pt, label_entry, boxes = _place_numeric_angle_label(
+            coords,
+            A,
+            B,
+            C,
+            initial_radius_pt,
+            entry.get("label"),
+            measure,
+            segments,
+            circle_geoms,
+            boxes,
+            pt_per_unit,
+            base_offset_units,
+        )
+        arcs.append(
+            f"\\path pic[draw, angle radius={_format_pt_dimension(radius_pt)}] {{angle={start}--{B}--{end}}};"
+        )
+        if label_entry:
+            label_entries.append(label_entry)
+        numeric_vertices.add(B)
+
+    return arcs, label_entries, boxes
+
+
+def _place_numeric_angle_label(
+    coords: Mapping[str, Tuple[float, float]],
+    a: str,
+    b: str,
+    c: str,
+    initial_radius_pt: float,
+    label_text: Optional[str],
+    measure: float,
+    segments: Sequence[Tuple[Tuple[float, float], Tuple[float, float]]],
+    circles: Sequence[Tuple[Tuple[float, float], float]],
+    placed_boxes: List[Tuple[Tuple[float, float, float, float], str]],
+    pt_per_unit: float,
+    base_offset_units: float,
+) -> Tuple[float, Optional[Dict[str, str]], List[Tuple[Tuple[float, float, float, float], str]]]:
+    if not isinstance(label_text, str) or not label_text.strip():
+        return initial_radius_pt, None, placed_boxes
+
+    width, height = _estimate_label_dimensions(label_text, pt_per_unit)
+    internal_dir, external_dir = _bisector_directions(coords, a, b, c)
+    label_offset_pt = ANGLE_LABEL_OFFSET_EM * FOOTNOTE_EM_PT
+
+    radius_pt = initial_radius_pt
+    final_center: Optional[Tuple[float, float]] = None
+    final_rect: Optional[Tuple[float, float, float, float]] = None
+    boxes = list(placed_boxes)
+    overlaps_major = False
+
+    for attempt in range(3):
+        radius_pt = initial_radius_pt + attempt * GS_ANGLE_SEP_PT
+        label_radius_pt = radius_pt + label_offset_pt
+        label_radius_units = label_radius_pt / pt_per_unit if pt_per_unit > 0 else radius_pt
+        center = (
+            coords[b][0] + internal_dir[0] * label_radius_units,
+            coords[b][1] + internal_dir[1] * label_radius_units,
+        )
+        rect = _rect_from_center(center, width, height)
+        overlaps = _label_overlap_flags(rect, segments, circles, boxes)
+        if not any(overlaps):
+            final_center = center
+            final_rect = rect
+            break
+        overlaps_major = overlaps_major or overlaps[0] or overlaps[1] or overlaps[2]
+
+    leader_line: Optional[str] = None
+    if final_center is None:
+        overlaps_major = True
+        for attempt in range(3):
+            radius_pt = initial_radius_pt + (3 + attempt) * GS_ANGLE_SEP_PT
+            label_radius_pt = radius_pt + label_offset_pt
+            label_radius_units = label_radius_pt / pt_per_unit if pt_per_unit > 0 else radius_pt
+            center = (
+                coords[b][0] + external_dir[0] * label_radius_units,
+                coords[b][1] + external_dir[1] * label_radius_units,
+            )
+            rect = _rect_from_center(center, width, height)
+            overlaps = _label_overlap_flags(rect, segments, circles, boxes)
+            if not any(overlaps):
+                final_center = center
+                final_rect = rect
+                break
+        if final_center is None:
+            label_radius_pt = radius_pt + label_offset_pt
+            label_radius_units = label_radius_pt / pt_per_unit if pt_per_unit > 0 else radius_pt
+            final_center = (
+                coords[b][0] + external_dir[0] * label_radius_units,
+                coords[b][1] + external_dir[1] * label_radius_units,
+            )
+            final_rect = _rect_from_center(final_center, width, height)
+        leader_length = base_offset_units * 0.6 if base_offset_units > 0 else 0.0
+        if leader_length <= 0:
+            leader_length = min(
+                math.hypot(width, height) * 0.6,
+                max(0.6, math.hypot(width, height)),
+            )
+        leader_tip = (
+            coords[b][0] + external_dir[0] * leader_length,
+            coords[b][1] + external_dir[1] * leader_length,
+        )
+        leader_line = "\\draw[aux] ({b}) -- ({x}, {y});".format(
+            b=b,
+            x=_format_float(leader_tip[0]),
+            y=_format_float(leader_tip[1]),
+        )
+
+    if final_center is None or final_rect is None:
+        return radius_pt, None, boxes
+
+    node_line = "\\node[ptlabel] at ({x}, {y}) {{{text}}};".format(
+        x=_format_float(final_center[0]),
+        y=_format_float(final_center[1]),
+        text=label_text,
+    )
+    boxes.append((final_rect, "angle"))
+    entry: Dict[str, str] = {"node": node_line}
+    if leader_line:
+        entry["leader"] = leader_line
+    return radius_pt, entry, boxes
+
+
 def _points_present(names: Sequence[str], coords: Mapping[str, Tuple[float, float]]) -> bool:
     return all(isinstance(name, str) and name in coords for name in names)
+
+
+def _build_incident_lines_map(plan: RenderPlan) -> Dict[str, List[Tuple[float, float]]]:
+    mapping: Dict[str, List[Tuple[float, float]]] = defaultdict(list)
+    for start, end, _ in plan.carriers:
+        if start not in plan.points or end not in plan.points:
+            continue
+        vec = _normalise_vector(_vector(plan.points[start], plan.points[end]))
+        if vec is None:
+            continue
+        mapping[start].append(vec)
+        mapping[end].append((-vec[0], -vec[1]))
+    for _, oriented in plan.helper_tick_edges.items():
+        a, b = oriented
+        if a in plan.points and b in plan.points:
+            vec = _normalise_vector(_vector(plan.points[a], plan.points[b]))
+            if vec is None:
+                continue
+            mapping[a].append(vec)
+            mapping[b].append((-vec[0], -vec[1]))
+    return mapping
+
+
+def _build_incident_circles_map(plan: RenderPlan) -> Dict[str, List[Tuple[float, float]]]:
+    mapping: Dict[str, List[Tuple[float, float]]] = defaultdict(list)
+    for center, through, _ in plan.circles:
+        if center not in plan.points or through not in plan.points:
+            continue
+        vec = _normalise_vector(_vector(plan.points[center], plan.points[through]))
+        if vec is None:
+            continue
+        mapping[through].append(vec)
+        mapping[center].append((-vec[0], -vec[1]))
+    return mapping
+
+
+def _anchor_direction(anchor: str) -> Optional[Tuple[float, float]]:
+    key = anchor.strip().lower()
+    return ANCHOR_DIRECTIONS.get(key)
+
+
+def _point_priority_order(plan: RenderPlan) -> List[str]:
+    order: List[str] = []
+    seen: set = set()
+    for name in sorted(plan.circle_centers):
+        if name in plan.points and name not in seen:
+            order.append(name)
+            seen.add(name)
+    for name in sorted(plan.polygon_vertices):
+        if name in plan.points and name not in seen:
+            order.append(name)
+            seen.add(name)
+    for name in sorted(plan.special_points):
+        if name in plan.points and name not in seen:
+            order.append(name)
+            seen.add(name)
+    for name in sorted(plan.points.keys()):
+        if name not in seen:
+            order.append(name)
+            seen.add(name)
+    return order
+
+
+def _layout_point_labels(
+    plan: RenderPlan,
+    point_label_map: Mapping[str, LabelSpec],
+    bbox: Tuple[float, float, float, float],
+    base_offset_units: float,
+    pt_per_unit: float,
+    segments: Sequence[Tuple[Tuple[float, float], Tuple[float, float]]],
+    circle_geoms: Sequence[Tuple[Tuple[float, float], float]],
+    placed_boxes: List[Tuple[Tuple[float, float, float, float], str]],
+) -> Tuple[Dict[str, Dict[str, Optional[str]]], List[Tuple[Tuple[float, float, float, float], str]]]:
+    inc_lines = _build_incident_lines_map(plan)
+    inc_circles = _build_incident_circles_map(plan)
+    center_circle_geoms: Dict[str, List[Tuple[Tuple[float, float], float]]] = defaultdict(list)
+    for center, through, _ in plan.circles:
+        if center not in plan.points or through not in plan.points:
+            continue
+        radius = _distance(plan.points[center], plan.points[through])
+        if radius <= 0:
+            continue
+        center_circle_geoms[center].append((plan.points[center], radius))
+    boxes = list(placed_boxes)
+    result: Dict[str, Dict[str, Optional[str]]] = {}
+    offset_units = base_offset_units if base_offset_units > 0 else 0.05
+
+    for name in _point_priority_order(plan):
+        if name not in plan.points:
+            continue
+        point = plan.points[name]
+        label_spec = point_label_map.get(name)
+        raw_text = label_spec.text if label_spec else name
+        formatted = _format_label_text(raw_text)
+        explicit_anchor = label_spec.position if label_spec and label_spec.position else None
+        width, height = _estimate_label_dimensions(raw_text, pt_per_unit)
+
+        if explicit_anchor:
+            direction = _anchor_direction(explicit_anchor) or (0.0, 1.0)
+            center = (
+                point[0] + direction[0] * offset_units,
+                point[1] + direction[1] * offset_units,
+            )
+            rect = _rect_from_center(center, width, height)
+            boxes.append((rect, "point"))
+            result[name] = {"anchor": explicit_anchor, "text": formatted, "leader": None}
+            continue
+
+        effective_circle_geoms = circle_geoms
+        skip_geoms = center_circle_geoms.get(name)
+        if skip_geoms:
+            effective_circle_geoms = [
+                geom for geom in circle_geoms if geom not in skip_geoms
+            ]
+        anchor, center, w, h, leader_end, _ = _place_point_label(
+            name,
+            point,
+            raw_text,
+            offset_units,
+            segments,
+            effective_circle_geoms,
+            boxes,
+            inc_lines.get(name, []),
+            inc_circles.get(name, []),
+            plan.points,
+            pt_per_unit,
+        )
+        rect = _rect_from_center(center, w, h)
+        boxes.append((rect, "point"))
+        leader_line = None
+        if leader_end is not None:
+            leader_line = "\\draw[aux] ({name}) -- ({x}, {y});".format(
+                name=name,
+                x=_format_float(leader_end[0]),
+                y=_format_float(leader_end[1]),
+            )
+        result[name] = {"anchor": anchor, "text": formatted, "leader": leader_line}
+
+    return result, boxes
+
+
+def _place_point_label(
+    name: str,
+    point: Tuple[float, float],
+    raw_text: str,
+    base_offset_units: float,
+    segments: Sequence[Tuple[Tuple[float, float], Tuple[float, float]]],
+    circle_geoms: Sequence[Tuple[Tuple[float, float], float]],
+    placed_boxes: Sequence[Tuple[Tuple[float, float, float, float], str]],
+    inc_lines: Sequence[Tuple[float, float]],
+    inc_circles: Sequence[Tuple[float, float]],
+    all_points: Mapping[str, Tuple[float, float]],
+    pt_per_unit: float,
+) -> Tuple[str, Tuple[float, float], float, float, Optional[Tuple[float, float]], bool]:
+    width, height = _estimate_label_dimensions(raw_text, pt_per_unit)
+    offset = base_offset_units
+    best_choice: Optional[Tuple[float, bool, str, Tuple[float, float], Tuple[float, float, float, float], Tuple[float, float]]] = None
+
+    for attempt in range(3):
+        candidates: List[Tuple[float, bool, str, Tuple[float, float], Tuple[float, float, float, float], Tuple[float, float]]] = []
+        for anchor in ANCHOR_SEQUENCE:
+            direction = _anchor_direction(anchor)
+            if direction is None:
+                continue
+            center = (
+                point[0] + direction[0] * offset,
+                point[1] + direction[1] * offset,
+            )
+            rect = _rect_from_center(center, width, height)
+            overlaps = _label_overlap_flags(rect, segments, circle_geoms, placed_boxes)
+            inside_circle = any(_dot(direction, normal) < -0.05 for normal in inc_circles)
+            crowded = _crowded_penalty(name, point, direction, all_points, offset)
+            score = (
+                12 * int(overlaps[0])
+                + 10 * int(overlaps[1])
+                + 8 * int(overlaps[2])
+                + 4 * int(inside_circle)
+                + 2 * crowded
+                - _alignment_bonus(direction, inc_lines, inc_circles)
+            )
+            candidates.append((score, any(overlaps), anchor, center, rect, direction))
+        if not candidates:
+            break
+        candidates.sort(key=lambda item: (item[0], ANCHOR_SEQUENCE.index(item[2])))
+        best_choice = candidates[0]
+        if not best_choice[1]:
+            break
+        offset *= 1.4
+
+    if best_choice is None:
+        anchor = "above"
+        center = (point[0], point[1] + offset)
+        rect = _rect_from_center(center, width, height)
+        return anchor, center, width, height, None, False
+
+    overlaps_major = bool(best_choice[1])
+    anchor = best_choice[2]
+    center = best_choice[3]
+    rect = best_choice[4]
+    direction = best_choice[5]
+
+    leader_end: Optional[Tuple[float, float]] = None
+    if overlaps_major:
+        leader_length = max(0.8 * base_offset_units, 0.5 * max(width, height))
+        leader_end = (
+            point[0] + direction[0] * leader_length,
+            point[1] + direction[1] * leader_length,
+        )
+
+    return anchor, center, width, height, leader_end, overlaps_major
+
+
+def _crowded_penalty(
+    name: str,
+    point: Tuple[float, float],
+    direction: Tuple[float, float],
+    all_points: Mapping[str, Tuple[float, float]],
+    offset: float,
+) -> int:
+    threshold = max(offset * 1.4, offset + 1e-3)
+    dir_vec = _normalise_vector(direction) or direction
+    for other_name, other in all_points.items():
+        if other_name == name:
+            continue
+        vec = (other[0] - point[0], other[1] - point[1])
+        dist = math.hypot(vec[0], vec[1])
+        if dist < 1e-6:
+            continue
+        if dist < threshold:
+            unit = (vec[0] / dist, vec[1] / dist)
+            if _dot(unit, dir_vec) > 0.6:
+                return 1
+    return 0
+
+
+def _alignment_bonus(
+    direction: Tuple[float, float],
+    inc_lines: Sequence[Tuple[float, float]],
+    inc_circles: Sequence[Tuple[float, float]],
+) -> float:
+    bonus = 0.0
+    for vec in inc_lines:
+        if abs(vec[1]) < 0.35 and abs(direction[1]) >= abs(direction[0]):
+            bonus += 1.0
+        if abs(vec[0]) < 0.35 and abs(direction[0]) > abs(direction[1]):
+            bonus += 1.0
+    for normal in inc_circles:
+        if _dot(direction, normal) > 0.2:
+            bonus += 0.5
+    return min(bonus, 2.0)
+
+
+def _dot(a: Tuple[float, float], b: Tuple[float, float]) -> float:
+    return a[0] * b[0] + a[1] * b[1]
 
 
 def _coords_bbox(points: Iterable[Tuple[float, float]]) -> Tuple[float, float, float, float]:
