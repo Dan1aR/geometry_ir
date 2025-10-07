@@ -122,7 +122,7 @@ Only the keys below are interpreted. The parser rejects malformed option syntax;
 
 ### Global
 
-* `rules [...]` → `no_unicode_degree`, `mark_right_angles_as_square`, `no_equations_on_sides`, `no_solving`, `allow_auxiliary` (booleans).
+* `rules [...]` → `no_unicode_degree`, `no_equations_on_sides`, `no_solving`, `allow_auxiliary` (booleans).
 
 ### Branch selection (for **Placement**: `point ... on ...`, `intersect(...) ... at ...`)
 
@@ -1266,7 +1266,7 @@ Add seeding tests to the integration flow (see §17):
 * **Visual clarity** with minimal ink: only draw declared carriers and essential construction lines.
 * **Notation completeness**: equal‑segments ticks, equal‑angles arcs, and right‑angle squares are standardized.
 * **Predictable layering** so labels/marks are legible.
-* **Rule‑aware** rendering: respect `rules[...]` flags (`mark_right_angles_as_square`, `no_equations_on_sides`, `no_unicode_degree`, etc.).
+* **Rule‑aware** rendering: respect `rules[...]` flags (`no_equations_on_sides`, `no_unicode_degree`, etc.).
 
 ---
 
@@ -1406,7 +1406,7 @@ Populate this by walking the **desugared** program + options:
 
 * Emit in painter’s order (19.2).
 * Use the standardized styles from 19.1 exactly once per document.
-* **Right-angle squares**: use TikZ `pic` right‑angle symbol when `mark_right_angles_as_square=true`.
+* **Right-angle squares**: use TikZ `pic` right‑angle symbol.
 * **Equal‑angles**: for group *g*, draw `g` arcs at radius `\gsAngR + (k-1)\gsAngSep` (`k=1..g`) with no labels.
 * **Ticks**: apply `tick{g}` style to the **segment** draw command; if the segment is not otherwise drawn (e.g., it’s only an abstract equality), draw the segment **thin dashed** only for the tick mark, or place two small ticks floating near endpoints (simpler: lightly draw the segment).
 * **Angle labels**: always `$\,^\circ$` (LaTeX degree), respecting `no_unicode_degree`.
@@ -1414,7 +1414,6 @@ Populate this by walking the **desugared** program + options:
 
 **19.11.4 Rules mapping**
 
-* `rules[mark_right_angles_as_square]` → choose square vs numeric “90°”.
 * `rules[no_equations_on_sides]` → drop numeric edge labels unless created by explicit `sidelabel`.
 * `rules[no_unicode_degree]` → no Unicode “°”; always `^\circ`.
 * `rules[allow_auxiliary]` → if `false`, don’t draw bisector/median/altitude carriers unless explicitly declared as `segment/line/ray`; draw only marks.
@@ -1423,3 +1422,137 @@ Populate this by walking the **desugared** program + options:
 Replace the heavy preamble with the minimal block in 19.1; return a `standalone` document without `varwidth/adjustbox/pgfplots`.
 
 ---
+
+# 20) Rendering — Points & Angle Labels (policy + algorithms)
+
+This appendix extends §19 (Rendering Contract) with **deterministic, collision-aware placement** for point labels and angle labels, and removes current redundancies.
+
+## 20.0 Ground rules
+
+* **Only render what’s declared.** Numeric angles are drawn **only** when the program has `angle A-B-C [degrees=…]` or `target angle …`. Do **not** infer the third triangle angle.
+* **No duplicates.** A segment appears at most once (carrier or aux). Ticks/marks are drawn **once**, on the visible stroke.
+* **Right angle**: draw a square; never print `90^\circ`.
+* **Degree symbol**: always use `^\circ` (respects `no_unicode_degree` and avoids Unicode).
+
+---
+
+## 20.1 Point labels — collision-aware placement
+
+**Inputs per point `P`:**
+
+* `IncLines(P)`: incident **drawn** line-like carriers (segment/line/ray) with directions `u_i`.
+* `IncCircles(P)`: incident **drawn** circles with centers `O_j` (outward normals `n_j = normalize(P−O_j)`).
+* `PlacedLabels`: label boxes already placed (see below).
+
+**Constants (scene-aware):**
+
+```
+d0 = max(1.8*gsDotR, 0.012 * scene_bbox_diag)   # base offset
+label_box ≈ width: 0.52em*len(text), height: 0.9em (footnotesize)
+anchors = [above, above right, right, below right, below, below left, left, above left]
+```
+
+**Scoring function for a candidate anchor `a` (lower is better):**
+
+```
+score(a) =
+  12 * OverlapsEdges(a)        # label box intersects any drawn segment/ray
++ 10 * OverlapsCircles(a)      # label box cuts a drawn circle
++  8 * OverlapsLabels(a)       # box intersects a placed label
++  4 * InsideCircle(a)         # for boundary points, label points inward
++  2 * Crowded(a)              # too close to any nearby point
+-  1 * AlignmentBonus(a)       # prefer above/below for ~horizontal, left/right for ~vertical,
+                               # and outward wrt incident circles
+```
+
+**Algorithm P1 — PlacePointLabel(P):**
+
+1. For each `a ∈ anchors`, compute offset `off(a)` of length `d0`, estimate label box, compute `score(a)`.
+2. Pick `a*` with minimal score (break ties by anchor order).
+3. **Escalation**: if `score(a*)` indicates an overlap, multiply the offset by `1.4` and recompute, up to **3** rounds.
+4. If still overlapping, draw a tiny **leader** (aux line) of length `0.8*d0` from `P` in direction `off(a*)` and place the label at its tip.
+5. Emit `\node[ptlabel,<a*>] at (P) {$P$};`.
+
+**Priority order (stable greedy):**
+
+1. circle centers; 2) polygon vertices; 3) special points (feet/tangency/intersections); 4) others.
+   Points unused anywhere and without explicit `label point` **may be left unlabeled**.
+
+---
+
+## 20.2 Angle visuals — arcs, labels, and equal-angle stacks
+
+### 20.2.1 Numeric angles (`angle A-B-C [degrees=θ|label="..."]`)
+
+* Draw **one** arc at `B` via `pic`:
+
+  ```
+  r0 = clamp(0.12 * min(|BA|, |BC|), 7pt, 14pt)
+  \path pic[draw, angle radius=r0] {angle=A--B--C};
+  ```
+* Label text:
+
+  ```
+  text = label if provided else f"{θ}^\circ"
+  ```
+* **Label placement**: center the label on the **angle bisector** at radius `r0 + 0.6em`.
+  If the label overlaps a stroke/label, **increase radius** by `+gsAngSep` and retry (≤3 times).
+  If the wedge is very narrow (`∠ABC < 10°`) and still collides, place the text just beyond the **external** bisector with a short leader.
+
+### 20.2.2 Right angles (`right-angle A-B-C`)
+
+* ALWAYS:
+
+  ```
+  \path pic[draw, angle radius=\gsAngR] {right angle=A--B--C};
+  ```
+
+  No numeric text.
+
+### 20.2.3 Equal angles (`equal-angles (… ; …)`)
+
+* Partition angles into **groups**. For group index `g = 1,2,3,…` draw **g arcs** (no text) at radii:
+
+  ```
+  r_k = r0 + (k-1)*gsAngSep,     k=1..g        (use same r0 formula as 20.2.1)
+  ```
+* If a numeric angle is **also** declared for the same wedge, draw the numeric arc at `r0 + g*gsAngSep` and put its label there; equal-angle arcs stay inside it.
+
+### 20.2.4 Avoiding clutter
+
+* Arcs/labels MUST NOT cross the polygon/carrier strokes at the vertex. If crossing occurs, **increase radius**; if impossible (tiny wedge), fall back to an **external** label with leader.
+* Never draw multiple numeric labels at the same vertex; prefer the one explicitly present in source order.
+* Do not place equal-angle arcs when the wedge is `< 6°` (skip quietly).
+
+---
+
+## 20.3 Ticks & side labels (consistency)
+
+* **Equal segments**: apply `tick1/tick2/tick3` to every member of a group **on the visible stroke**. If a member segment isn’t drawn, render a short dashed stub centered on that segment for the ticks.
+* **No auto numerics** on sides; only draw side text from `sidelabel` or an explicit segment `[label="…"]`.
+
+---
+
+## 20.4 Emission order (layers)
+
+1. **main**: carriers (segments/polygons), circles.
+2. **fg**: aux lines (only when needed per §19/§20), **then** angle arcs/squares/ticks, **then** labels (angles first, then points).
+
+---
+
+## 20.5 Generator hooks (minimal)
+
+* Extend the `RenderPlan` with:
+
+  ```python
+  AngleMark = Literal["numeric","right","equal"]
+  render_plan.angles: List[Dict]  # {kind, A,B,C, degrees?, label?, group?}
+  ```
+* Before emitting labels, compute `scene_bbox_diag`, then:
+
+  * place **angle labels/arcs** with the algorithm in §20.2,
+  * place **point labels** with Algorithm P1.
+* Ensure **no segment is re-drawn** in `fg` if already emitted in `main`.
+
+---
+
