@@ -10,5 +10,7 @@ intersect (line A-C) with (line B-D) at O
 
 foot M from O to C-D
 segment O-M [length=5]
+segment A-C
+segment B-D
 
 target area ("Find area of ABED")
