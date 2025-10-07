@@ -1307,7 +1307,7 @@ Add seeding tests to the integration flow (see §17):
 
 1. **bg**: light fills (rare)
 2. **main**: carriers — polygon sides, declared segments, circles
-3. **fg**: construction lines (aux), angle/segment marks, labels, target highlights
+3. **fg**: construction lines (aux), angle/segment marks, labels
 
 **19.3 What to draw (and what **not** to draw)**
 
@@ -1325,28 +1325,25 @@ Add seeding tests to the integration flow (see §17):
 
 **19.5 Side labels vs. ticks**
 
-* If `rules[no_equations_on_sides=true]`, **suppress** all auto numeric side labels. Use `sidelabel A-B "..."` to force a sloped label (`node[midway, sloped, above|below]`).
+* `[length=...]` metadata on `segment` objects is ignored by the TikZ renderer; no automatic side equations are emitted. Use `sidelabel A-B "..."` to draw any edge text. (The legacy `rules[no_equations_on_sides]` flag no longer changes rendering but is accepted for forward compatibility.)
 * **Equal segments**: for each group, apply `tick1` / `tick2` / `tick3` to every segment in that group. If >3 groups, cycle ticks then add `densely dashed` to distinguish.
+* Side labels are always emitted inside math mode. We normalise `sqrt(...)` products (e.g., `3*sqrt(2)`) **only** within that LaTeX context so radicals never appear as plain text.
 
 **19.6 Angles**
 
-* **Numeric angle** (`angle A-B-C [degrees=θ]`): draw one arc at `B` via `pic`:
+* **Numeric angle** (`angle A-B-C [degrees=θ]`): choose the ray order whose counter-clockwise measurement best matches `θ`, then draw one arc at `B` via `pic`:
 
   ```tex
   \path pic[draw, angle radius=\gsAngR, "$\num{θ}$"{scale=0.9}] {angle=A--B--C};
   ```
 
-  Respect `rules[no_unicode_degree]` by always using `^\circ`.
-* **Right angle** (`right-angle A-B-C`)
+  Respect `rules[no_unicode_degree]` by always using `^\circ`. When no `degrees=` metadata exists, pick the ordering whose counter-clockwise sweep is < `180^\circ` (or closest to it if the configuration is straight/reflex) so TikZ draws the minor arc.
+  Any symbolic `degrees=` metadata first runs through the same math normalisation (`sqrt(...)` → `\sqrt{...}`) before the degree token is appended, ensuring radicals and products render correctly inside the angle label.
+* **Right angle** (`right-angle A-B-C`): always draw the square symbol at `B` via the TikZ `right angle` pic, never an arc or `$90^\circ$` label:
 
-  * If `rules[mark_right_angles_as_square=true]`: draw a square symbol at `B` (TikZ `angles` supports `right angle`):
-
-    ```tex
-    \path pic[draw, angle radius=\gsAngR] {right angle=A--B--C};
-    ```
-
-    Do **not** annotate `90^\circ`.
-  * Otherwise: use the same as “numeric angle” with label `$90^\circ$`.
+  ```tex
+  \path pic[draw, angle radius=\gsAngR] {right angle=A--B--C};
+  ```
 * **Equal angles** (`equal-angles (A-B-C, ... ; D-E-F, ...)`): for each *group*, draw **n arcs** (n=group index: 1=single, 2=double, 3=triple) at the relevant vertices. Radii are `\gsAngR`, `\gsAngR+\gsAngSep`, `\gsAngR+2\gsAngSep` for the multiple arcs, no labels.
 
 **19.7 Medians, bisectors, altitudes (marks)**
@@ -1362,8 +1359,7 @@ Add seeding tests to the integration flow (see §17):
 
 **19.9 Targets & highlights**
 
-* **Target angle/arc**: re‑draw that arc **on the foreground** with thicker width (`line width=\gsLW+0.2pt`) and (optionally) a mild color (`black!85`) and a label `"?"` if `label="?"` is set in the IR.
-* **Target length / point / circle**: annotate minimally (e.g., halo box “?” near the object), but **do not** print equations on sides unless forced via `sidelabel`.
+*The TikZ renderer currently ignores `target ...` statements; no foreground question-mark overlays or emphasis marks are emitted.*
 
 **19.10 Bounds & scaling**
 
@@ -1387,7 +1383,6 @@ class RenderPlan:
     right_angles: List[Tuple[str,str,str]]         # (A,B,C)
     angle_arcs: List[Tuple[str,str,str, Optional[float], Optional[str]]] # (A,B,C, degrees?, label)
     labels: List[LabelSpec]                        # point & side labels
-    highlights: List[HighlightSpec]                # targets
 ```
 
 Populate this by walking the **desugared** program + options:
@@ -1399,8 +1394,8 @@ Populate this by walking the **desugared** program + options:
 * **Equal angles**: collect into groups.
 * **Right angles**: all `right-angle` statements; also synthesize from tangency if present.
 * **Angle arcs**: from `angle A-B-C [degrees=..]`.
-* **Labels**: from `label point` and `sidelabel`; suppress numeric side labels if `rules[no_equations_on_sides]`.
-* **Highlights**: from `target ...`.
+* **Labels**: from `label point` and explicit `sidelabel`. Ignore any `[length=...]` metadata carried by `segment` statements when building the plan.
+*Targets are collected in the IR but presently skipped by the TikZ renderer.*
 
 **19.11.2 Suppress redundancy**
 
@@ -1415,7 +1410,7 @@ Populate this by walking the **desugared** program + options:
 * **Equal‑angles**: for group *g*, draw `g` arcs at radius `\gsAngR + (k-1)\gsAngSep` (`k=1..g`) with no labels.
 * **Ticks**: apply `tick{g}` style to the **segment** draw command; if the segment is not otherwise drawn (e.g., it’s only an abstract equality), draw the segment **thin dashed** only for the tick mark, or place two small ticks floating near endpoints (simpler: lightly draw the segment).
 * **Angle labels**: always `$\,^\circ$` (LaTeX degree), respecting `no_unicode_degree`.
-* **Targets**: re‑draw highlighted arc/edge/point on `fg` with `line width=\gsLW+0.2pt`.
+* *(Targets currently produce no additional drawing commands.)*
 
 **19.11.4 Rules mapping**
 
