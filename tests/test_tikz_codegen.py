@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 
 from geoscript_ir.ast import Program, Span, Stmt
 from geoscript_ir.numbers import SymbolicNumber
@@ -153,6 +154,22 @@ def test_numeric_angle_narrow_uses_external_leader() -> None:
     assert "\\draw[aux]" in tikz
     assert "\\node[ptlabel, anchor=center]" in tikz
     assert "angle radius=7.00pt" in tikz
+
+
+def test_numeric_angle_emission_hygiene() -> None:
+    program = Program(
+        [
+            Stmt("angle_at", Span(1, 1), {"points": ("A", "B", "C")}, {"degrees": 60}),
+        ]
+    )
+    coords = {"A": (0.0, 1.0), "B": (0.0, 0.0), "C": (1.0, 0.0)}
+
+    tikz = generate_tikz_code(program, coords)
+
+    hygiene = re.compile(r"^\\\\(path|draw|node|fill|coordinate)\b", re.MULTILINE)
+    assert not hygiene.search(tikz)
+    assert '\\"' not in tikz
+    assert '"$60^\\circ$"' in tikz
 
 
 def test_place_numeric_angle_internal_clearance_and_cap() -> None:

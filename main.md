@@ -1456,6 +1456,34 @@ else:
 
 ---
 
+### 19.11.5 (update) — **Emission hygiene (TeX strings)**
+
+When emitting TikZ/LaTeX:
+
+1. **Never** pre-escape backslashes. **Every TeX command starts with exactly one `\`** (`\path`, `\draw`, `\node`, `\fill`, `\coordinate`, …). The generator must not pass the produced line through `repr()`/JSON or do any `"\\"` replacements.
+2. Inside pic quotes use **literal ASCII double quotes**. Do **not** output `\"…\"`. The correct form is:
+
+   ```tex
+   \path pic[draw, angle radius=<pt>, "$<math>$", angle eccentricity=<e>,
+             every pic quotes/.style={scale=0.9}] {angle=A--B--C};
+   ```
+3. Only escape **user text** that can collide with TeX—`% & # _ $`—and only inside the label content. Do **not** touch the surrounding TeX syntax.
+
+**Helper (required in codegen):**
+
+```python
+def tex_escape(s: str) -> str:
+    # For label content only (keeps backslashes that we intentionally insert like ^\circ)
+    return (s.replace('%', '\\%').replace('&', '\\&').replace('#', '\\#')
+              .replace('_', '\\_').replace('$', '\\$'))
+```
+
+**Guardrail test (generator unit):**
+
+* After rendering to a string/file, assert **no** line starts with `^\\\\(path|draw|node|fill|coordinate)` and no `\"` appears in the output.
+
+---
+
 
 ## 19.12 Orientation — Post‑solve “Nice” Figure Alignment (rigid only)
 
@@ -2197,6 +2225,30 @@ If still overlapping, fall back to **Step B**.
 * The label baseline is at least `δclear` away from its own arc.
 * Labels never get pushed arbitrarily far: internal offset is **capped** (`cap`), otherwise we choose the neat **external** variant.
 * When equal‑angle arcs are present (`g>0`), the numeric arc and label remain **outside** that stack.
+
+---
+
+### 20.2.5 (clarification) — angle labels (numeric)
+
+Use the **internal** vs **external** policy already specified, but the **emission** must strictly be one of:
+
+**Internal (preferred)**
+
+```tex
+\path pic[draw, angle radius=<r_arc_pt>pt,
+          "$<label>$", angle eccentricity=<ecc>,
+          every pic quotes/.style={scale=0.9}] {angle=A--B--C};
+```
+
+**External (fallback for narrow wedges)**
+
+```tex
+\path pic[draw, angle radius=<r_arc_pt>pt] {angle=A--B--C};
+\draw[aux] (<x1>, <y1>) -- (<x2>, <y2>);
+\node[ptlabel, anchor=center] at (<x2>, <y2>) {$<label>$};
+```
+
+> **Do not** put extra backslashes in front of any of the commands or the quotes.
 
 ---
 

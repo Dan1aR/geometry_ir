@@ -26,6 +26,18 @@ EPS_LEN_FACTOR = 1e-9
 
 _NUMERIC_ANGLE_CONTEXT: Dict[str, object] = {"circles": []}
 
+
+def tex_escape(s: str) -> str:
+    """Escape bare TeX specials inside label content."""
+
+    return (
+        s.replace("%", "\\%")
+        .replace("&", "\\&")
+        .replace("#", "\\#")
+        .replace("_", "\\_")
+        .replace("$", "\\$")
+    )
+
 ANCHOR_SEQUENCE = [
     "above",
     "above right",
@@ -1412,13 +1424,19 @@ def _render_angle_marks(
         if rect_units is not None:
             boxes.append((rect_units, "angle"))
 
+        escaped_text = tex_escape(text_body)
+
         if params["mode"] == "internal":
             ecc = params["ecc"]
-            arcs.append(
-                rf"\\path pic[draw, angle radius={radius_pt:.2f}pt, \"${text_body}$\", angle eccentricity={ecc:.4f}, "
-                r"every pic quotes/.style={scale=0.9}] "
-                + f"{{angle={start}--{B}--{end}}};"
+            internal_line = (
+                '\\path pic[draw, angle radius='
+                f'{radius_pt:.2f}pt, '
+                + '"$' + escaped_text + '$", '
+                + f'angle eccentricity={ecc:.4f}, '
+                + 'every pic quotes/.style={scale=0.9}] '
+                + f'{{angle={start}--{B}--{end}}};'
             )
+            arcs.append(internal_line)
         else:
             arcs.append(
                 rf"\\path pic[draw, angle radius={radius_pt:.2f}pt] {{angle={start}--{B}--{end}}};"
@@ -1431,7 +1449,7 @@ def _render_angle_marks(
                         rf"\\draw[aux] ({pint[0]:.4f}, {pint[1]:.4f}) -- ({ptxt[0]:.4f}, {ptxt[1]:.4f});"
                     ),
                     "node": (
-                        rf"\\node[ptlabel, anchor=center] at ({ptxt[0]:.4f}, {ptxt[1]:.4f}) {{${text_body}$}};"
+                        rf"\\node[ptlabel, anchor=center] at ({ptxt[0]:.4f}, {ptxt[1]:.4f}) {{${escaped_text}$}};"
                     ),
                 }
             )
