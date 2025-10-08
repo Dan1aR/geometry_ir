@@ -10,9 +10,11 @@ _ERROR_LOC_RE = re.compile(r"\[line (\d+), col (\d+)\]")
 
 
 class Cursor:
-    def __init__(self, tokens: List[Tuple[str,str,int,int]]):
+    def __init__(self, tokens: List[Tuple[str,str,int,int]], *, line_text: Optional[str] = None):
         self.toks = tokens
         self.i = 0
+        self.line_text = line_text
+        self._line_no = tokens[0][2] if tokens else 0
 
     def peek(self):
         return self.toks[self.i] if self.i < len(self.toks) else None
@@ -58,11 +60,29 @@ class Cursor:
         want = '|'.join(types)
         if t:
             raise SyntaxError(f'[line {t[2]}, col {t[3]}] expected {want}, got {t[0]}')
-        raise SyntaxError(f'Unexpected end of line: expected {want}')
+        line, col = self._location_at_eof()
+        raise SyntaxError(f'[line {line}, col {col}] unexpected end of line: expected {want}')
 
     def peek_ahead(self, offset: int = 1):
         idx = self.i + offset
         return self.toks[idx] if idx < len(self.toks) else None
+
+    def _location_at_eof(self):
+        if self.toks:
+            line = self.toks[-1][2]
+        else:
+            line = self._line_no
+        if self.line_text is not None:
+            col = len(self.line_text) + 1
+            if col < 1:
+                col = 1
+        else:
+            last = self.toks[-1] if self.toks else None
+            if last:
+                col = last[3] + len(last[1])
+            else:
+                col = 1
+        return line, col
 
 def parse_id(cur: Cursor):
     t = cur.expect('ID')
@@ -159,7 +179,8 @@ def parse_anglelist(cur: Cursor, *, consume_lparen: bool = False):
 def parse_opt_value(cur: Cursor):
     vtok = cur.peek()
     if not vtok:
-        raise SyntaxError('unterminated options value')
+        line, col = cur._location_at_eof()
+        raise SyntaxError(f'[line {line}, col {col}] unterminated options value')
     if vtok[0] == 'STRING':
         return cur.match('STRING')[1]
     if vtok[0] == 'NUMBER':
@@ -304,7 +325,10 @@ def parse_opts(cur: Cursor, *, required: bool = False, context: str = 'options')
                 raise SyntaxError(
                     f"[line {nxt[2]}, col {nxt[3]}] expected '[' to start {context} block"
                 )
-            raise SyntaxError(f"Unexpected end of line: expected '[' to start {context} block")
+            line, col = cur._location_at_eof()
+            raise SyntaxError(
+                f"[line {line}, col {col}] unexpected end of line: expected '[' to start {context} block"
+            )
         return opts
     if cur.peek() and cur.peek()[0] == 'RBRACK':
         closing = cur.peek()
@@ -316,7 +340,8 @@ def parse_opts(cur: Cursor, *, required: bool = False, context: str = 'options')
     while True:
         t = cur.peek()
         if not t:
-            raise SyntaxError('unterminated options block')
+            line, col = cur._location_at_eof()
+            raise SyntaxError(f'[line {line}, col {col}] unterminated options block')
         if t[0] == 'RBRACK':
             cur.i += 1
             break
@@ -353,10 +378,10 @@ def parse_opts(cur: Cursor, *, required: bool = False, context: str = 'options')
         last_key = key
     return opts
 
-def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
+def parse_stmt(tokens: List[Tuple[str, str, int, int]], line_text: Optional[str] = None):
     if not tokens:
         return None
-    cur = Cursor(tokens)
+    cur = Cursor(tokens, line_text=line_text)
     t0 = cur.peek()
     kw = cur.peek_keyword() if t0 and t0[0] == 'ID' else None
     if not kw:
@@ -722,7 +747,7 @@ def parse_program(text: str) -> Program:
         if not tokens:
             continue
         try:
-            stmt = parse_stmt(tokens)
+            stmt = parse_stmt(tokens, line_text=raw)
         except SyntaxError as err:
             augmented = _augment_syntax_error(err, raw)
             if augmented is None:
