@@ -14,7 +14,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from itertools import combinations
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple, TypedDict
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple, TypedDict
 from typing import Literal
 import math
 import numbers
@@ -1210,6 +1210,83 @@ def _cross_2d(a: np.ndarray, b: np.ndarray) -> float:
 _DENOM_EPS = 1e-12
 _HINGE_EPS = 1e-9
 
+# Canonical layouts that prescribe a preferred base edge (used for the primary
+# orientation gauge and initial scaffold).  Keys are stored lowercase to allow
+# case-insensitive lookups while keeping the original point names intact.
+_CANONICAL_BASE_EDGE_MAP: Dict[str, Edge] = {
+    "triangle_abc": ("A", "B"),
+    "triangle_ab_horizontal": ("A", "B"),
+    "triangle_abo": ("A", "B"),
+    "triangle_mnp": ("M", "N"),
+}
+
+
+def _triangle_base_from_isosceles_option(
+    ids: Tuple[str, str, str], option: Optional[str]
+) -> Optional[Edge]:
+    if not option:
+        return None
+    opt = option.lower()
+    if opt == "ata":
+        return ids[1], ids[2]
+    if opt == "atb":
+        return ids[2], ids[0]
+    if opt == "atc":
+        return ids[0], ids[1]
+    return None
+
+
+def _triangle_base_from_equal_segment_groups(
+    ids: Tuple[str, str, str], groups: Sequence[Sequence[Edge]]
+) -> Optional[Edge]:
+    tri_edges = [
+        (ids[0], ids[1]),
+        (ids[1], ids[2]),
+        (ids[2], ids[0]),
+    ]
+    canonical = {tuple(sorted(edge)): idx for idx, edge in enumerate(tri_edges)}
+
+    for entries in groups:
+        present: List[int] = []
+        for edge in entries:
+            key = tuple(sorted((edge[0], edge[1])))
+            idx = canonical.get(key)
+            if idx is not None and idx not in present:
+                present.append(idx)
+        if len(present) < 2:
+            continue
+        present.sort()
+        combos = {
+            (present[i], present[j])
+            for i in range(len(present))
+            for j in range(i + 1, len(present))
+        }
+        if (0, 1) in combos:
+            return tri_edges[2]
+        if (0, 2) in combos:
+            return tri_edges[1]
+        if (1, 2) in combos:
+            return tri_edges[0]
+    return None
+
+
+def _pick_triangle_base_edge(
+    candidates: Sequence[Tuple[int, Tuple[str, str, str], Optional[str]]],
+    groups: Sequence[Sequence[Edge]],
+    seen: Mapping[PointName, int],
+) -> Optional[Edge]:
+    for _, ids, iso_opt in sorted(candidates, key=lambda item: item[0]):
+        if any(name not in seen for name in ids):
+            continue
+        base = _triangle_base_from_isosceles_option(ids, iso_opt)
+        if base is None:
+            base = _triangle_base_from_equal_segment_groups(ids, groups)
+        if base is None:
+            base = (ids[0], ids[1])
+        if base[0] != base[1]:
+            return base
+    return None
+
 _TURN_MARGIN = math.sin(math.radians(1.0))
 _TURN_SIGN_MARGIN = 0.5 * (_TURN_MARGIN ** 2)
 _MIN_SEP_SCALE = 1e-1         # was 1e-3 → much stronger
@@ -1986,6 +2063,9 @@ def _compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
     scale_samples: List[float] = []
     orientation_edge: Optional[Edge] = None
     preferred_base_edge: Optional[Edge] = None  # NEW
+    triangle_candidates: List[Tuple[int, Tuple[str, str, str], Optional[str]]] = []
+    equal_segment_groups: List[List[Edge]] = []
+    layout_base_edge: Optional[Edge] = None
     carrier_edges: Set[Edge] = set()  # NEW: edges used as carriers in constraints
     circle_radius_refs: Dict[PointName, List[PointName]] = {}
     layout_canonical: Optional[str] = None
@@ -2074,7 +2154,7 @@ def _compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
             return
 
     # scan program
-    for stmt in program.stmts:
+    for stmt_index, stmt in enumerate(program.stmts):
         if stmt.kind == "points":
             for name in stmt.data.get("ids", []):
                 _register_point(order, seen, name)
@@ -2087,6 +2167,9 @@ def _compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
             canon = data.get("canonical")
             if isinstance(canon, str):
                 layout_canonical = canon
+                base_edge = _CANONICAL_BASE_EDGE_MAP.get(canon.lower())
+                if base_edge:
+                    layout_base_edge = base_edge
             register_scale(data.get("scale"))
             try:
                 if data.get("scale") is not None:
@@ -2101,6 +2184,18 @@ def _compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
             register_scale(data.get("value"))
         if stmt.kind == "segment":
             register_scale(opts.get("length") or opts.get("distance") or opts.get("value"))
+
+        if stmt.kind == "equal_segments":
+            group: List[Edge] = []
+            for key in ("lhs", "rhs"):
+                entries = data.get(key, [])
+                if not isinstance(entries, Iterable):
+                    continue
+                for entry in entries:
+                    if _is_edge_tuple(entry):
+                        group.append((str(entry[0]), str(entry[1])))
+            if group:
+                equal_segment_groups.append(group)
 
         if stmt.kind in {"polygon", "triangle", "quadrilateral", "parallelogram", "trapezoid", "rectangle", "square", "rhombus"}:
             ids = tuple(data.get("ids", []))
@@ -2123,6 +2218,13 @@ def _compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
                         polygon_meta[ids] = {"kind": "trapezoid", "bases": (base_edge, other_base)}
                         if preferred_base_edge is None:
                             preferred_base_edge = base_edge
+
+            if stmt.kind == "triangle" and len(ids) == 3 and stmt.origin == "source":
+                names = tuple(str(name) for name in ids)
+                if all(_is_point_name(name) for name in names):
+                    iso_opt = stmt.opts.get("isosceles")
+                    iso_val = str(iso_opt) if isinstance(iso_opt, str) else None
+                    triangle_candidates.append((stmt_index, names, iso_val))
 
         # register points referenced by names/fields
         if "point" in data and isinstance(data["point"], str):
@@ -2245,6 +2347,19 @@ def _compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
     for i, a in enumerate(order):
         for b in order[i + 1:]:
             mark_distinct(a, b, reason="global")
+
+    if preferred_base_edge is None and layout_base_edge is not None:
+        if all(point in seen for point in layout_base_edge):
+            preferred_base_edge = layout_base_edge
+
+    if preferred_base_edge is None and triangle_candidates:
+        base_from_triangle = _pick_triangle_base_edge(
+            triangle_candidates,
+            equal_segment_groups,
+            seen,
+        )
+        if base_from_triangle is not None:
+            preferred_base_edge = base_from_triangle
 
     # Prefer the declared trapezoid base for orientation if available
     if preferred_base_edge is not None:
