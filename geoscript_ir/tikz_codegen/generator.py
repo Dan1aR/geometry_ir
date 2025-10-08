@@ -46,6 +46,33 @@ ANCHOR_DIRECTIONS: Dict[str, Tuple[float, float]] = {
     "above left": (-math.sqrt(0.5), math.sqrt(0.5)),
 }
 
+
+def _direction_from_anchor(anchor: Optional[str]) -> Tuple[float, float]:
+    if not anchor:
+        return (0.0, 1.0)
+    direction = ANCHOR_DIRECTIONS.get(anchor.strip().lower())
+    if direction is None:
+        return (0.0, 1.0)
+    return direction
+
+
+def _side_label_shift_tokens(anchor: Optional[str], side_offset_pt: float) -> List[str]:
+    if side_offset_pt <= 0:
+        return []
+    dx, dy = _direction_from_anchor(anchor)
+    magnitude = math.hypot(dx, dy)
+    if magnitude <= 1e-9:
+        return []
+    scale = side_offset_pt / magnitude
+    dx *= scale
+    dy *= scale
+    tokens: List[str] = ["anchor=center"]
+    if abs(dx) > 1e-9:
+        tokens.append(f"xshift={_format_float(dx)}pt")
+    if abs(dy) > 1e-9:
+        tokens.append(f"yshift={_format_float(dy)}pt")
+    return tokens
+
 standalone_tpl = r"""\documentclass[border=2pt]{standalone}
 \usepackage[utf8]{inputenc}
 \usepackage[T2A]{fontenc}
@@ -918,6 +945,7 @@ def _emit_tikz_picture(plan: RenderPlan, layout_scale: float, rules: Mapping[str
     scene_diag_pt = scene_diag * pt_per_unit
     base_offset_pt = max(1.8 * GS_DOT_RADIUS_PT, 0.012 * scene_diag_pt)
     base_offset_units = base_offset_pt / pt_per_unit if pt_per_unit > 0 else 0.0
+    side_offset_pt = max(1.2 * GS_DOT_RADIUS_PT, 0.008 * scene_diag_pt)
 
     segments = _collect_segments(plan)
     circle_geoms = _collect_circle_geoms(plan)
@@ -1010,11 +1038,10 @@ def _emit_tikz_picture(plan: RenderPlan, layout_scale: float, rules: Mapping[str
         opts: List[str] = ["ptlabel", "midway"]
         if label.slope:
             opts.append("sloped")
-        if label.position:
-            opts.append(label.position)
+        opts.extend(_side_label_shift_tokens(label.position, side_offset_pt))
         formatted = _format_label_text(label.text)
         lines.append(
-            "    \\node[{opts}] at ($({a})!0.5!({b})$) {{{text}}};".format(
+            "    \\path ({a}) -- ({b}) node[{opts}] {{{text}}};".format(
                 opts=", ".join(opts), a=a, b=b, text=formatted
             )
         )

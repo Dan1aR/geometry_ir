@@ -1330,6 +1330,7 @@ Add seeding tests to the integration flow (see §17):
 * `[length=...]` metadata on `segment` objects is ignored by the TikZ renderer; no automatic side equations are emitted. Use `sidelabel A-B "..."` to draw any edge text. (The legacy `rules[no_equations_on_sides]` flag no longer changes rendering but is accepted for forward compatibility.)
 * **Equal segments**: for each group, apply `tick1` / `tick2` / `tick3` to every segment in that group. If >3 groups, cycle ticks then add `densely dashed` to distinguish.
 * Side labels are always emitted inside math mode. We normalise `sqrt(...)` products (e.g., `3*sqrt(2)`) **only** within that LaTeX context so radicals never appear as plain text.
+* When emitting `sidelabel`, place the label via a `\path (A) -- (B) node[...] {...};` helper, mark it `sloped`, and offset it by roughly one dot radius (≈1.2 pt, scaled by scene size) along the requested `pos` direction. This keeps the text snug to the edge instead of floating far from the segment while still following the side orientation.
 
 **19.6 Angles**
 
