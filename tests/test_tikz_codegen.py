@@ -264,3 +264,52 @@ def test_foot_adds_right_angle_square_without_rule() -> None:
     assert "right angle=A--H--C" in tikz or "right angle=C--H--A" in tikz
 
 
+def test_point_on_circle_emits_circle() -> None:
+    program = Program(
+        [
+            Stmt("point_on", Span(1, 1), {"point": "A", "path": ("circle", "O")}),
+        ]
+    )
+    coords = {"O": (0.0, 0.0), "A": (1.0, 0.0)}
+
+    tikz = generate_tikz_code(program, coords)
+
+    assert "\\draw[circle] (O) circle (" in tikz
+
+
+def test_foot_draws_aux_segment_from_source() -> None:
+    program = Program(
+        [
+            Stmt("foot", Span(1, 1), {"foot": "H", "from": "C", "edge": ("A", "B")}),
+        ]
+    )
+    coords = {
+        "A": (0.0, 0.0),
+        "B": (2.0, 0.0),
+        "C": (0.5, 2.0),
+        "H": (0.5, 0.0),
+    }
+
+    tikz = generate_tikz_code(program, coords)
+
+    assert "\\draw[aux] (C) -- (H);" in tikz
+
+
+def test_foot_constructs_segment_if_point_off_base() -> None:
+    program = Program(
+        [
+            Stmt("foot", Span(1, 1), {"foot": "H", "from": "A", "edge": ("B", "C")}),
+        ]
+    )
+    coords = {
+        "A": (0.0, 2.0),
+        "B": (0.0, 0.0),
+        "C": (2.0, 0.0),
+        "H": (0.2, 1.0),
+    }
+
+    tikz = generate_tikz_code(program, coords)
+
+    assert "\\draw[carrier] (B) -- (H);" in tikz
+
+
