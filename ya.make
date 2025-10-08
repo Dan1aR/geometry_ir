@@ -22,6 +22,8 @@ PY_SRCS(
     geoscript_ir/solver.py
     geoscript_ir/validate.py
     geoscript_ir/numbers.py
+    geoscript_ir/orientation.py
+    geoscript_ir/ddc.py
     # geoscript_ir/constructions.py
     geoscript_ir/tikz_codegen/__init__.py
     geoscript_ir/tikz_codegen/generator.py

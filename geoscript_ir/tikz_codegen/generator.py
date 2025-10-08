@@ -46,6 +46,10 @@ ANCHOR_DIRECTIONS: Dict[str, Tuple[float, float]] = {
 }
 
 standalone_tpl = r"""\documentclass[border=2pt]{standalone}
+\usepackage[utf8]{inputenc}
+\usepackage[T2A]{fontenc}
+\usepackage[russian,english]{babel}
+\usepackage{adjustbox}
 \usepackage{tikz}
 \usetikzlibrary{calc,angles,quotes,intersections,decorations.markings,arrows.meta,positioning}
 \tikzset{
@@ -74,7 +78,13 @@ standalone_tpl = r"""\documentclass[border=2pt]{standalone}
 %% optional layers
 \pgfdeclarelayer{bg}\pgfdeclarelayer{fg}\pgfsetlayers{bg,main,fg}
 \begin{document}
+\begin{minipage}[t]{\linewidth} 
 %s
+
+\begin{adjustbox}{max width=\linewidth, max totalheight=\textheight, keepaspectratio}
+%s
+\end{adjustbox}
+\end{minipage}
 \end{document}
 """
 
@@ -181,7 +191,7 @@ def generate_tikz_document(
             + "\\par\\vspace{4pt}\n"
         )
     tikz_code = generate_tikz_code(program, point_coords, normalize=normalize)
-    return standalone_tpl % (header + tikz_code)
+    return standalone_tpl % (header, tikz_code)
 
 
 def generate_tikz_code(

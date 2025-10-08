@@ -3,351 +3,433 @@
 from textwrap import dedent
 
 BNF = dedent(
-    """
-    ```
-    Program   := { Stmt }
-    Stmt      := Scene | Layout | Points | Obj | Placement | Annot | Target | Rules | Comment
+"""
+```
+Program   := { Stmt }
+Stmt      := Scene | Layout | Points | Obj | Placement | Annot | Target | Rules | Comment
 
-    Scene     := 'scene' STRING
-    Layout    := 'layout' 'canonical=' ID 'scale=' NUMBER
-    Points    := 'points' ID { ',' ID }
+Scene     := 'scene' STRING
+Layout    := 'layout' 'canonical=' ID 'scale=' NUMBER
+Points    := 'points' ID { ',' ID }
 
-    Annot     := 'label point' ID Opts?
-               | 'sidelabel' Pair STRING Opts?
+Annot     := 'label point' ID Opts?
+            | 'sidelabel' Pair STRING Opts?
 
-    Target    := 'target'
-                 ( 'angle' Angle3 Opts?
-                 | 'length' Pair Opts?
-                 | 'point' ID Opts?
-                 | 'circle' '(' STRING ')' Opts?
-                 | 'area' '(' STRING ')' Opts?
-                 | 'arc' ID '-' ID 'on' 'circle' 'center' ID Opts?
-                 )
+Target    := 'target'
+              ( 'angle' Angle3 Opts?
+              | 'length' Pair Opts?
+              | 'point' ID Opts?
+              | 'circle' '(' STRING ')' Opts?
+              | 'area' '(' STRING ')' Opts?
+              | 'arc' ID '-' ID 'on' 'circle' 'center' ID Opts?
+              )
 
-    Obj       := 'segment'      Pair Opts?
-               | 'ray'          Pair Opts?
-               | 'line'         Pair Opts?
-               | 'circle' 'center' ID 'radius-through' ID Opts?
-               | 'circle' 'through' '(' IdList ')' Opts?
-               | 'circumcircle' 'of' IdChain Opts?
-               | 'incircle'     'of' IdChain Opts?
-               | 'perpendicular' 'at' ID 'to' Pair 'foot' ID Opts?
-               | 'parallel'      'through' ID 'to' Pair Opts?
-               | 'median'        'from' ID 'to' Pair 'midpoint' ID Opts?
-               | 'angle'         Angle3 Opts?
-               | 'right-angle'   Angle3 Opts?
-               | 'equal-segments' '(' EdgeList ';' EdgeList ')' Opts?
-               | 'parallel-edges' '(' Pair ';' Pair ')' Opts?
-               | 'tangent' 'at' ID 'to' 'circle' 'center' ID Opts?
-               | 'diameter'      Pair 'to' 'circle' 'center' ID
-               | 'line' ID '-' ID 'tangent' 'to' 'circle' 'center' ID 'at' ID Opts?
-               | 'polygon'       IdChain Opts?
-               | 'triangle'      ID '-' ID '-' ID Opts?
-               | 'quadrilateral' ID '-' ID '-' ID '-' ID Opts?
-               | 'parallelogram' ID '-' ID '-' ID '-' ID Opts?
-               | 'trapezoid'     ID '-' ID '-' ID '-' ID Opts?
-               | 'rectangle'     ID '-' ID '-' ID '-' ID Opts?
-               | 'square'        ID '-' ID '-' ID '-' ID Opts?
-               | 'rhombus'       ID '-' ID '-' ID '-' ID Opts?
-               | 'collinear' '(' IdList ')' Opts?
-               | 'concyclic' '(' IdList ')' Opts?
-               | 'equal-angles' '(' AngleList ';' AngleList ')' Opts?
-               | 'ratio' '(' Pair ':' Pair '=' NUMBER ':' NUMBER ')' Opts?
+Obj       := 'segment'      Pair Opts?
+            | 'ray'          Pair Opts?
+            | 'line'         Pair Opts?
+            | 'circle' 'center' ID 'radius-through' ID Opts?
+            | 'circle' 'through' '(' IdList ')' Opts?
+            | 'circumcircle' 'of' IdChain Opts?
+            | 'incircle'     'of' IdChain Opts?
+            | 'perpendicular' 'at' ID 'to' Pair 'foot' ID Opts?
+            | 'parallel'      'through' ID 'to' Pair Opts?
+            | 'median'        'from' ID 'to' Pair 'midpoint' ID Opts?
+            | 'angle'         Angle3 Opts?
+            | 'right-angle'   Angle3 Opts?
+            | 'equal-segments' '(' EdgeList ';' EdgeList ')' Opts?
+            | 'parallel-edges' '(' Pair ';' Pair ')' Opts?
+            | 'tangent' 'at' ID 'to' 'circle' 'center' ID Opts?
+            | 'diameter'      Pair 'to' 'circle' 'center' ID
+            | 'line' ID '-' ID 'tangent' 'to' 'circle' 'center' ID 'at' ID Opts?
+            | 'polygon'       IdChain Opts?
+            | 'triangle'      ID '-' ID '-' ID Opts?
+            | 'quadrilateral' ID '-' ID '-' ID '-' ID Opts?
+            | 'parallelogram' ID '-' ID '-' ID '-' ID Opts?
+            | 'trapezoid'     ID '-' ID '-' ID '-' ID Opts?
+            | 'rectangle'     ID '-' ID '-' ID '-' ID Opts?
+            | 'square'        ID '-' ID '-' ID '-' ID Opts?
+            | 'rhombus'       ID '-' ID '-' ID '-' ID Opts?
+            | 'collinear' '(' IdList ')' Opts?
+            | 'concyclic' '(' IdList ')' Opts?
+            | 'equal-angles' '(' AngleList ';' AngleList ')' Opts?
+            | 'ratio' '(' Pair ':' Pair '=' NUMBER ':' NUMBER ')' Opts?
 
-    Placement := 'point' ID 'on' Path Opts?
-               | 'intersect' '(' Path ')' 'with' '(' Path ')' 'at' ID (',' ID)? Opts?
-               | 'midpoint' ID 'of' Pair Opts?
-               | 'foot' ID 'from' ID 'to' Pair Opts?
+Placement := 'point' ID 'on' Path Opts?
+            | 'intersect' '(' Path ')' 'with' '(' Path ')' 'at' ID (',' ID)? Opts?
+            | 'midpoint' ID 'of' Pair Opts?
+            | 'foot' ID 'from' ID 'to' Pair Opts?
 
-    Path      := 'line'    Pair
-               | 'ray'     Pair
-               | 'segment' Pair
-               | 'circle' 'center' ID
-               | 'angle-bisector' Angle3 ('external')?
-               | 'median'  'from' ID 'to' Pair
-               | 'perpendicular' 'at' ID 'to' Pair
-               | 'perp-bisector' 'of' Pair
-               | 'parallel' 'through' ID 'to' Pair
+Path      := 'line'    Pair
+            | 'ray'     Pair
+            | 'segment' Pair
+            | 'circle' 'center' ID
+            | 'angle-bisector' Angle3 ('external')?
+            | 'median'  'from' ID 'to' Pair
+            | 'perpendicular' 'at' ID 'to' Pair
+            | 'perp-bisector' 'of' Pair
+            | 'parallel' 'through' ID 'to' Pair
 
-    Rules     := 'rules' Opts
+Rules     := 'rules' Opts
 
-    Comment   := '#' { any-char }
+Comment   := '#' { any-char }
 
-    EdgeList  := Pair { ',' Pair }
-    IdList    := ID { ',' ID }
-    IdChain   := ID '-' ID { '-' ID }
-    AngleList := Angle3 { ',' Angle3 }
-    Pair      := ID '-' ID
-    Angle3    := ID '-' ID '-' ID
+EdgeList  := Pair { ',' Pair }
+IdList    := ID { ',' ID }
+IdChain   := ID '-' ID { '-' ID }
+AngleList := Angle3 { ',' Angle3 }
+Pair      := ID '-' ID
+Angle3    := ID '-' ID '-' ID
 
-    Opts      := '[' KeyVal { (',' | ' ') KeyVal } ']'
-    KeyVal    := KEY '=' (NUMBER | STRING | BOOLEAN | ID | ID '-' ID | SQRT | PRODUCT)
-               | 'choose' '=' ('near' | 'far' | 'left' | 'right' | 'cw' | 'ccw')
-               | 'anchor' '=' ID
-               | 'ref'     '=' Pair
-    SQRT      := 'sqrt' '(' NUMBER ')'
-    PRODUCT   := NUMBER '*' SQRT
-    BOOLEAN   := 'true' | 'false'
-    ```
-    """
+Opts      := '[' KeyVal { (',' | ' ') KeyVal } ']'
+KeyVal    := KEY '=' (NUMBER | STRING | BOOLEAN | ID | ID '-' ID | SQRT | PRODUCT)
+            | 'choose' '=' ('near' | 'far' | 'left' | 'right' | 'cw' | 'ccw')
+            | 'anchor' '=' ID
+            | 'ref'     '=' Pair
+SQRT      := 'sqrt' '(' NUMBER ')'
+PRODUCT   := NUMBER '*' SQRT
+BOOLEAN   := 'true' | 'false'
+```
+"""
 ).strip()
+
 
 _PROMPT_CORE = dedent(
 """
-# You are the GeoScript-IR Author
+**Role & scope**
 
-Write **GeoScript IR** programs that the downstream toolchain will parse, validate, solve, cross-check (DDC-Plan + DDC-Check), and render.
+You translate a geometry problem from natural language into **GeoScript IR**.
+**Do not solve** anything; encode only the givens, constructions, and the ask using GeoScript syntax.
 
-## Your goals (in order)
+**Output policy**
 
-1. **Correct grammar** and **one fact per line**.
-2. **Well-posed geometry** (no degeneracies, no missing branches).
-3. **Pretty plots**: clear layout, readable labels, and non-overlapping marks.
-4. **Minimal but sufficient** constraints—avoid over/under-constraining.
+* Output **only** a GeoScript program (no commentary).
+* **Header order** (exactly this order):
 
----
-
-## Output format (always)
-
-* Start with:
-  * Wrap the entire program between `<geoscript>` and `</geoscript>` tags (no content outside the tags).
-
-  1. `scene "Title"`
+  1. `scene "..."`
   2. `layout canonical=<id> scale=<number>`
-  3. `points A, B, C, ...` (ALL named points once; use UPPERCASE).
-* Then add **objects/placements/constraints** (one per line).
-* End with **targets** (`target ...`), one per line.
-* Use comments with `#` sparingly.
-
-**Never** output chatter or explanations—**only** a valid GeoScript program.
+  3. `points A, B, C, ...` (list every named point exactly once)
+* Then: **one fact per line** (objects, placements, relations, annotations).
+* Put **targets last**.
+* **No unstated auxiliaries** unless the task explicitly allows it or you add `rules [allow_auxiliary=true]`.
 
 ---
 
-## Quick grammar refresher you must follow
+## 🔧 Canonical mapping from prose → GeoScript objects
 
-* **Objects**: `segment A-B`, `line A-B`, `ray A-B`,
-  `circle center O radius-through B` **or** `circle through (A,B,C,...)` (pick one, never both!),
-  `tangent at T to circle center O`, `line X-Y tangent to circle center O at T`,
-  `incircle of A-B-C`, `circumcircle of A-B-C`, polygons (`triangle`, `rectangle`, …).
-* **Placements**:
-  `point P on <Path>`,
-  `intersect ( <Path> ) with ( <Path> ) at X(, Y)`,
-  `midpoint M of A-B`, `foot H from X to A-B`.
-* **Paths** (for `on`/`intersect`):
-  `line/ray/segment A-B`, `circle center O`,
-  `angle-bisector U-V-W (external)?`, `median from P to A-B`,
-  `perpendicular at T to A-B`, `perp-bisector of A-B`, `parallel through P to A-B`.
-* **Groups**: `collinear (A, B, C, ...)`, `concyclic (A, B, C, ...)`,
-  `equal-angles (A-B-C ; D-E-F)`, `equal-segments (A-B ; C-D)`,
-  `ratio (A-B : C-D = p : q)`.
-* **Options** (brackets):
-  `choose=near|far|left|right|cw|ccw`, `anchor=P`, `ref=A-B`,
-  labels/marks like `label="..."`, `mark=square`, `pos=above|below|left|right`.
+### 1) **Sides vs lines vs rays** (critical)
 
----
+* “**сторона … / отрезок …**” → **`segment`**
+  *Example:* “Стороны (BC) и (AD) пересекаются в точке (O)” →
+  `intersect (segment B-C) with (segment A-D) at O`
+* “**прямая … / прямые …**”, “**продолжение стороны …**” → **`line`**
+* “**луч …**” → **`ray`**
+* **Points on a side** → `point P on segment X-Y` (not `line`).
 
-## Best-practice playbook
+> Using `line` where a **side** is intended will change residuals and can misplace the picture. Prefer `segment` for polygon sides.
 
-### 1) Choose a **good layout** for pretty plots
+### 2) **Polygons & special quads**
 
-* Use a canonical that matches the scene:
+* If the text says *triangle ABC*, *parallelogram ABCD*, *trapezoid ABCD*, *rectangle*, *square*, *rhombus*, **declare the high-level object**:
 
-  * `triangle_ABC` (nice baseline), `triangle_AB_horizontal`, `generic`, `triangle_ABO`.
-* Set `scale=1` (or a small integer). The pipeline rescales as needed.
-* For trapezoids/rectangles, pick a **base** side orientation via options (e.g., `trapezoid ... [bases=A-D]`).
+  ```
+  triangle A-B-C
+  parallelogram A-B-C-D
+  trapezoid A-B-C-D [bases=A-D]        # 🔧 if bases named, set them here
+  ```
 
-### 2) Declare **all points** once
+  Then add extra facts (e.g., right angle, equal sides) if the prose states them.
 
-* `points A, B, C, ...`—uppercase single letters are ideal.
-* Keep cyclic orders consistent: polygons go `A-B-C-D` around the shape.
+### 3) **Diagonals & intersections**
 
-### 3) Prefer **construct** over infer
+* “Диагонали пересекаются в точке O” →
 
-* Use `point P on <Path>` and explicit `intersect(...)` instead of hand-waving.
-* If a point lies on two carriers, either:
+  ```
+  segment A-C
+  segment B-D
+  intersect (segment A-C) with (segment B-D) at O
+  ```
 
-  * Use `intersect (...) with (...) at P`, **or**
-  * Two `point P on ...` lines (DDC will synthesize the intersection).
-    For clarity, **prefer `intersect(...)`** when you intend exactly one intersection.
+  🔧 Use `segment` for diagonals unless the text says *прямые*.
 
-### 4) Circles: pick **one** style
+### 4) **Midlines (triangle/trapezoid)** 🔧
 
-* **Either** `circle center O radius-through B` **or** `circle through (A,B,C,...)`.
-  Never both for the same circle.
-* For circum/inscribed: `circumcircle of A-B-C`, `incircle of A-B-C`.
+* **Triangle midline** between sides `AB` and `AC`:
 
-### 5) Always resolve **two-root** branches
+  ```
+  midpoint M of A-B
+  midpoint N of A-C
+  segment M-N
+  ```
+* **Trapezoid midline** connects **midpoints of the legs** (non-parallel sides). If bases are `[bases=A-D]`, the legs are `A-B` and `C-D`:
 
-Add a **soft selector** (bias) whenever intersections can yield two points:
+  ```
+  midpoint M of A-B
+  midpoint N of C-D
+  segment M-N
+  ```
 
-* `choose=left|right ref=A-B` for side of oriented line,
-* `choose=near|far anchor=Q` for proximity to an anchor,
-* `choose=cw|ccw anchor=Q [ref=A-B]` for direction around anchor/reference.
+### 5) **Distances to lines** (explicit foot)  — *MANDATORY*
 
-**Typical places you MUST branch-pick:**
+When the text says “расстояние от точки `P` до прямой/стороны `XY` …”:
 
-* `line ∩ circle`, `circle ∩ circle`,
-* Angle-bisector hits a line/segment,
-* External tangents: `line A-P tangent to circle center O at P`.
+* If a number is given:
 
-> Create an anchor if needed (e.g., reuse an existing vertex) to make `choose=...` meaningful.
+  ```
+  foot H_P from P to X-Y
+  segment P-H_P [length=<number|sqrt(...)]   # solver constraint
+  ```
+* If “find the distance”:
 
-### 6) Use **functional placements** to help pre-solve DDC
+  ```
+  foot H_P from P to X-Y
+  target length P-H_P
+  ```
 
-These become derived (non-optimized) points automatically:
+🔧 Do **not** replace the foot with a generic “point on line” — perpendicularity is required.
 
-* `midpoint M of A-B`
-* `foot H from X to A-B`
-* `intersect (line-like) with (line-like) at X`
-* `line X-Y tangent to circle center O at T` (unique touchpoint)
-* `perp-bisector`, `parallel through`, `perpendicular at` used with line/line.
+### 6) **Bisectors, medians, altitudes** (construction)
 
-This reduces variables → cleaner, faster solves and less plot jitter.
+* **Angle bisector at `B` hitting side `AC` at `D`**:
 
-### 7) Keep constraints **clean and minimal**
+  ```
+  intersect (angle-bisector A-B-C) with (segment A-C) at D [choose=...]
+  ```
+* **Median from `C` to side `AB`**:
 
-* One fact per line; avoid duplicates that over-constrain.
-* Prefer structure to raw numbers:
+  ```
+  median from C to A-B midpoint M
+  ```
+* **Altitude** is encoded via **foot**:
 
-  * Use `equal-segments`, `parallel-edges`, `equal-angles`, `collinear`, `concyclic`.
-* When using numbers:
+  ```
+  foot H from X to A-B
+  ```
 
-  * Keep them simple; radicals via `sqrt(...)`, or `3*sqrt(2)`.
-  * For a known length: `segment A-B [length=5]`.
+🔧 Never use an `altitude` keyword; it doesn’t exist in the DSL.
 
-### 8) Tangency patterns (pick the right one)
+### 7) **“Ray between the sides of ∠COD”** 🔧
 
-* **Known tangent line → touchpoint is unique**
-  `line X-Y tangent to circle center O at T`
-* **Tangent from an external point (two candidates)**
-  `line A-P tangent to circle center O at P [choose=..., anchor=..., ref=...]`
-* **Touchpoint constrained to a carrier**
-  `tangent at T to circle center O` **+** `point T on <line|ray|segment>` **(+ choose=...)`
-
-### 9) Make the plot readable
-
-* Label points and edges you care about:
-
-  * `label point P [label="P" pos=above]`
-  * `sidelabel A-B "5" [pos=below]`
-* Right angles: `right-angle A-B-C [mark=square]`.
-* Avoid clutter: don’t label every side; prefer key ones.
-* Keep segments from collapsing: choose canonicals that don’t create near-parallel duplicates; if needed, add a simple `segment` or `equal-segments` to stabilize shape.
-
-### 10) Targets last, and only what’s asked
-
-* `target angle A-B-C`, `target length A-B`, `target point P`, `target arc P-Q on circle center O`.
-* If multiple targets, one per line.
-
-### 11) Common mistakes to avoid
-
-* ❌ Circles with both center-radius and through-points.
-* ❌ Missing `choose=...` on two-root constructions.
-* ❌ Using `line` when you meant `ray`/`segment` (hard filters are helpful!).
-* ❌ Putting options on `diameter` (it accepts none).
-* ❌ Non-positive ratio parts in `ratio (A-B : C-D = p : q)`.
-* ❌ Angle definitions where the middle vertex equals an endpoint.
-
----
-
-## Authoring checklist (run mentally before you finish)
-
-* [ ] All named points appear once in `points ...`.
-* [ ] Exactly one circle style used per circle.
-* [ ] Every two-root step has a `choose=...` with `anchor`/`ref`.
-* [ ] Midpoints/feet/intersections written explicitly (helps pre-solve).
-* [ ] No illegal/unknown options; options use brackets `[...]`.
-* [ ] Pretty labels positioned (`pos=above|below|left|right`), not overlapping key edges.
-* [ ] Targets are last and match the ask.
-
----
-
-## Micro-patterns (copy/paste and tweak)
-
-### 1) Triangle, incenter, and an angle target (clean & pretty)
+To place a ray **strictly inside** an angle:
 
 ```
-scene "Incenter angle"
-layout canonical=triangle_ABC scale=1
-points A, B, C, I, D
+point T on angle-bisector C-O-D         # interior direction
+ray O-T
+```
+
+If a **side** is specified, additionally constrain `T`:
+
+```
+point T on angle-bisector C-O-D
+point T on segment O-<the side’s vertex>   # optional to steer toward a side
+ray O-T
+```
+
+If orientation matters (left/right), use soft selectors on a placement or intersection:
+`[choose=left|right ref=C-D]` or `[choose=cw|ccw anchor=O]`.
+
+### 8) **Tangency** (choose the right primitive)
+
+* Tangent **at a known touchpoint** `T`:
+
+  ```
+  tangent at T to circle center O
+  ```
+
+  (Optionally add a carrier if the tangent line should be drawn: `line X-Y tangent ... at T`.)
+* Tangent **from an external point** `A` with *unknown* touchpoint:
+
+  ```
+  line A-T tangent to circle center O at T [choose=...]
+  ```
+
+  (two roots; use `choose=near|far|left|right|cw|ccw` with `anchor`/`ref`)
+
+### 9) **Circle–circle tangency** (no direct primitive; construct via line of centers)
+
+* **External tangency** between centers `O1`, `O2`:
+
+  ```
+  circle center O1 radius-through K1
+  circle center O2 radius-through K2
+  intersect (line O1-O2) with (circle center O1) at T12 [choose=near anchor=O2]
+  point T12 on circle center O2
+  ```
+* **Internal tangency** uses the **far** root along the same line.
+
+### 10) **Concyclic / circumcircle / incircle**
+
+* “A, B, C, D lie on one circle” → `concyclic (A, B, C, D)`
+* Triangle circumcircle → `circumcircle of A-B-C` *or* `circle through (A, B, C)`
+* Triangle incircle → `incircle of A-B-C`
+
+### 11) **Ratios & equalities**
+
+* Segment ratio: `ratio (A-B : C-D = p : q)` (with `p>0`, `q>0`).
+* Equal segments/angles use the dedicated constructs (don’t rely on text labels):
+
+  ```
+  equal-segments (A-B ; C-D, E-F)
+  equal-angles (A-B-C ; D-E-F)
+  ```
+
+---
+
+## 🔧 Branch picking (two-root choices)
+
+Any **line∩circle**, **circle∩circle**, tangent-from-external-point, or similar two-root step **must** include a soft selector:
+
+* `choose=near|far anchor=<ID>`
+* `choose=left|right ref=<A-B>`
+* `choose=cw|ccw anchor=<ID> [ref=<A-B>]`
+
+**Heuristics** (use when the prose doesn’t disambiguate in words):
+
+* For **line∩circle** to pick the point “toward” some vertex `Q`: use `choose=near anchor=Q`.
+* For “the intersection on the **left** of directed line `AB`”: `choose=left ref=A-B`.
+* Around a circle (clockwise/counter-clockwise) relative to `anchor=Q`: `choose=cw|ccw anchor=Q`.
+
+---
+
+## Visual annotations (what to actually draw)
+
+* If a numeric **length** is given for the solver, also **draw it** using a **side label**:
+
+  ```
+  segment A-B [length=5]          # solver constraint
+  sidelabel A-B "5" [pos=below]   # 🔧 visible label in the figure
+  ```
+
+  *(The TikZ renderer ignores `[length=...]` for drawing; `sidelabel` makes it visible.)*
+* If the problem is about “naming angles” or “marking equal angles”, declare **angle arcs** explicitly:
+
+  ```
+  angle H-O-K [label="$\\alpha$"]      # 🔧 wrap Greek in LaTeX to avoid encoding issues
+  equal-angles (A-B-C ; D-E-F)
+  ```
+* Use `label point P [pos=left|right|above|below]` when the prose names or highlights a point.
+
+---
+
+## Targets (the ask)
+
+* Use the most specific target that matches the text:
+
+  ```
+  target angle A-B-C [label="?"]
+  target length A-B
+  target point X
+  target arc B-T on circle center O [label="?BT"]
+  target area ("ABED")     # name string only; solver will ignore its text
+  ```
+* If the exercise is only “draw/name/mark” and **doesn’t** ask to find something, you may omit `target`, but **do** include the marks that make the drawing faithful (angle arcs, sidelabels, ticks).
+
+---
+
+## Boilerplate cheat-sheet
+
+```text
+# Header
+scene "Short descriptive title"
+layout canonical=<triangle_ABC|triangle_AB_horizontal|generic|generic_auto|triangle_ABO> scale=1
+points A, B, C, ...
+
+# Objects (one fact per line)
 triangle A-B-C
-incircle of A-B-C
-intersect (angle-bisector A-B-C) with (segment A-C) at D [choose=left ref=A-C]
-target angle D-I-B
-label point I [label="I" pos=above]
-right-angle A-C-B [mark=square]
-```
-
-### 2) Tangent from an external point (resolve the branch)
-
-```
-scene "External tangents from A"
-layout canonical=generic scale=1
-points A, O, P, Q
-circle center O radius-through P
-line A-P tangent to circle center O at P [choose=left ref=O-P anchor=A]
-line A-Q tangent to circle center O at Q [choose=right ref=O-P anchor=A]
-target length P-Q
-label point O [label="O" pos=above]
-```
-
-### 3) Perp bisectors to circumcenter (fully functional pre-solve)
-
-```
-scene "Circumcenter by bisectors"
-layout canonical=triangle_ABC scale=1
-points A, B, C, O
-triangle A-B-C
-intersect (perp-bisector of A-B) with (perp-bisector of B-C) at O [choose=near anchor=A]
-label point O [label="O" pos=above]
-target point O
-```
-
-### 4) Midpoint & foot to stabilize a sketch
-
-```
-scene "Midpoint & altitude foot"
-layout canonical=generic scale=1
-points A, B, C, M, H
-segment A-B
-point C on line A-B [choose=left ref=A-B]  # place C off the baseline via later constraints
-midpoint M of A-B
-perpendicular at C to A-B foot H
-target length M-H
-sidelabel A-B "10" [pos=below]
-```
-
-### 5) “On ∩ On” (okay), but explicit `intersect` preferred
-
-```
-scene "On∩On circle-line"
-layout canonical=generic scale=1
-points A, B, O, P
-segment A-B
+trapezoid A-B-C-D [bases=A-D]
+parallelogram A-B-C-D
+right-angle A-C-B
+angle A-B-C [degrees=30]
+equal-angles (A-B-C ; D-E-F)
+equal-segments (A-B ; C-D, E-F)
 circle center O radius-through A
-point P on line A-B
-point P on circle center O
-target point P
+circumcircle of A-B-C
+incircle of A-B-C
+concyclic (A, B, D, E)
+ratio (A-B : C-D = 2 : 3)
+
+# Placements
+point P on segment A-B
+point Q on circle center O
+point R on angle-bisector A-B-C
+intersect (segment B-C) with (segment A-D) at O [choose=near anchor=B]
+midpoint M of A-B
+foot H from X to A-B
+parallel through P to A-B
+perp-bisector of A-B
+
+# Visual labels (optional but recommended)
+label point P [label="P" pos=above]
+sidelabel A-B "5" [pos=below]
 ```
 
-*(DDC synthesizes the intersection; explicit `intersect` would be clearer.)*
+**BNF** (unchanged; keep your existing copy)
 
 ---
 
-## If the user’s text is vague…
+## Few-shot patterns (extra)
 
-* Choose a **sensible canonical layout** (`generic` or `triangle_ABC`) and **minimize** assumptions.
-* Prefer **functional** constructions (midpoint/foot/line∩line) to keep the scene robust.
-* When you must choose a branch and the text is unclear, pick a **consistent convention**, e.g., `choose=left ref=A-B`, and keep it throughout.
+### A) Diagonals of a trapezoid cut its midline; find the larger sub-segment 🔧
+
+```text
+scene "Trapezoid: diagonal cuts the midline"
+layout canonical=generic scale=1
+points A, B, C, D, M, N, P
+trapezoid A-B-C-D [bases=A-D]
+segment A-D [length=10]
+segment B-C [length=4]
+midpoint M of A-B
+midpoint N of C-D
+segment M-N
+segment A-C
+intersect (segment A-C) with (segment M-N) at P [choose=near anchor=C]
+# Optional labels for clarity
+sidelabel A-D "10" [pos=below]
+sidelabel B-C "4"  [pos=above]
+target length P-N  # or M-P (choose one that the text asks for explicitly)
+```
+
+### B) Ray inside an angle 🔧
+
+```text
+scene "Ray a inside angle COD"
+layout canonical=generic scale=1
+points C, O, D, T
+segment O-C
+segment O-D
+point T on angle-bisector C-O-D
+ray O-T
+target angle C-O-T
+```
+
+### C) Tangents from A to circle (both touchpoints) + disambiguation
+
+```text
+scene "Two tangents from A to (O)"
+layout canonical=generic_auto scale=1
+points A, O, B, C
+circle center O radius-through B
+line A-B tangent to circle center O at B [choose=left  ref=A-O]
+line A-C tangent to circle center O at C [choose=right ref=A-O]
+right-angle O-B-A
+right-angle O-C-A
+target length B-C
+```
 
 ---
 
-## Final reminder
+## **NON-negotiable rules (validator-safe)**
 
-* Your output is **only** a GeoScript IR program—no extra lines.
-* The pipeline’s **DDC-Plan** will derive deterministic points before solve; your clear constructions and branch picks make the figure stable and the plot pretty.
+* **Always**: `scene` → `layout` → `points` (in that exact order at the top).
+* **Always**: match **sides** with `segment`, **lines** with `line`, **rays** with `ray`.
+* **Always**: add `choose=...` with `anchor`/`ref` on any two-root placement.
+* **Always**: encode distances to lines via a **`foot`** placement.
+* **Never**: use `altitude` as a keyword; express it as a `foot`.
+* **Never**: mix `circle center O ...` and `circle through (...)` for the same circle.
+* **Never**: invent auxiliary geometry unless the task allows it or `rules [allow_auxiliary=true]` is present.
+* If bases are named for a trapezoid, **set** `[bases=...]` so renderers can orient the figure nicely.
 
 ---
+
 """
 ).strip()
 
