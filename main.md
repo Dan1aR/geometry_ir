@@ -294,6 +294,7 @@ The validator runs a dry translation to ensure the residual builder can accept t
 * **Core API**:
 
   * `parse_program`, `validate`, `desugar`
+  * `print_program(program, *, original_only=False)` re-serializes the full grammar (including placement primitives like `midpoint` and `foot`). It either prints a faithful statement or raises `ValueError` for unknown/malformed kinds; `format_stmt` is a one-line wrapper for single statements.
   * **Pre-solve planning (default):**
 
     * `plan_derive(program: Program) -> DerivationPlan`
