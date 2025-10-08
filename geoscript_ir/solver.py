@@ -286,6 +286,7 @@ def build_seed_hints(program: Program, plan: Optional[DerivationPlan]) -> SeedHi
     on_path_groups: Dict[str, List[SeedHint]] = defaultdict(list)
     circle_radius_refs: Dict[str, str] = {}
     diameter_opposites: Dict[Tuple[str, str], str] = {}
+    diameter_segments: Dict[str, Set[Tuple[str, str]]] = defaultdict(set)
 
     for stmt in program.stmts:
         data = stmt.data
@@ -308,9 +309,14 @@ def build_seed_hints(program: Program, plan: Optional[DerivationPlan]) -> SeedHi
                 and _is_point_name(edge[0])
                 and _is_point_name(edge[1])
             ):
-                circle_radius_refs.setdefault(str(center), str(edge[0]))
-                diameter_opposites[(str(center), str(edge[0]))] = str(edge[1])
-                diameter_opposites[(str(center), str(edge[1]))] = str(edge[0])
+                a = str(edge[0])
+                b = str(edge[1])
+                c = str(center)
+                circle_radius_refs.setdefault(c, a)
+                diameter_opposites[(c, a)] = b
+                diameter_opposites[(c, b)] = a
+                diameter_segments[c].add((a, b))
+                diameter_segments[c].add((b, a))
             continue
 
         if stmt.kind == "point_on":
@@ -337,6 +343,16 @@ def build_seed_hints(program: Program, plan: Optional[DerivationPlan]) -> SeedHi
                             radius_point = payload.get("radius_point") or spec.get("radius_point")
                             if _is_point_name(radius_point):
                                 payload.setdefault("opposite_point", radius_point)
+            elif spec.get("kind") == "segment" and stmt.origin == "desugar(diameter)":
+                points = spec.get("points")
+                if (
+                    isinstance(points, tuple)
+                    and len(points) == 2
+                    and isinstance(point, str)
+                ):
+                    segs = diameter_segments.get(point, set())
+                    if segs and (points in segs):
+                        payload.setdefault("midpoint_of", points)
             hint: SeedHint = {
                 "kind": "on_path",
                 "point": str(point),
@@ -1892,6 +1908,34 @@ def _build_tangent_at(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualS
     ]
 
 
+def _build_diameter(stmt: Stmt, index: Dict[PointName, int]) -> List[ResidualSpec]:
+    center = stmt.data.get("center")
+    edge_raw = stmt.data.get("edge")
+    edge = _as_edge(edge_raw)
+    if len(edge) != 2:
+        return []
+    if not _is_point_name(center):
+        return []
+
+    a, b = edge
+
+    def func(x: np.ndarray) -> np.ndarray:
+        mid = 0.5 * (_vec(x, index, a) + _vec(x, index, b))
+        c = _vec(x, index, center)
+        return np.array([c[0] - mid[0], c[1] - mid[1]], dtype=float)
+
+    key = f"diameter_midpoint({center};{_format_edge(edge)})"
+    return [
+        ResidualSpec(
+            key=key,
+            func=func,
+            size=2,
+            kind="diameter_midpoint",
+            source=stmt,
+        )
+    ]
+
+
 _RESIDUAL_BUILDERS: Dict[str, Callable[[Stmt, Dict[PointName, int]], List[ResidualSpec]]] = {
     "segment": _build_segment_length,
     "equal_segments": _build_equal_segments,
@@ -1910,6 +1954,7 @@ _RESIDUAL_BUILDERS: Dict[str, Callable[[Stmt, Dict[PointName, int]], List[Residu
     "distance": _build_distance,
     "line_tangent_at": _build_line_tangent_at,
     "tangent_at": _build_tangent_at,
+    "diameter": _build_diameter,
 
     "quadrilateral": _build_quadrilateral_family,
     "parallelogram": _build_quadrilateral_family,
@@ -2624,6 +2669,19 @@ def initial_guess(
             new_point = (center[0] + normed[0] * radius, center[1] + normed[1] * radius)
             set_coord(point, new_point)
             return
+        if path.get("kind") == "segment":
+            mid_pair = payload.get("midpoint_of") if isinstance(payload, dict) else None
+            if (
+                isinstance(mid_pair, tuple)
+                and len(mid_pair) == 2
+                and _is_point_name(mid_pair[0])
+                and _is_point_name(mid_pair[1])
+                and mid_pair[0] in coords
+                and mid_pair[1] in coords
+            ):
+                midpoint = _midpoint2(get_coord(mid_pair[0]), get_coord(mid_pair[1]))
+                set_coord(point, midpoint)
+                return
         line_spec = line_spec_from_path(path)
         if line_spec is None:
             return
