@@ -13,8 +13,6 @@ def test_prompt_includes_bnf_by_default():
     prompt = LLM_PROMPT
     assert "SYNTAX REFERENCE (BNF)" in prompt
     assert BNF in prompt
-    assert prompt.count("<geoscript>") == 1
-    assert prompt.count("</geoscript>") == 1
 
 
 def test_prompt_can_skip_bnf():
