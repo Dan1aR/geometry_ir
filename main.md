@@ -45,6 +45,8 @@ Target    := 'target'
              | 'arc' ID '-' ID 'on' 'circle' 'center' ID Opts?
              )
 
+> **Note:** String payloads in target statements (e.g. `target area ("Find area of ABC")`) are treated purely as annotations. Their text is not scanned for point identifiers and introduces no solver variables or residuals.
+
 Obj       := 'segment'      Pair Opts?
            | 'ray'          Pair Opts?
            | 'line'         Pair Opts?

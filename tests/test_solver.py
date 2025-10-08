@@ -26,6 +26,23 @@ def _build_model(text: str):
     return translate(dz)
 
 
+def test_textual_targets_do_not_introduce_points():
+    model = _build_model(
+        """
+        scene "Trapezoid"
+        points A, B, C, D, O, H
+        trapezoid A-B-C-D
+        intersect (segment A-C) with (segment B-D) at O
+        segment C-D [length=12]
+        foot H from O to C-D
+        segment O-H [length=5]
+        target area ("AOB")
+        """
+    )
+
+    assert "AOB" not in model.points
+
+
 def _coords_array(model, coords):
     arr = np.zeros(2 * len(model.points))
     for name, (px, py) in coords.items():

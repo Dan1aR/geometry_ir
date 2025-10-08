@@ -121,9 +121,14 @@ def _register_point_name(order: List[PointName], seen: Set[PointName], name: Poi
         order.append(name)
 
 
+_TEXTUAL_DATA_KEYS: Set[str] = {"text", "title", "label", "caption", "description"}
+
+
 def _gather_point_names(obj: object, register: Callable[[PointName], None]) -> None:
     if isinstance(obj, dict):
-        for value in obj.values():
+        for key, value in obj.items():
+            if key in _TEXTUAL_DATA_KEYS:
+                continue
             _gather_point_names(value, register)
         return
     if isinstance(obj, (list, tuple)):
