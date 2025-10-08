@@ -2030,6 +2030,7 @@ score(a) =
 
 * **Equal segments**: apply `tick1/tick2/tick3` to every member of a group **on the visible stroke**. If a member segment isn’t drawn, render a short dashed stub centered on that segment for the ticks.
 * **No auto numerics** on sides; only draw side text from `sidelabel` or an explicit segment `[label="…"]`.
+* **Angle support**: `angle`, `right-angle`, `target-angle`, and `equal-angles` statements must have carriers for both rays. The consistency pass emits `segment` hotfixes for missing sides so downstream stages can rely on those edges existing.
 
 ---
 

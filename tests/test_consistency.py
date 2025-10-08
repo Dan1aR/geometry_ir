@@ -154,3 +154,39 @@ equal-segments (A-B ; A-C)
     warnings = check_consistency(prog)
     assert warnings == []
 
+
+def test_equal_angles_missing_segments_emits_warning():
+    text = """
+scene "Equal angles"
+points A, B, C, D
+equal-angles (B-A-C ; B-C-D)
+"""
+    prog = run_pipeline(text)
+    warnings = check_consistency(prog)
+    assert warnings
+    warning = warnings[0]
+    assert warning.kind == 'equal_angles'
+    expected_edges = {'A-B', 'A-C', 'C-B', 'C-D'}
+    for edge in expected_edges:
+        assert edge in warning.message
+        a, b = edge.split('-')
+        assert any(
+            hotfix.kind == 'segment' and hotfix.data['edge'] == (a, b)
+            for hotfix in warning.hotfixes
+        )
+
+
+def test_equal_angles_with_segments_has_no_warnings():
+    text = """
+scene "Equal angles"
+points A, B, C, D
+segment A-B
+segment A-C
+segment B-C
+segment C-D
+equal-angles (B-A-C ; B-C-D)
+"""
+    prog = run_pipeline(text)
+    warnings = check_consistency(prog)
+    assert warnings == []
+
