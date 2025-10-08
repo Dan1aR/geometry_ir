@@ -1316,8 +1316,9 @@ Add seeding tests to the integration flow (see §17):
 * **Segments explicitly declared**: draw with `carrier`.
 * **Lines/Rays**: draw as **auxiliary** (extend beyond endpoints; `aux` style). Rays get `-{Latex[length=2mm]}` heads.
 * **Intersections**: if `X` is defined by `intersect(Path1, Path2)`, render both carriers as `aux` **only if** they are not already drawn elsewhere; otherwise, omit.
-* **Circles**: draw with `circle` style. Do **not** auto-draw radii to all named points; draw a radius only if explicitly present, or needed for a right-angle mark at a tangent touchpoint.
-* **Feet / medians / bisectors**: draw their carrier lines `aux` only if they appear in a `segment`/`ray`/`line` object or define a visible point; otherwise render only the **mark** (e.g., right‑angle square at the foot).
+* **Circles**: draw with `circle` style. Do **not** auto-draw radii to all named points; draw a radius only if explicitly present, or needed for a right-angle mark at a tangent touchpoint. A bare `point P on circle center O` is enough to queue the circle.
+* **Feet**: always draw the altitude segment `X–H` as `aux` (honors `rules[allow_auxiliary]`). If `H` misses its declared base, also inject the carrier `base[0]–H` so the mismatch is visible.
+* **Medians / bisectors**: draw their carrier lines `aux` only if they appear in a `segment`/`ray`/`line` object or define a visible point; otherwise render only the **mark**.
 
 **19.4 Point symbols & labels**
 
@@ -1351,7 +1352,7 @@ Add seeding tests to the integration flow (see §17):
 
 * **Median** `median from V to A-B midpoint M`: draw `V–M` if `segment`/`line` is present; otherwise omit the line. Optionally mark `M` with a small notch on `AB`.
 * **Angle bisector** at `B`: draw the **double‑arc** mark at `B` (no line) unless explicitly requested as a `line`/`segment`.
-* **Altitude** / **foot** `foot H from X to A-B`: draw a **right‑angle square** at `H` and draw `X–H` as `aux` *only if* altitude line is declared or needed to show a construction.
+* **Altitude** / **foot** `foot H from X to A-B`: draw a **right‑angle square** at `H` and always draw `X–H` as `aux` (still respecting `rules[allow_auxiliary]`). When `H` is off the supporting line `A-B`, also promote `A–H` (more generally, the first base endpoint joined with `H`) to a `carrier` to flag the inconsistency.
 
 **19.8 Tangency**
 

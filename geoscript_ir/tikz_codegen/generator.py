@@ -22,6 +22,7 @@ LABEL_WIDTH_EM = 0.52
 LABEL_HEIGHT_EM = 0.9
 ANGLE_LABEL_OFFSET_EM = 0.6
 EPS_LEN_FACTOR = 1e-9
+COLLINEAR_EPS_FACTOR = 1e-8
 
 ANCHOR_SEQUENCE = [
     "above",
@@ -316,6 +317,9 @@ def _build_render_plan(
             right_angle_seen.add(key)
             right_angle_marks.append((a, b, c))
 
+    scene_diag = _scene_bbox_diag(_coords_bbox(coords.values()))
+    collinear_epsilon = max(EPS_LEN_FACTOR * scene_diag, COLLINEAR_EPS_FACTOR)
+
     for idx, stmt in enumerate(program.stmts):
         kind = stmt.kind
         data = stmt.data
@@ -417,7 +421,28 @@ def _build_render_plan(
             edge = _edge_from_data(data.get("edge"))
             if isinstance(foot, str) and isinstance(frm, str) and edge:
                 special_points.add(foot)
+                if rules.get("allow_auxiliary", True):
+                    aux_lines.append(
+                        (
+                            AuxPath("segment", {"points": (frm, foot)}),
+                            {},
+                        )
+                    )
                 add_right_angle(edge[0], foot, frm)
+                if all(
+                    isinstance(name, str) and name in coords
+                    for name in (foot, edge[0], edge[1])
+                ):
+                    base_vec = _vector(coords[edge[0]], coords[edge[1]])
+                    off_vec = _vector(coords[edge[0]], coords[foot])
+                    base_len = _vector_length(base_vec)
+                    if base_len > 1e-9:
+                        distance = abs(base_vec[0] * off_vec[1] - base_vec[1] * off_vec[0]) / base_len
+                        if distance > collinear_epsilon:
+                            key = _normalize_edge((edge[0], foot))
+                            carriers.setdefault(key, (edge[0], foot, {"source": "foot"}))
+                            carrier_lookup[key] = (edge[0], foot)
+                            record_edge_orientation(key, (edge[0], foot))
         elif kind == "parallel_through":
             to_edge = _edge_from_data(data.get("to"))
             through = data.get("through")
@@ -474,12 +499,14 @@ def _build_render_plan(
         elif kind == "point_on":
             point = data.get("point")
             path = data.get("path")
-            if (
+            if not (
                 isinstance(point, str)
                 and isinstance(path, tuple)
                 and len(path) == 2
-                and path[0] == "segment"
             ):
+                continue
+            path_kind = path[0]
+            if path_kind == "segment":
                 base = _edge_from_data(path[1])
                 mark = opts.get("mark") if isinstance(opts.get("mark"), str) else None
                 if base and mark == "midpoint":
@@ -495,6 +522,17 @@ def _build_render_plan(
                         normals.append(norm)
                     if len(normals) == 2:
                         implicit_segment_pairs.append((normals[0], normals[1], idx))
+            elif path_kind == "circle":
+                center = path[1]
+                if isinstance(center, str):
+                    special_points.add(point)
+                    circle_centers.add(center)
+                    existing = next(
+                        (through for (ctr, through) in circles if ctr == center),
+                        None,
+                    )
+                    if existing is None:
+                        circles.setdefault((center, point), {})
         elif kind == "circle_center_radius_through":
             center = data.get("center")
             through = data.get("through")
@@ -1096,6 +1134,15 @@ def _emit_aux_path(
                 y1=_format_float(p1[1]),
                 x2=_format_float(p2[0]),
                 y2=_format_float(p2[1]),
+            )
+        ]
+    if kind == "segment":
+        edge = _edge_from_data(data.get("points"))
+        if not edge or not _points_present(edge, coords):
+            return []
+        return [
+            "\\draw[{styles}] ({a}) -- ({b});".format(
+                styles=", ".join(tokens), a=edge[0], b=edge[1]
             )
         ]
     if kind == "median":
