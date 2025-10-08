@@ -96,10 +96,48 @@ def check_consistency(prog: Program) -> List[ConsistencyWarning]:
     for stmt in prog.stmts:
         if stmt.kind in ('angle_at', 'right_angle_at', 'target_angle'):
             missing: List[Ray] = []
-            for ray in stmt.data['rays']:
+            points = stmt.data.get('points')
+            rays: Sequence[Ray]
+            if isinstance(points, (list, tuple)) and len(points) == 3:
+                a, b, c = points
+                rays = ((b, a), (b, c))
+            else:
+                rays = stmt.data.get('rays', [])  # fallback for legacy data
+            for ray in rays:
                 ray_norm = _normalize_edge(ray)
                 if ray_norm not in supported:
                     missing.append(ray_norm)
+            if missing:
+                missing = list(dict.fromkeys(missing))
+                rays_text = ', '.join(_format_ray(ray) for ray in missing)
+                hotfixes = [_segment_hotfix(ray, stmt.span) for ray in missing]
+                message = (
+                    f"[line {stmt.span.line}, col {stmt.span.col}] {stmt.kind} "
+                    f"missing support for rays: {rays_text}"
+                )
+                warnings.append(
+                    ConsistencyWarning(
+                        line=stmt.span.line,
+                        col=stmt.span.col,
+                        kind=stmt.kind,
+                        message=message,
+                        hotfixes=hotfixes,
+                    )
+                )
+        elif stmt.kind == 'equal_angles':
+            angles: List[Sequence[str]] = []
+            angles.extend(stmt.data.get('lhs', []))
+            angles.extend(stmt.data.get('rhs', []))
+            missing: List[Ray] = []
+            for angle in angles:
+                if len(angle) != 3:
+                    continue
+                a, vertex, c = angle
+                rays = ((vertex, a), (vertex, c))
+                for ray in rays:
+                    ray_norm = _normalize_edge(ray)
+                    if ray_norm not in supported:
+                        missing.append(ray_norm)
             if missing:
                 missing = list(dict.fromkeys(missing))
                 rays_text = ', '.join(_format_ray(ray) for ray in missing)

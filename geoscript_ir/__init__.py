@@ -7,8 +7,11 @@ from .ast import Program, Stmt, Span
 from .reference import BNF, LLM_PROMPT, get_llm_prompt
 from .reference_tikz import GEOSCRIPT_TO_TIKZ_PROMPT
 from .tikz_codegen import generate_tikz_code, generate_tikz_document, latex_escape_keep_math
+from .orientation import apply_orientation, OrientationResult
 from .solver import (
     translate,
+    plan_derive,
+    compile_with_plan,
     solve,
     solve_best_model,
     solve_with_desugar_variants,
@@ -17,8 +20,10 @@ from .solver import (
     Solution,
     VariantSolveResult,
     normalize_point_coords,
+    initial_guess,
     score_solution
 )
+from .ddc import derive_and_check, evaluate_ddc, DDCCheckResult
 
 __all__ = [
     'parse_program',
@@ -31,6 +36,8 @@ __all__ = [
     'print_program',
     'format_stmt',
     'translate',
+    'plan_derive',
+    'compile_with_plan',
     'solve',
     'solve_best_model',
     'solve_with_desugar_variants',
@@ -39,6 +46,10 @@ __all__ = [
     'Solution',
     'VariantSolveResult',
     'normalize_point_coords',
+    'initial_guess',
+    'derive_and_check',
+    'evaluate_ddc',
+    'DDCCheckResult',
     'Program',
     'Stmt',
     'Span',
@@ -50,4 +61,6 @@ __all__ = [
     'generate_tikz_document',
     'latex_escape_keep_math',
     'score_solution',
+    'apply_orientation',
+    'OrientationResult',
 ]

@@ -3,14 +3,14 @@ scene "Right-angled triangle with angle B=21^\\circ, find angle between CD and C
 layout canonical=triangle_ABC scale=1.0
 points A, B, C, D, M
 triangle A-B-C
-angle at C rays C-A C-B [degrees=90]
-angle at B rays B-A B-C [degrees=21]
-angle at A rays A-B A-C [degrees=69]
+right-angle A-C-B
+angle A-B-C [degrees=21]
+angle B-A-C [degrees=69]
 
 # Add angle bisector
-intersect (angle-bisector at C rays C-A C-B) with (segment A-B) at D
+intersect (angle-bisector A-C-B) with (segment A-B) at D
 
-# Add median
-intersect (median from C to A-B) with (segment A-B) at M
+# Add median with explicit midpoint
+median from C to A-B midpoint M
 
-target angle at C rays C-D C-M [label="?"]
+target angle D-C-M [label="?"]

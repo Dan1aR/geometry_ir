@@ -1,0 +1,18 @@
+# Прямые $AB$ и $АС$ касаются окружности с центром $О$ в точках $В$ и $С$. Найдите $ВС$, если $\angle OAB = 30^\circ$, $AB = 5$ см.
+scene "Two tangents from A to circle O; ∠OAB=30°, AB=5; find BC"
+layout canonical=generic scale=1
+points A, B, C, O
+
+# Circle and tangent at B
+circle center O radius-through B
+line A-B tangent to circle center O at B
+
+# The second tangent from A touches at C
+line A-C tangent to circle center O at C
+
+# Given data
+angle O-A-B [degrees=30]
+segment A-B [length=5, label="5"]
+
+# Target: distance between touchpoints
+target length B-C [label="?"]

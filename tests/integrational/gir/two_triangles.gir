@@ -1,0 +1,9 @@
+# В треугольниках $ABC$ и $ADC$ стороны $ВС$ и $AD$ равны и пересекаются в точке $О$, $\angle OAC = \angle OCA$. Докажите, что треугольники $ABО$ и $CDO$ равны.
+scene "Congruence of ABO and CDO"
+layout canonical=triangle_ABC scale=1
+points A, B, C, D, O
+triangle A-B-C
+triangle A-D-C
+equal-segments (B-C ; A-D)
+intersect (segment A-D) with (segment B-C) at O
+equal-angles (O-A-C ; O-C-A)

@@ -1,0 +1,17 @@
+# К гипотенузе $АВ$ прямоугольного треугольника $АВС$ с углом $15^\circ$ проведены медиана $СМ$ и высота $CH$. Найдите $АВ$, если $CH = 4$.
+scene "Right triangle ABC with 15Â° angle at A, height and median to hypotenuse"
+layout canonical=triangle_ABC scale=1.0
+points A, B, C, M, H
+triangle A-B-C
+segment B-C
+segment C-A
+right-angle A-C-B
+angle B-A-C [degrees=15]
+segment A-B
+midpoint M of A-B
+segment C-M
+foot H from C to A-B
+segment C-H [length=4]
+target length A-B
+segment B-C
+segment C-A

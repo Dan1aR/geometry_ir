@@ -10,9 +10,11 @@ _ERROR_LOC_RE = re.compile(r"\[line (\d+), col (\d+)\]")
 
 
 class Cursor:
-    def __init__(self, tokens: List[Tuple[str,str,int,int]]):
+    def __init__(self, tokens: List[Tuple[str,str,int,int]], *, line_text: Optional[str] = None):
         self.toks = tokens
         self.i = 0
+        self.line_text = line_text
+        self._line_no = tokens[0][2] if tokens else 0
 
     def peek(self):
         return self.toks[self.i] if self.i < len(self.toks) else None
@@ -58,11 +60,29 @@ class Cursor:
         want = '|'.join(types)
         if t:
             raise SyntaxError(f'[line {t[2]}, col {t[3]}] expected {want}, got {t[0]}')
-        raise SyntaxError(f'Unexpected end of line: expected {want}')
+        line, col = self._location_at_eof()
+        raise SyntaxError(f'[line {line}, col {col}] unexpected end of line: expected {want}')
 
     def peek_ahead(self, offset: int = 1):
         idx = self.i + offset
         return self.toks[idx] if idx < len(self.toks) else None
+
+    def _location_at_eof(self):
+        if self.toks:
+            line = self.toks[-1][2]
+        else:
+            line = self._line_no
+        if self.line_text is not None:
+            col = len(self.line_text) + 1
+            if col < 1:
+                col = 1
+        else:
+            last = self.toks[-1] if self.toks else None
+            if last:
+                col = last[3] + len(last[1])
+            else:
+                col = 1
+        return line, col
 
 def parse_id(cur: Cursor):
     t = cur.expect('ID')
@@ -73,6 +93,15 @@ def parse_pair(cur: Cursor):
     cur.expect('DASH')
     b, _ = parse_id(cur)
     return (a, b), sp
+
+
+def parse_angle3(cur: Cursor):
+    a, sp = parse_id(cur)
+    cur.expect('DASH')
+    b, _ = parse_id(cur)
+    cur.expect('DASH')
+    c, _ = parse_id(cur)
+    return (a, b, c), sp
 
 
 def parse_edge(cur: Cursor):
@@ -128,10 +157,30 @@ def parse_edgelist_paren(cur: Cursor, consume_lparen: bool = True):
     return edges, first_span
 
 
+def parse_anglelist(cur: Cursor, *, consume_lparen: bool = False):
+    angles = []
+    first_span: Optional[Span] = None
+    if consume_lparen:
+        lp = cur.expect('LPAREN')
+        first_span = Span(lp[2], lp[3])
+    while True:
+        t = cur.peek()
+        if not t or t[0] in ('RPAREN', 'SEMI'):
+            break
+        if angles:
+            cur.expect('COMMA')
+        angle, sp = parse_angle3(cur)
+        if first_span is None:
+            first_span = sp
+        angles.append(angle)
+    return angles, first_span
+
+
 def parse_opt_value(cur: Cursor):
     vtok = cur.peek()
     if not vtok:
-        raise SyntaxError('unterminated options value')
+        line, col = cur._location_at_eof()
+        raise SyntaxError(f'[line {line}, col {col}] unterminated options value')
     if vtok[0] == 'STRING':
         return cur.match('STRING')[1]
     if vtok[0] == 'NUMBER':
@@ -229,24 +278,27 @@ def parse_path(cur: Cursor):
         return 'circle', center
     if kw == 'angle-bisector':
         cur.consume_keyword('angle-bisector')
+        points, _ = parse_angle3(cur)
+        external = False
+        if cur.peek_keyword() == 'external':
+            cur.consume_keyword('external')
+            external = True
+        payload = {'points': points}
+        if external:
+            payload['external'] = True
+        return 'angle-bisector', payload
+    if kw == 'perpendicular':
+        cur.consume_keyword('perpendicular')
         cur.consume_keyword('at')
-        at, _ = parse_id(cur)
-        cur.consume_keyword('rays')
-        r1, _ = parse_pair(cur)
-        r2, _ = parse_pair(cur)
-        return 'angle-bisector', {'at': at, 'rays': (r1, r2)}
-    if kw in {'perpendicular', 'altitude'}:
-        cur.consume_keyword(kw)
-        if kw == 'perpendicular':
-            cur.consume_keyword('at')
-            point_key = 'at'
-        else:
-            cur.consume_keyword('from')
-            point_key = 'frm'
         point_id, _ = parse_id(cur)
         cur.consume_keyword('to')
         to, _ = parse_pair(cur)
-        return kw, {point_key: point_id, 'to': to}
+        return 'perpendicular', {'at': point_id, 'to': to}
+    if kw == 'perp-bisector':
+        cur.consume_keyword('perp-bisector')
+        cur.consume_keyword('of')
+        edge, _ = parse_pair(cur)
+        return 'perp-bisector', edge
     if kw == 'median':
         cur.consume_keyword('median')
         cur.consume_keyword('from')
@@ -254,18 +306,42 @@ def parse_path(cur: Cursor):
         cur.consume_keyword('to')
         to, _ = parse_pair(cur)
         return 'median', {'frm': frm, 'to': to}
+    if kw == 'parallel':
+        cur.consume_keyword('parallel')
+        cur.consume_keyword('through')
+        through, _ = parse_id(cur)
+        cur.consume_keyword('to')
+        to, _ = parse_pair(cur)
+        return 'parallel', {'through': through, 'to': to}
     raise SyntaxError(f'[line {t[2]}, col {t[3]}] invalid path kind {t[1]!r}')
 
-def parse_opts(cur: Cursor) -> Dict[str, Any]:
+def parse_opts(cur: Cursor, *, required: bool = False, context: str = 'options') -> Dict[str, Any]:
     opts: Dict[str, Any] = {}
-    if not cur.match('LBRACK'):
+    lbrack = cur.match('LBRACK')
+    if not lbrack:
+        if required:
+            nxt = cur.peek()
+            if nxt:
+                raise SyntaxError(
+                    f"[line {nxt[2]}, col {nxt[3]}] expected '[' to start {context} block"
+                )
+            line, col = cur._location_at_eof()
+            raise SyntaxError(
+                f"[line {line}, col {col}] unexpected end of line: expected '[' to start {context} block"
+            )
         return opts
+    if cur.peek() and cur.peek()[0] == 'RBRACK':
+        closing = cur.peek()
+        raise SyntaxError(
+            f"[line {closing[2]}, col {closing[3]}] empty options block is not allowed"
+        )
     need_sep = False
     last_key: Optional[str] = None
     while True:
         t = cur.peek()
         if not t:
-            raise SyntaxError('unterminated options block')
+            line, col = cur._location_at_eof()
+            raise SyntaxError(f'[line {line}, col {col}] unterminated options block')
         if t[0] == 'RBRACK':
             cur.i += 1
             break
@@ -302,10 +378,10 @@ def parse_opts(cur: Cursor) -> Dict[str, Any]:
         last_key = key
     return opts
 
-def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
+def parse_stmt(tokens: List[Tuple[str, str, int, int]], line_text: Optional[str] = None):
     if not tokens:
         return None
-    cur = Cursor(tokens)
+    cur = Cursor(tokens, line_text=line_text)
     t0 = cur.peek()
     kw = cur.peek_keyword() if t0 and t0[0] == 'ID' else None
     if not kw:
@@ -356,13 +432,9 @@ def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
         t1 = cur.expect('ID')
         kind = t1[1].lower()
         if kind == 'angle':
-            cur.consume_keyword('at')
-            at, sp = parse_id(cur)
-            cur.consume_keyword('rays')
-            r1, _ = parse_pair(cur)
-            r2, _ = parse_pair(cur)
+            points, sp = parse_angle3(cur)
             opts = parse_opts(cur)
-            stmt = Stmt('target_angle', sp, {'at': at, 'rays': (r1, r2)}, opts)
+            stmt = Stmt('target_angle', sp, {'points': points}, opts)
         elif kind == 'length':
             edge, sp = parse_pair(cur)
             opts = parse_opts(cur)
@@ -433,16 +505,10 @@ def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
                 through, _ = parse_id(cur)
                 opts = parse_opts(cur)
                 stmt = Stmt('circle_center_radius_through', sp, {'center': center, 'through': through}, opts)
-            elif tail_kw == 'tangent':
-                cur.consume_keyword('tangent')
-                edges, _ = parse_edgelist_paren(cur, consume_lparen=True)
-                cur.expect('RPAREN')
-                opts = parse_opts(cur)
-                stmt = Stmt('circle_center_tangent_sides', sp, {'center': center, 'tangent_edges': edges}, opts)
             else:
                 t2 = cur.peek()
                 raise SyntaxError(
-                    f"[line {t2[2] if t2 else 0}, col {t2[3] if t2 else 0}] expected radius-through or tangent"
+                    f"[line {t2[2] if t2 else 0}, col {t2[3] if t2 else 0}] expected radius-through"
                 )
         elif sub_kw == 'through':
             cur.consume_keyword('through')
@@ -474,8 +540,10 @@ def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
         at, sp = parse_id(cur)
         cur.consume_keyword('to')
         to, _ = parse_pair(cur)
+        cur.consume_keyword('foot')
+        foot, _ = parse_id(cur)
         opts = parse_opts(cur)
-        stmt = Stmt('perpendicular_at', sp, {'at': at, 'to': to}, opts)
+        stmt = Stmt('perpendicular_at', sp, {'at': at, 'to': to, 'foot': foot}, opts)
     elif kw == 'parallel-edges':
         cur.consume_keyword('parallel-edges')
         cur.expect('LPAREN')
@@ -493,49 +561,26 @@ def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
         to, _ = parse_pair(cur)
         opts = parse_opts(cur)
         stmt = Stmt('parallel_through', sp, {'through': through, 'to': to}, opts)
-    elif kw == 'angle-bisector':
-        cur.consume_keyword('angle-bisector')
-        cur.consume_keyword('at')
-        at, sp = parse_id(cur)
-        cur.consume_keyword('rays')
-        r1, _ = parse_pair(cur)
-        r2, _ = parse_pair(cur)
-        opts = parse_opts(cur)
-        stmt = Stmt('angle_bisector_at', sp, {'at': at, 'rays': (r1, r2)}, opts)
     elif kw == 'median':
         cur.consume_keyword('median')
         cur.consume_keyword('from')
         frm, sp = parse_id(cur)
         cur.consume_keyword('to')
         to, _ = parse_pair(cur)
+        cur.consume_keyword('midpoint')
+        midpoint, _ = parse_id(cur)
         opts = parse_opts(cur)
-        stmt = Stmt('median_from_to', sp, {'frm': frm, 'to': to}, opts)
-    elif kw == 'altitude':
-        cur.consume_keyword('altitude')
-        cur.consume_keyword('from')
-        frm, sp = parse_id(cur)
-        cur.consume_keyword('to')
-        to, _ = parse_pair(cur)
-        opts = parse_opts(cur)
-        stmt = Stmt('altitude_from_to', sp, {'frm': frm, 'to': to}, opts)
+        stmt = Stmt('median_from_to', sp, {'frm': frm, 'to': to, 'midpoint': midpoint}, opts)
     elif kw == 'angle':
         cur.consume_keyword('angle')
-        cur.consume_keyword('at')
-        at, sp = parse_id(cur)
-        cur.consume_keyword('rays')
-        r1, _ = parse_pair(cur)
-        r2, _ = parse_pair(cur)
+        points, sp = parse_angle3(cur)
         opts = parse_opts(cur)
-        stmt = Stmt('angle_at', sp, {'at': at, 'rays': (r1, r2)}, opts)
+        stmt = Stmt('angle_at', sp, {'points': points}, opts)
     elif kw == 'right-angle':
         cur.consume_keyword('right-angle')
-        cur.consume_keyword('at')
-        at, sp = parse_id(cur)
-        cur.consume_keyword('rays')
-        r1, _ = parse_pair(cur)
-        r2, _ = parse_pair(cur)
+        points, sp = parse_angle3(cur)
         opts = parse_opts(cur)
-        stmt = Stmt('right_angle_at', sp, {'at': at, 'rays': (r1, r2)}, opts)
+        stmt = Stmt('right_angle_at', sp, {'points': points}, opts)
     elif kw == 'equal-segments':
         cur.consume_keyword('equal-segments')
         lhs, sp = parse_edgelist_paren(cur, consume_lparen=True)
@@ -544,6 +589,40 @@ def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
         cur.expect('RPAREN')
         opts = parse_opts(cur)
         stmt = Stmt('equal_segments', sp, {'lhs': lhs, 'rhs': rhs}, opts)
+    elif kw == 'collinear':
+        cur.consume_keyword('collinear')
+        ids, sp = parse_idlist_paren(cur)
+        opts = parse_opts(cur)
+        stmt = Stmt('collinear', sp, {'points': ids}, opts)
+    elif kw == 'concyclic':
+        cur.consume_keyword('concyclic')
+        ids, sp = parse_idlist_paren(cur)
+        opts = parse_opts(cur)
+        stmt = Stmt('concyclic', sp, {'points': ids}, opts)
+    elif kw == 'equal-angles':
+        cur.consume_keyword('equal-angles')
+        cur.expect('LPAREN')
+        lhs, sp = parse_anglelist(cur)
+        cur.expect('SEMI')
+        rhs, _ = parse_anglelist(cur)
+        cur.expect('RPAREN')
+        opts = parse_opts(cur)
+        stmt = Stmt('equal_angles', sp, {'lhs': lhs, 'rhs': rhs}, opts)
+    elif kw == 'ratio':
+        cur.consume_keyword('ratio')
+        cur.expect('LPAREN')
+        left_edge, sp = parse_pair(cur)
+        cur.expect('COLON')
+        right_edge, _ = parse_pair(cur)
+        cur.expect('EQUAL')
+        num_a_tok = cur.expect('NUMBER')
+        num_a = float(_parse_number_literal(num_a_tok[1]))
+        cur.expect('COLON')
+        num_b_tok = cur.expect('NUMBER')
+        num_b = float(_parse_number_literal(num_b_tok[1]))
+        cur.expect('RPAREN')
+        opts = parse_opts(cur)
+        stmt = Stmt('ratio', sp, {'edges': [left_edge, right_edge], 'ratio': (num_a, num_b)}, opts)
     elif kw == 'tangent':
         cur.consume_keyword('tangent')
         cur.consume_keyword('at')
@@ -561,8 +640,12 @@ def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
         cur.consume_keyword('circle')
         cur.consume_keyword('center')
         center, _ = parse_id(cur)
-        opts = parse_opts(cur)
-        stmt = Stmt('diameter', sp, {'edge': edge, 'center': center}, opts)
+        if cur.peek() and cur.peek()[0] == 'LBRACK':
+            bracket = cur.peek()
+            raise SyntaxError(
+                f"[line {bracket[2]}, col {bracket[3]}] diameter does not accept options"
+            )
+        stmt = Stmt('diameter', sp, {'edge': edge, 'center': center}, {})
     elif kw == 'polygon':
         cur.consume_keyword('polygon')
         ids, sp = parse_idchain(cur)
@@ -612,26 +695,25 @@ def parse_stmt(tokens: List[Tuple[str, str, int, int]]):
             at2, _ = parse_id(cur)
         opts = parse_opts(cur)
         stmt = Stmt('intersect', sp, {'path1': path1, 'path2': path2, 'at': at, 'at2': at2}, opts)
+    elif kw == 'midpoint':
+        cur.consume_keyword('midpoint')
+        midpoint, sp = parse_id(cur)
+        cur.consume_keyword('of')
+        edge, _ = parse_pair(cur)
+        opts = parse_opts(cur)
+        stmt = Stmt('midpoint', sp, {'midpoint': midpoint, 'edge': edge}, opts)
+    elif kw == 'foot':
+        cur.consume_keyword('foot')
+        foot, sp = parse_id(cur)
+        cur.consume_keyword('from')
+        frm, _ = parse_id(cur)
+        cur.consume_keyword('to')
+        edge, _ = parse_pair(cur)
+        opts = parse_opts(cur)
+        stmt = Stmt('foot', sp, {'foot': foot, 'from': frm, 'edge': edge}, opts)
     elif kw == 'rules':
         cur.consume_keyword('rules')
-        opts: Dict[str, Any] = {}
-        if cur.peek() and cur.peek()[0] == 'LBRACK':
-            opts = parse_opts(cur)
-        else:
-            need_sep = False
-            while True:
-                t = cur.peek()
-                if not t:
-                    break
-                if need_sep and t[0] == 'COMMA':
-                    cur.i += 1
-                    continue
-                if t[0] != 'ID':
-                    break
-                key = cur.match('ID')[1]
-                cur.expect('EQUAL')
-                opts[key] = parse_opt_value(cur)
-                need_sep = True
+        opts = parse_opts(cur, required=True, context='rules options')
         stmt = Stmt('rules', Span(t0[2], t0[3]), {}, opts)
     else:
         raise SyntaxError(f'[line {t0[2]}, col {t0[3]}] unknown statement "{kw}"')
@@ -665,7 +747,7 @@ def parse_program(text: str) -> Program:
         if not tokens:
             continue
         try:
-            stmt = parse_stmt(tokens)
+            stmt = parse_stmt(tokens, line_text=raw)
         except SyntaxError as err:
             augmented = _augment_syntax_error(err, raw)
             if augmented is None:

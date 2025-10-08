@@ -1,0 +1,20 @@
+# Три окружности разных радиусов попарно касаются друг друга извне . Отрезки, соединяющие их центры, образуют прямоугольный треугольник. Найдите радиус меньшей окружности, если радиусы двух других равны $6$ и $4$.
+scene "Three mutually tangent circles with right-angle at O1"
+layout canonical=generic scale=1
+points O1, O2, O3, K, E, F
+
+point K on line O1-O2 [choose=near anchor=O2]
+point O3 on perpendicular at O1 to O1-O2 [choose=left ref=O1-O2]
+circle center O1 radius-through K
+intersect (perpendicular at O1 to O1-O2) with (circle center O1) at E [choose=near anchor=O3]
+circle center O2 radius-through K
+circle center O3 radius-through E
+intersect (line O2-O3) with (circle center O2) at F [choose=near anchor=O3]
+point F on circle center O3
+right-angle K-O1-E
+
+segment O1-O3
+segment O1-O2
+
+segment O3-F [length=6]
+segment O2-F [length=4]

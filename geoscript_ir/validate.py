@@ -1,4 +1,5 @@
 from copy import deepcopy
+import math
 from typing import List
 
 from .ast import Program
@@ -43,14 +44,56 @@ def validate(prog: Program) -> None:
                 raise ValidationError(f'[line {s.span.line}, col {s.span.col}] polygon needs at least 3 vertices')
             if len(set(ids)) != len(ids):
                 raise ValidationError(f'[line {s.span.line}, col {s.span.col}] polygon vertices must be distinct')
-        elif k in ('angle_at','right_angle_at'):
-            at = s.data['at']
-            (r1, r2) = s.data['rays']
-            if r1[0] != at or r2[0] != at:
-                raise ValidationError(f'[line {s.span.line}, col {s.span.col}] angle rays must start at {at}')
+        elif k in ('angle_at', 'right_angle_at', 'target_angle'):
+            points = s.data['points']
+            if len(points) != 3:
+                raise ValidationError(f'[line {s.span.line}, col {s.span.col}] angle requires three points')
+            a, b, c = points
+            if b == a or b == c:
+                raise ValidationError(f'[line {s.span.line}, col {s.span.col}] angle vertex must differ from endpoints')
         elif k == 'equal_segments':
             if not s.data['lhs'] or not s.data['rhs']:
                 raise ValidationError(f'[line {s.span.line}, col {s.span.col}] equal-segments needs both sides non-empty')
+        elif k == 'collinear':
+            pts = s.data.get('points', [])
+            if len(pts) < 3:
+                raise ValidationError(f'[line {s.span.line}, col {s.span.col}] collinear requires at least three points')
+            if len(set(pts)) != len(pts):
+                raise ValidationError(f'[line {s.span.line}, col {s.span.col}] collinear points must be distinct')
+        elif k == 'concyclic':
+            pts = s.data.get('points', [])
+            if len(pts) < 4:
+                raise ValidationError(f'[line {s.span.line}, col {s.span.col}] concyclic requires at least four points')
+            if len(set(pts)) != len(pts):
+                raise ValidationError(f'[line {s.span.line}, col {s.span.col}] concyclic points must be distinct')
+        elif k == 'equal_angles':
+            lhs = s.data.get('lhs', [])
+            rhs = s.data.get('rhs', [])
+            if not lhs or len(lhs) != len(rhs):
+                raise ValidationError(f'[line {s.span.line}, col {s.span.col}] equal-angles requires matching angle lists')
+            for ang in list(lhs) + list(rhs):
+                if len(ang) != 3:
+                    raise ValidationError(f'[line {s.span.line}, col {s.span.col}] equal-angles entries must be triples')
+                if len(set(ang)) != 3:
+                    raise ValidationError(f'[line {s.span.line}, col {s.span.col}] equal-angles points must be distinct per angle')
+        elif k == 'ratio':
+            edges = s.data.get('edges', [])
+            ratio = s.data.get('ratio')
+            if not isinstance(edges, list) or len(edges) != 2:
+                raise ValidationError(f'[line {s.span.line}, col {s.span.col}] ratio requires two edges')
+            for edge in edges:
+                if len(edge) != 2 or edge[0] == edge[1]:
+                    raise ValidationError(f'[line {s.span.line}, col {s.span.col}] ratio edges must use distinct points')
+            if not isinstance(ratio, tuple) or len(ratio) != 2:
+                raise ValidationError(f'[line {s.span.line}, col {s.span.col}] ratio requires two numeric parts')
+            a, b = ratio
+            try:
+                fa = float(a)
+                fb = float(b)
+            except (TypeError, ValueError):
+                raise ValidationError(f'[line {s.span.line}, col {s.span.col}] ratio parts must be numeric') from None
+            if not math.isfinite(fa) or not math.isfinite(fb) or fa <= 0 or fb <= 0:
+                raise ValidationError(f'[line {s.span.line}, col {s.span.col}] ratio parts must be positive finite numbers')
         elif k == 'diameter':
             for key in s.opts:
                 raise ValidationError(
@@ -62,7 +105,7 @@ def validate(prog: Program) -> None:
                 raise ValidationError(f'[line {s.span.line}, col {s.span.col}] circle through needs >=3 distinct points')
         elif k == 'rules':
             for key, val in s.opts.items():
-                if key not in ('no_unicode_degree','mark_right_angles_as_square','no_equations_on_sides','no_solving','allow_auxiliary'):
+                if key not in ('no_equations_on_sides','no_solving','allow_auxiliary'):
                     raise ValidationError(f'[line {s.span.line}, col {s.span.col}] unknown rules option "{key}"')
                 if not isinstance(val, bool):
                     raise ValidationError(f'[line {s.span.line}, col {s.span.col}] rules option "{key}" must be boolean')

@@ -2,17 +2,17 @@
 scene "Isosceles triangle ABC with base AC; AD is angle bisector; find angle ADC; given angle C=50^\\circ"
 layout canonical=triangle_ABC scale=1
 points A, B, C, D
-rules [no_solving=true allow_auxiliary=false no_unicode_degree=true mark_right_angles_as_square=true no_equations_on_sides=true]
+rules [no_solving=true allow_auxiliary=false no_equations_on_sides=true]
 
 # Isosceles with base AC → equal sides AB and BC
 triangle A-B-C [isosceles=atB]
 
 # Given: ∠C = 50°
-angle at C rays C-A C-B [degrees=50]
+angle A-C-B [degrees=50]
 
 # AD is the angle bisector at A, meeting BC at D
 segment B-C
-intersect( angle-bisector at A rays A-B A-C ) with ( segment B-C ) at D
+intersect( angle-bisector B-A-C ) with ( segment B-C ) at D
 
 # Target: ∠ADC
-target angle at D rays D-A D-C [label="?ADC"]
+target angle A-D-C [label="?ADC"]

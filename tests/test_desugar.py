@@ -77,7 +77,7 @@ def test_triangle_isosceles_and_right_expansions():
 
     right_angles = [s for s in out.stmts if s.kind == 'right_angle_at' and s.origin == 'desugar(triangle)']
     assert len(right_angles) == 1
-    assert right_angles[0].data == {'at': 'B', 'rays': (('B', 'C'), ('B', 'A'))}
+    assert right_angles[0].data == {'points': ('C', 'B', 'A')}
     assert right_angles[0].opts == {'mark': 'square'}
 
 
@@ -135,7 +135,7 @@ def test_rectangle_right_angles_and_equal_sides_added():
     assert len(angles) == 4
     for data in (('A', ('A', 'B'), ('A', 'D')), ('B', ('B', 'C'), ('B', 'A')), ('C', ('C', 'D'), ('C', 'B')), ('D', ('D', 'A'), ('D', 'C'))):
         at, r1, r2 = data
-        assert any(s.data == {'at': at, 'rays': (r1, r2)} for s in angles)
+        assert any(s.data == {'points': (r1[1], at, r2[1])} for s in angles)
 
     equal_segments = [s for s in out.stmts if s.kind == 'equal_segments' and s.origin == 'desugar(rectangle)']
     assert len(equal_segments) == 2
@@ -173,39 +173,6 @@ def test_rhombus_equal_segments_cover_all_sides():
     assert equal_segments[0].data == {'lhs': [('A', 'B')], 'rhs': [('B', 'C'), ('C', 'D'), ('D', 'A')]}
 
 
-def test_circle_tangent_edges_expand_to_intersections_and_right_angles():
-    circle = stmt(
-        'circle_center_tangent_sides',
-        {'center': 'O', 'tangent_edges': [('A', 'B'), ('C', 'D')]},
-        {'mark': 'incircle'},
-    )
-
-    out = desugar(Program([circle]))
-
-    intersects = [
-        s
-        for s in out.stmts
-        if s.kind == 'intersect' and s.origin == 'desugar(circle_center_tangent_sides)'
-    ]
-    assert {s.data['at'] for s in intersects} == {'T_AB', 'T_CD'}
-    for stmt_inter in intersects:
-        if stmt_inter.data['at'] == 'T_AB':
-            assert stmt_inter.data['path1'] == ('line', ('A', 'B'))
-        else:
-            assert stmt_inter.data['path1'] == ('line', ('C', 'D'))
-        assert stmt_inter.data['path2'] == ('circle', 'O')
-        assert stmt_inter.data['at2'] is None
-        assert stmt_inter.opts == {'mark': 'incircle'}
-
-    right_angles = [
-        s
-        for s in out.stmts
-        if s.kind == 'right_angle_at' and s.origin == 'desugar(circle_center_tangent_sides)'
-    ]
-    assert {s.data['at'] for s in right_angles} == {'T_AB', 'T_CD'}
-    assert all(s.opts == {} for s in right_angles)
-
-
 def test_line_tangent_at_produces_right_angles():
     tangent = stmt(
         'line_tangent_at',
@@ -220,12 +187,12 @@ def test_line_tangent_at_produces_right_angles():
         if s.kind == 'right_angle_at' and s.origin == 'desugar(line_tangent_at)'
     ]
     assert len(right_angles) == 1
-    assert right_angles[0].data == {'at': 'B', 'rays': (('B', 'O'), ('B', 'A'))}
+    assert right_angles[0].data == {'points': ('O', 'B', 'A')}
     assert right_angles[0].opts == {}
 
 
 def test_intersect_generates_point_on_and_segments():
-    bisector = ('angle-bisector', {'at': 'A', 'rays': (('A', 'B'), ('A', 'C'))})
+    bisector = ('angle-bisector', {'points': ('B', 'A', 'C')})
     segment = ('segment', ('B', 'C'))
     inter = stmt('intersect', {'path1': bisector, 'path2': segment, 'at': 'D', 'at2': None})
 

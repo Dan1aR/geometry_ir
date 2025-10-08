@@ -19,15 +19,14 @@ GEOSCRIPT_TO_TIKZ_PROMPT = dedent(
       * Geometry primitives: `segment`, `ray`, `line`, `circle ...`, `polygon ...`,
         `triangle ...`, `quadrilateral ...`, `trapezoid ...`, `parallelogram ...`, `rectangle ...`,
         `square ...`, `rhombus ...`.
-      * Constructions: `perpendicular`, `parallel`, `angle-bisector`, `median`, `altitude`,
+      * Constructions: `perpendicular`, `parallel`, `angle-bisector`, `median`,
         `tangent ...`, `line X-Y tangent ...`, `parallel-edges (...)`, `equal-segments (...)`, and
         `angle` / `right-angle` marks.
       * Placement commands such as `point P on ...` and `intersect (...) with (...) at ...`.
       * Annotations: `label point ...`, `sidelabel ...` and their option payloads.
       * Targets: `target angle ...`, `target length ...`, `target point ...`, `target circle (...)`,
         `target area (...)`, `target arc ...`.
-      * Renderer rules in `rules [...]` control styling hints (e.g. `no_unicode_degree`,
-        `mark_right_angles_as_square`).
+      * Renderer rules in `rules [...]` control styling hints (e.g. `no_equations_on_sides`).
 
     OUTPUT CONTRACT
     - Respond with TikZ wrapped exactly once in `<tikz>` and `</tikz>`.
@@ -77,15 +76,16 @@ GEOSCRIPT_TO_TIKZ_PROMPT = dedent(
     - `segment P-Q`: draw P--Q; `ray P-Q`: draw from P towards Q (extend with a factor like 4).
     - `line P-Q`: extend beyond both points using expressions such as `($(P)!-3!(Q)$)` to
       `($(P)!4!(Q)$)`.
-    - `circle center O radius-through P`: compute radius `|OP|` and draw with that radius.
-    - `circle center O tangent (...)`: ensure the radius equals the perpendicular distance to the
-      first referenced supporting object; draw tangency feet where specified.
+    - `circle center O radius-through P`: compute radius `|OP|` and draw with that radius. When the
+      GeoScript declares tangency via an explicit foot point (e.g. `perpendicular at O to A-B foot H`),
+      use that foot to position the radius.
     - `circumcircle` / `circle through (...)`: construct using polar placement; never label the
       circle with text, but keep the node names consistent.
     - `incircle`: locate the incenter through angle bisectors or provided points and draw the
       inscribed circle using its foot on a side.
-    - `perpendicular`, `parallel`, `median`, `altitude`, `angle-bisector`: draw helper lines or
-      segments as given. For medians/altitudes, compute the foot or midpoint with intersections.
+    - `perpendicular`, `parallel`, `median`, `angle-bisector`: draw helper lines or
+      segments as given. For medians, use the named midpoint; perpendiculars specify the foot
+      explicitly via their target point.
       When an `angle-bisector` is declared, the bisector ray/segment must emanate from the vertex
       through the specified constructed point, and you must mark the two adjacent angles with
       matching `pic{angle=...}` arcs (e.g. a single arc on each side, both using the same style) so
@@ -95,9 +95,9 @@ GEOSCRIPT_TO_TIKZ_PROMPT = dedent(
       the tangency mark at Z.
     - `parallel-edges (A-B; C-D)`: use paired arrow markings on the corresponding segments.
     - `equal-segments`: apply tick or double-tick styles consistently across each group.
-    - `angle at P` and `right-angle at P`: render with `\draw pic{angle = ...}` or
+    - `angle A-B-C` and `right-angle A-B-C`: render with `\draw pic{angle = ...}` or
       `\draw pic{right angle = ...}`. If an explicit degree measure appears in options, show it as
-      math text (e.g. `"$30^{\circ}$"`). Obey rule toggles such as `mark_right_angles_as_square`.
+      math text (e.g. `"$30^{\circ}$"`). Mark right angles with squares.
 
     ANNOTATIONS & LABELS
     - `label point P [pos=...] [label="text"]`: attach the label according to the direction hint
@@ -107,7 +107,7 @@ GEOSCRIPT_TO_TIKZ_PROMPT = dedent(
     - `sidelabel A-B "text" [pos=...]`: place the text at the segment midpoint. Always wrap
       sidelabel text in math mode (`{ $<text>$ }`). Do not insert '=' inside the text unless GeoScript
       explicitly requests it.
-    - Respect rules such as `no_unicode_degree=true`; always emit `^\circ` inside math mode.
+    - Always emit `^\circ` inside math mode for degree measurements.
 
     TARGET HIGHLIGHTS
     - `target angle`: draw a dashed pic arc with a "?" or supplied `label=` inside the wedge.
@@ -193,7 +193,6 @@ GEOSCRIPT_TO_TIKZ_PROMPT = dedent(
     line A-C tangent to circle center O at C
     point T on circle center O
     target arc B-T on circle center O [label="?BT"]
-    rules [no_unicode_degree=true mark_right_angles_as_square=true]
     </geoscript>
 
     TikZ (schematic excerpt):
@@ -224,10 +223,10 @@ GEOSCRIPT_TO_TIKZ_PROMPT = dedent(
     layout canonical=triangle_MNP scale=1
     points M, N, P, D, K, O
     triangle M-N-P
-    angle-bisector at M rays M-N M-P
-    intersect (angle-bisector at M rays M-N M-P) with (segment N-P) at D
-    angle-bisector at N rays N-M N-P
-    intersect (angle-bisector at N rays N-M N-P) with (segment M-P) at K
+    angle-bisector N-M-P
+    intersect (angle-bisector N-M-P) with (segment N-P) at D
+    angle-bisector M-N-P
+    intersect (angle-bisector M-N-P) with (segment M-P) at K
     intersect (line M-D) with (line N-K) at O
     target area (Find OK : ON)
     </geoscript>

@@ -44,7 +44,7 @@ def test_annotations(text, kind, data, opts):
 @pytest.mark.parametrize(
     'text, kind, data, opts',
     [
-        ('target angle at A rays A-B A-C', 'target_angle', {'at': 'A', 'rays': (('A', 'B'), ('A', 'C'))}, {}),
+        ('target angle B-A-C', 'target_angle', {'points': ('B', 'A', 'C')}, {}),
         ('target length A-B', 'target_length', {'edge': ('A', 'B')}, {}),
         ('target point X', 'target_point', {'point': 'X'}, {}),
         ('target circle ("Find circle")', 'target_circle', {'text': 'Find circle'}, {}),
@@ -83,12 +83,6 @@ def test_targets(text, kind, data, opts):
             {},
         ),
         (
-            'circle center O tangent (A-B, C-D)',
-            'circle_center_tangent_sides',
-            {'center': 'O', 'tangent_edges': [('A', 'B'), ('C', 'D')]},
-            {},
-        ),
-        (
             'circle through (A, B, C, D)',
             'circle_through',
             {'ids': ['A', 'B', 'C', 'D']},
@@ -107,9 +101,9 @@ def test_targets(text, kind, data, opts):
             {},
         ),
         (
-            'perpendicular at A to B-C',
+            'perpendicular at A to B-C foot H',
             'perpendicular_at',
-            {'at': 'A', 'to': ('B', 'C')},
+            {'at': 'A', 'to': ('B', 'C'), 'foot': 'H'},
             {},
         ),
         (
@@ -119,39 +113,51 @@ def test_targets(text, kind, data, opts):
             {'mark': True},
         ),
         (
-            'angle-bisector at A rays A-B A-C',
-            'angle_bisector_at',
-            {'at': 'A', 'rays': (('A', 'B'), ('A', 'C'))},
-            {},
-        ),
-        (
-            'median from A to B-C',
+            'median from A to B-C midpoint M',
             'median_from_to',
-            {'frm': 'A', 'to': ('B', 'C')},
+            {'frm': 'A', 'to': ('B', 'C'), 'midpoint': 'M'},
             {},
         ),
         (
-            'altitude from A to B-C',
-            'altitude_from_to',
-            {'frm': 'A', 'to': ('B', 'C')},
-            {},
-        ),
-        (
-            'angle at A rays A-B A-C',
+            'angle B-A-C',
             'angle_at',
-            {'at': 'A', 'rays': (('A', 'B'), ('A', 'C'))},
+            {'points': ('B', 'A', 'C')},
             {},
         ),
         (
-            'right-angle at A rays A-B A-C [mark=square]',
+            'right-angle B-A-C [mark=square]',
             'right_angle_at',
-            {'at': 'A', 'rays': (('A', 'B'), ('A', 'C'))},
+            {'points': ('B', 'A', 'C')},
             {'mark': 'square'},
         ),
         (
             'equal-segments (A-B, B-C ; C-D, D-E)',
             'equal_segments',
             {'lhs': [('A', 'B'), ('B', 'C')], 'rhs': [('C', 'D'), ('D', 'E')]},
+            {},
+        ),
+        (
+            'collinear (A, B, C)',
+            'collinear',
+            {'points': ['A', 'B', 'C']},
+            {},
+        ),
+        (
+            'concyclic (A, B, C, D)',
+            'concyclic',
+            {'points': ['A', 'B', 'C', 'D']},
+            {},
+        ),
+        (
+            'equal-angles (A-B-C ; D-E-F)',
+            'equal_angles',
+            {'lhs': [('A', 'B', 'C')], 'rhs': [('D', 'E', 'F')]},
+            {},
+        ),
+        (
+            'ratio (A-B : C-D = 2 : 3)',
+            'ratio',
+            {'edges': [('A', 'B'), ('C', 'D')], 'ratio': (2.0, 3.0)},
             {},
         ),
         (
@@ -208,11 +214,21 @@ def test_placements():
     assert pt_on_line.data == {'point': 'Y', 'path': ('line', ('A', 'B'))}
     assert pt_on_line.opts == {'mark': 'midpoint'}
 
-    pt_on_angle = parse_single('point R on angle-bisector at A rays A-B A-C')
+    pt_on_angle = parse_single('point R on angle-bisector B-A-C')
     assert pt_on_angle.kind == 'point_on'
     assert pt_on_angle.data == {
         'point': 'R',
-        'path': ('angle-bisector', {'at': 'A', 'rays': (('A', 'B'), ('A', 'C'))}),
+        'path': ('angle-bisector', {'points': ('B', 'A', 'C')}),
+    }
+
+    pt_on_angle_ext = parse_single('point S on angle-bisector B-A-C external')
+    assert pt_on_angle_ext.kind == 'point_on'
+    assert pt_on_angle_ext.data == {
+        'point': 'S',
+        'path': (
+            'angle-bisector',
+            {'points': ('B', 'A', 'C'), 'external': True},
+        ),
     }
 
     pt_on_perp = parse_single('point M on perpendicular at O to C-D [length=5]')
@@ -230,11 +246,18 @@ def test_placements():
         'path': ('median', {'frm': 'C', 'to': ('A', 'B')}),
     }
 
-    pt_on_altitude = parse_single('point H on altitude from A to B-C')
-    assert pt_on_altitude.kind == 'point_on'
-    assert pt_on_altitude.data == {
-        'point': 'H',
-        'path': ('altitude', {'frm': 'A', 'to': ('B', 'C')}),
+    pt_on_perp_bis = parse_single('point U on perp-bisector of A-B')
+    assert pt_on_perp_bis.kind == 'point_on'
+    assert pt_on_perp_bis.data == {
+        'point': 'U',
+        'path': ('perp-bisector', ('A', 'B')),
+    }
+
+    pt_on_parallel = parse_single('point V on parallel through C to A-B')
+    assert pt_on_parallel.kind == 'point_on'
+    assert pt_on_parallel.data == {
+        'point': 'V',
+        'path': ('parallel', {'through': 'C', 'to': ('A', 'B')}),
     }
 
     inter = parse_single('intersect (line A-B) with (circle center O) at P, Q [type=external]')
@@ -247,10 +270,10 @@ def test_placements():
     }
     assert inter.opts == {'type': 'external'}
 
-    inter2 = parse_single('intersect (angle-bisector at A rays A-B A-C) with (segment B-C) at T')
+    inter2 = parse_single('intersect (angle-bisector B-A-C) with (segment B-C) at T')
     assert inter2.kind == 'intersect'
     assert inter2.data == {
-        'path1': ('angle-bisector', {'at': 'A', 'rays': (('A', 'B'), ('A', 'C'))}),
+        'path1': ('angle-bisector', {'points': ('B', 'A', 'C')}),
         'path2': ('segment', ('B', 'C')),
         'at': 'T',
         'at2': None,
@@ -265,15 +288,26 @@ def test_placements():
         'at2': None,
     }
 
-    inter4 = parse_single('intersect (altitude from A to B-C) with (segment B-C) at H')
+    inter4 = parse_single('intersect (median from A to B-C) with (segment B-C) at M')
     assert inter4.kind == 'intersect'
     assert inter4.data == {
-        'path1': ('altitude', {'frm': 'A', 'to': ('B', 'C')}),
+        'path1': ('median', {'frm': 'A', 'to': ('B', 'C')}),
         'path2': ('segment', ('B', 'C')),
-        'at': 'H',
+        'at': 'M',
         'at2': None,
     }
 
+
+def test_midpoint_and_foot_statements():
+    midpoint_stmt = parse_single('midpoint M of A-B [color=red]')
+    assert midpoint_stmt.kind == 'midpoint'
+    assert midpoint_stmt.data == {'midpoint': 'M', 'edge': ('A', 'B')}
+    assert midpoint_stmt.opts == {'color': 'red'}
+
+    foot_stmt = parse_single('foot H from P to A-B')
+    assert foot_stmt.kind == 'foot'
+    assert foot_stmt.data == {'foot': 'H', 'from': 'P', 'edge': ('A', 'B')}
+    assert foot_stmt.opts == {}
 
 
 @pytest.mark.parametrize(
@@ -308,3 +342,18 @@ def test_rules():
     stmt = parse_single('rules [no_solving=true allow_dashed=false]')
     assert stmt.kind == 'rules'
     assert stmt.opts == {'allow_dashed': False, 'no_solving': True}
+
+
+def test_rules_requires_bracket_syntax():
+    with pytest.raises(SyntaxError):
+        parse_program('rules no_solving=true')
+
+
+def test_diameter_rejects_options_in_parser():
+    with pytest.raises(SyntaxError):
+        parse_program('diameter A-B to circle center O [mark=true]')
+
+
+def test_empty_options_block_rejected():
+    with pytest.raises(SyntaxError):
+        parse_program('segment A-B []')
