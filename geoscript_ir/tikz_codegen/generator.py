@@ -66,7 +66,7 @@ def _side_label_shift_tokens(anchor: Optional[str], side_offset_pt: float) -> Li
     scale = side_offset_pt / magnitude
     dx *= scale
     dy *= scale
-    tokens: List[str] = ["anchor=center"]
+    tokens: List[str] = []
     if abs(dx) > 1e-9:
         tokens.append(f"xshift={_format_float(dx)}pt")
     if abs(dy) > 1e-9:
@@ -1038,6 +1038,8 @@ def _emit_tikz_picture(plan: RenderPlan, layout_scale: float, rules: Mapping[str
         opts: List[str] = ["ptlabel", "midway"]
         if label.slope:
             opts.append("sloped")
+        if label.position:
+            opts.append(label.position)
         opts.extend(_side_label_shift_tokens(label.position, side_offset_pt))
         formatted = _format_label_text(label.text)
         lines.append(
