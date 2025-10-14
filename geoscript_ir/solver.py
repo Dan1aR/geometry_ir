@@ -280,8 +280,13 @@ def _normalize_hint_payload(opts: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if ref:
         payload["ref"] = ref
     for key in ("radius_point", "radius", "length", "distance", "value", "label"):
-        if key in opts:
-            payload[key] = opts[key]
+        if key not in opts:
+            continue
+        value = opts[key]
+        if key == "radius_point" and _is_point_name(value):
+            payload[key] = str(value)
+        else:
+            payload[key] = value
     return payload
 
 
@@ -485,11 +490,16 @@ def build_seed_hints(program: Program, plan: Optional[DerivationPlan]) -> SeedHi
             edge = data.get("edge") if stmt.kind == "line_tangent_at" else None
             if not _is_point_name(center):
                 continue
-            payload: Dict[str, Any] = {"center": str(center)}
+            payload: Dict[str, Any] = _normalize_hint_payload(opts)
+            payload["center"] = str(center)
             if _is_point_name(at):
                 payload["point"] = str(at)
             if edge and _is_edge_tuple(edge):
                 payload["edge"] = (str(edge[0]), str(edge[1]))
+            if "radius_point" not in payload:
+                fallback = circle_radius_refs.get(str(center))
+                if fallback:
+                    payload["radius_point"] = fallback
             global_hints.append({"kind": "tangent", "point": None, "path": None, "payload": payload})
             continue
 
@@ -2595,6 +2605,28 @@ def initial_guess(
     layout_scale = model.layout_scale if model.layout_scale is not None else model.scale
     base_scale = max(float(layout_scale or 1.0), 1e-3)
 
+    tangent_externals: Set[str] = set()
+    for hint in global_hints:
+        if hint.get("kind") != "tangent":
+            continue
+        payload = hint.get("payload", {}) or {}
+        edge = payload.get("edge")
+        point_name = payload.get("point")
+        if not (
+            isinstance(edge, tuple)
+            and len(edge) == 2
+            and _is_point_name(edge[0])
+            and _is_point_name(edge[1])
+            and _is_point_name(point_name)
+        ):
+            continue
+        e0, e1 = str(edge[0]), str(edge[1])
+        point_str = str(point_name)
+        if point_str == e0:
+            tangent_externals.add(e1)
+        elif point_str == e1:
+            tangent_externals.add(e0)
+
     coords: Dict[PointName, Tuple[float, float]] = {}
     protected: Set[PointName] = set()
 
@@ -3089,15 +3121,83 @@ def initial_guess(
         center = payload.get("center")
         point = payload.get("point")
         edge = payload.get("edge")
-        if not (_is_point_name(center) and _is_point_name(point) and isinstance(edge, tuple) and len(edge) == 2):
+        if not (_is_point_name(center) and _is_point_name(point)):
             return
-        if center not in coords or edge[0] not in coords or edge[1] not in coords:
+        if center not in coords or point in protected:
             return
-        if point in protected:
-            return
-        line_spec = _LineLikeSpec(anchor=get_coord(edge[0]), direction=_vec2(get_coord(edge[0]), get_coord(edge[1])), kind="line")
-        proj = project_to_line(line_spec, get_coord(center))
-        set_coord(point, proj)
+
+        def other_endpoint(edge_tuple: Tuple[str, str]) -> Optional[str]:
+            a, b = edge_tuple
+            if a == point and _is_point_name(b):
+                return str(b)
+            if b == point and _is_point_name(a):
+                return str(a)
+            return None
+
+        radius: Optional[float] = None
+        radius_point = payload.get("radius_point")
+        if _is_point_name(radius_point) and radius_point in coords:
+            radius = _norm2(_vec2(get_coord(center), get_coord(radius_point)))
+            if radius <= 1e-9:
+                radius = None
+        radius_value = payload.get("radius")
+        if radius is None and isinstance(radius_value, numbers.Real):
+            radius = abs(float(radius_value))
+
+        candidates: List[Tuple[float, float]] = []
+        anchor_name: Optional[str] = None
+        if isinstance(edge, tuple) and len(edge) == 2:
+            anchor_name = other_endpoint((str(edge[0]), str(edge[1])))
+        if anchor_name is None:
+            anchor_opt = payload.get("anchor")
+            if _is_point_name(anchor_opt):
+                anchor_name = str(anchor_opt)
+
+        if (
+            radius is not None
+            and radius > 1e-9
+            and anchor_name is not None
+            and anchor_name in coords
+        ):
+            center_pt = get_coord(center)
+            external = get_coord(anchor_name)
+            vec = (external[0] - center_pt[0], external[1] - center_pt[1])
+            dist_sq = vec[0] * vec[0] + vec[1] * vec[1]
+            if dist_sq <= radius * radius + 1e-9:
+                direction = normalize_vec(vec)
+                if not direction:
+                    direction = (1.0, 0.0)
+                scale = radius + max(base_scale, radius)
+                external = (
+                    center_pt[0] + direction[0] * scale,
+                    center_pt[1] + direction[1] * scale,
+                )
+                vec = (external[0] - center_pt[0], external[1] - center_pt[1])
+                dist_sq = vec[0] * vec[0] + vec[1] * vec[1]
+            if dist_sq > radius * radius + 1e-9:
+                base_factor = (radius * radius) / dist_sq
+                perp_scale = radius * math.sqrt(max(dist_sq - radius * radius, 0.0)) / dist_sq
+                perp = (-vec[1], vec[0])
+                base = (center_pt[0] + base_factor * vec[0], center_pt[1] + base_factor * vec[1])
+                candidates = [
+                    (base[0] + perp_scale * perp[0], base[1] + perp_scale * perp[1]),
+                    (base[0] - perp_scale * perp[0], base[1] - perp_scale * perp[1]),
+                ]
+
+        if candidates:
+            chosen = select_candidate(point, candidates, payload)
+            if chosen:
+                set_coord(point, chosen)
+                return
+
+        if isinstance(edge, tuple) and len(edge) == 2:
+            a, b = str(edge[0]), str(edge[1])
+            if a in coords and b in coords:
+                direction = _vec2(get_coord(a), get_coord(b))
+                if _norm_sq2(direction) > 1e-12:
+                    line_spec = _LineLikeSpec(anchor=get_coord(a), direction=direction, kind="line")
+                    proj = project_to_line(line_spec, get_coord(center))
+                    set_coord(point, proj)
 
     def fit_circle(points: List[Tuple[float, float]]) -> Optional[Tuple[Tuple[float, float], float]]:
         if not points:
@@ -3210,6 +3310,15 @@ def initial_guess(
                 protected.add(a)
         set_coord(other, (base_scale, 0.0))
         protected.add(other)
+        if (
+            anchor_name is not None
+            and a in tangent_externals
+            and anchor_name in coords
+            and a in coords
+        ):
+            vec = _vec2(get_coord(anchor_name), get_coord(a))
+            if _norm_sq2(vec) <= 1e-12:
+                set_coord(a, (-0.5 * base_scale, 0.0))
 
     assigned = set(coords)
     third = None
