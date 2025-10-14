@@ -423,6 +423,26 @@ def _build_render_plan(
             edge = _edge_from_data(data.get("edge"))
             if edge:
                 aux_lines.append((AuxPath("line", {"points": edge}), {}))
+        elif kind == "line_tangent_at":
+            edge = _edge_from_data(data.get("edge"))
+            center = data.get("center")
+            at = data.get("at")
+            if edge and isinstance(center, str) and isinstance(at, str):
+                key = _normalize_edge(edge)
+                carriers.setdefault(key, (edge[0], edge[1], {"source": kind}))
+                carrier_lookup[key] = (edge[0], edge[1])
+                record_edge_orientation(key, (edge[0], edge[1]))
+                aux_lines.append((AuxPath("line", {"points": edge}), {}))
+                special_points.add(at)
+                tangent_partner: Optional[str]
+                if at == edge[0]:
+                    tangent_partner = edge[1]
+                elif at == edge[1]:
+                    tangent_partner = edge[0]
+                else:
+                    tangent_partner = edge[0]
+                if isinstance(tangent_partner, str):
+                    add_right_angle(tangent_partner, at, center)
         elif kind == "perpendicular_at":
             to_edge = _edge_from_data(data.get("to"))
             at = data.get("at")
@@ -1081,8 +1101,14 @@ def _emit_aux_path(
 ) -> List[str]:
     kind = path.kind
     data = path.data
-    tokens = ["aux"]
-    extra_style = style.get("style") if isinstance(style, dict) else None
+    base_style = "aux"
+    extra_style = None
+    if isinstance(style, dict):
+        base_override = style.get("base")
+        if isinstance(base_override, str) and base_override:
+            base_style = base_override
+        extra_style = style.get("style")
+    tokens = [base_style]
     if isinstance(extra_style, str) and extra_style:
         tokens.append(extra_style)
 

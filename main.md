@@ -1358,7 +1358,7 @@ Add seeding tests to the integration flow (see §17):
 **19.8 Tangency**
 
 * `tangent at T to circle center O`: draw tangent **line** (aux) through `T`, draw the **radius** `O–T` (carrier or aux), and a **right‑angle square** at `T`.
-* `line X-Y tangent to circle center O at T`: same; if there’s no radius elsewhere, draw `O–T` thin to support the square.
+* `line X-Y tangent to circle center O at T`: same geometry, but render the segment `X–Y` as a **carrier** (solid) edge and extend it across the scene with a dotted **aux** line. If there’s no radius elsewhere, draw `O–T` thin to support the square.
 
 **19.9 Targets & highlights**
 
