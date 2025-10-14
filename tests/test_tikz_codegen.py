@@ -333,3 +333,21 @@ def test_foot_constructs_segment_if_point_off_base() -> None:
     assert "\\draw[carrier] (B) -- (H);" in tikz
 
 
+def test_foot_draws_dotted_extension_when_projection_outside_segment() -> None:
+    program = Program(
+        [
+            Stmt("foot", Span(1, 1), {"foot": "H", "from": "B", "edge": ("C", "D")}),
+        ]
+    )
+    coords = {
+        "B": (9.453988, 0.0),
+        "C": (0.0, 5.458262),
+        "D": (0.546012, 5.458262),
+        "H": (9.453988, 5.458262),
+    }
+
+    tikz = generate_tikz_code(program, coords)
+
+    assert "\\draw[aux, densely dotted] (D) -- (H);" in tikz
+
+
