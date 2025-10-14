@@ -1353,7 +1353,7 @@ Add seeding tests to the integration flow (see §17):
 
 * **Median** `median from V to A-B midpoint M`: draw `V–M` if `segment`/`line` is present; otherwise omit the line. Optionally mark `M` with a small notch on `AB`.
 * **Angle bisector** at `B`: draw the **double‑arc** mark at `B` (no line) unless explicitly requested as a `line`/`segment`.
-* **Altitude** / **foot** `foot H from X to A-B`: draw a **right‑angle square** at `H` and always draw `X–H` as `aux` (still respecting `rules[allow_auxiliary]`). When `H` is off the supporting line `A-B`, also promote `A–H` (more generally, the first base endpoint joined with `H`) to a `carrier` to flag the inconsistency.
+* **Altitude** / **foot** `foot H from X to A-B`: draw a **right‑angle square** at `H` and always draw `X–H` as `aux` (still respecting `rules[allow_auxiliary]`). When `H` is off the supporting line `A-B`, also promote `A–H` (more generally, the first base endpoint joined with `H`) to a `carrier` to flag the inconsistency. If `H` lies on the supporting line but outside the segment `A-B`, add an `aux` segment with `densely dotted` style from the nearer endpoint of `A-B` to `H` to show the extension.
 
 **19.8 Tangency**
 

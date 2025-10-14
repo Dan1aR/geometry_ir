@@ -490,6 +490,21 @@ def _build_render_plan(
                             carriers.setdefault(key, (edge[0], foot, {"source": "foot"}))
                             carrier_lookup[key] = (edge[0], foot)
                             record_edge_orientation(key, (edge[0], foot))
+                        else:
+                            projection = (base_vec[0] * off_vec[0] + base_vec[1] * off_vec[1]) / (base_len * base_len)
+                            projection_tol = collinear_epsilon / base_len
+                            if (
+                                rules.get("allow_auxiliary", True)
+                                and (projection < -projection_tol or projection > 1.0 + projection_tol)
+                            ):
+                                nearest = edge[0] if projection < 0 else edge[1]
+                                if nearest != foot:
+                                    aux_lines.append(
+                                        (
+                                            AuxPath("segment", {"points": (nearest, foot)}),
+                                            {"style": "densely dotted"},
+                                        )
+                                    )
         elif kind == "parallel_through":
             to_edge = _edge_from_data(data.get("to"))
             through = data.get("through")
