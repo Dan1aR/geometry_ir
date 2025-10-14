@@ -155,6 +155,41 @@ equal-segments (A-B ; A-C)
     assert warnings == []
 
 
+def test_parallel_edges_missing_segments_emits_warning():
+    text = """
+scene "Parallel"
+points A, B, C, D
+parallel-edges (A-B ; C-D)
+"""
+    prog = run_pipeline(text)
+    warnings = check_consistency(prog)
+    assert warnings
+    warning = warnings[0]
+    assert warning.kind == 'parallel_edges'
+    assert 'A-B' in warning.message and 'C-D' in warning.message
+    assert any(
+        hotfix.kind == 'segment' and hotfix.data['edge'] == ('A', 'B')
+        for hotfix in warning.hotfixes
+    )
+    assert any(
+        hotfix.kind == 'segment' and hotfix.data['edge'] == ('C', 'D')
+        for hotfix in warning.hotfixes
+    )
+
+
+def test_parallel_edges_with_segments_has_no_warnings():
+    text = """
+scene "Parallel"
+points A, B, C, D
+segment A-B
+segment C-D
+parallel-edges (A-B ; C-D)
+"""
+    prog = run_pipeline(text)
+    warnings = check_consistency(prog)
+    assert warnings == []
+
+
 def test_equal_angles_missing_segments_emits_warning():
     text = """
 scene "Equal angles"
