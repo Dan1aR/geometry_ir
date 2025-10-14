@@ -423,6 +423,22 @@ def _build_render_plan(
             edge = _edge_from_data(data.get("edge"))
             if edge:
                 aux_lines.append((AuxPath("line", {"points": edge}), {}))
+        elif kind == "line_tangent_at":
+            edge = _edge_from_data(data.get("edge"))
+            center = data.get("center")
+            at = data.get("at")
+            if edge and isinstance(center, str) and isinstance(at, str):
+                aux_lines.append((AuxPath("line", {"points": edge}), {}))
+                special_points.add(at)
+                tangent_partner: Optional[str]
+                if at == edge[0]:
+                    tangent_partner = edge[1]
+                elif at == edge[1]:
+                    tangent_partner = edge[0]
+                else:
+                    tangent_partner = edge[0]
+                if isinstance(tangent_partner, str):
+                    add_right_angle(tangent_partner, at, center)
         elif kind == "perpendicular_at":
             to_edge = _edge_from_data(data.get("to"))
             at = data.get("at")
