@@ -1,0 +1,14 @@
+# Через точку $А$ проведены касательная $AB$ ($В$ — точка касания) и секущая, которая пересекает окружность в точках $С$ и $D$. Найдите $CD$, если: а) $AB = 4$ см, $АС = 2$ см;
+scene "Circle with tangent and secant from external point"
+layout canonical=generic_auto scale=1.0
+points O, A, B, C, D
+circle center O radius-through B
+line A-B tangent to circle center O at B [radius_point=B]
+right-angle O-B-A
+collinear (A, C, D)
+point C on circle center O [anchor=A choose=near radius_point=B]
+point D on circle center O [anchor=A choose=far radius_point=B]
+segment A-B [length=4]
+segment A-C [length=2]
+target length C-D
+segment B-O
