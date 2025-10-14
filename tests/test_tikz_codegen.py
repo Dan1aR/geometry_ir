@@ -178,7 +178,7 @@ def test_line_tangent_at_draws_tangent_line() -> None:
 
     tikz = generate_tikz_code(program, coords)
 
-    assert "\\draw[aux] (-1, 0) -- (2, 0);" in tikz
+    assert "\\draw[carrier] (-1, 0) -- (2, 0);" in tikz
     assert "right angle=A--B--O" in tikz
 
 
