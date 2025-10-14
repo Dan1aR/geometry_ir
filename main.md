@@ -237,11 +237,83 @@ Let `v(P)` be the 2D variable of point `P`; `AB := v(B)−v(A)`, `×` = 2D cross
 * `line X-Y tangent ... at T` → `X,Y,T` collinear and `OT ⟂ XY`.
 * `diameter A-B to circle center O` → `O,A,B` collinear and `‖OA‖ = ‖OB‖`.
 
-### 6.5 Polygons & structural guards
+### #NEW 6.5 Polygons & structural guards
 
-* Declared polygon cycles contribute **carrier edges** and receive **edge floors** and **area floors** to prevent collapse (e.g., trapezoid → segment). Non-polygon carriers get lighter floors.
-* A **non-parallel margin** is added to trapezoid legs.
-* Orientation gauges prefer a declared base or a canonical edge; a unit-span gauge is used if needed.
+> This appendix **revises §6.5** (Polygons & structural guards) and **extends §18** (Seeding) to prevent “valid but squished” shapes (e.g., near-zero height parallelograms / trapezoids). All guards are **soft, scale-aware hinge residuals** that only act when a scene is under-constrained.
+* **Polygons & structural guards.** Every declared polygon receives:
+  (a) **edge floors** (to avoid zero-length sides) and **min-separation** hinges;
+  (b) an **area floor** (r_{\text{area}}) with (A_{\min}=\varepsilon_A\cdot L_{\max}^2);
+  (c) a **height floor** (r_{\text{height}}) as in **S.2** (triangles: all three with reduced weight; parallelograms: two independent heights; trapezoids: both bases);
+  (d) an **adjacent-side angle cushion** (r_{\text{angle}}) as in **S.3** at each vertex.
+  These guards are aggregated with a small **shape weight** (w_{\text{shape}}) so they never fight explicit metric constraints; they activate only to prevent needle-like degeneracies or near-parallel collapses in under-constrained scenes.
+
+---
+
+## S.1 Constants (defaults)
+
+```
+ε_h     = 0.06    # min altitude as a fraction of a nearby side length
+s_min   = 0.10    # min |sin(angle)| cushion between adjacent edges (~5.7°)
+ε_A     = 0.02    # area floor factor relative to longest side squared
+w_shape = 0.05    # small weight for all "shape" residuals (≪ 1.0 for hard facts)
+```
+
+Implement these in the residual builder’s configuration; expose them as tunables.
+
+---
+
+## S.2 Height floor (altitude hinge)
+
+For side (AB) and opposite vertex (C):
+[
+h(AB;C)=\frac{|(B{-}A)\times(C{-}A)|}{|B{-}A|},\quad
+h_{\min}=\varepsilon_h\cdot \max{|B{-}A|,|C{-}B|}.
+]
+Residual:
+[
+r_{\text{height}}(A,B,C)=\max!\big(0,;h_{\min}-h(AB;C)\big).
+]
+
+**Where to apply**
+
+* **Triangle (ABC)**: apply to *all three* altitudes with weight (w_{\text{shape}}/3) each (or to the smallest altitude once).
+* **Parallelogram (ABCD)**: apply to **two independent** heights, e.g. (h(AB;C)) and (h(BC;D)).
+* **Trapezoid (ABCD)**: apply to the **bases** (both heights from the non-base vertices).
+
+---
+
+## S.3 Adjacent-side angle cushion (non-parallel margin)
+
+Let unit directions (u=\frac{B-A}{|B-A|}), (v=\frac{C-B}{|C-B|}), and (s=|u\times v|=|\sin\angle ABC|).
+[
+r_{\text{angle}}(A,B,C)=\max!\big(0,; s_{\min}-s\big).
+]
+
+**Where to apply**
+At each **declared polygon** vertex (triangles, trapezoids, parallelograms, and special quads). For rectangles/squares the right-angle constraint dominates; the cushion rarely activates.
+
+---
+
+## S.4 Area floor (keep, but scale by longest edge)
+
+Let (L_{\max}=\max) side length of the polygon, (A=) polygon area.
+[
+A_{\min}=\varepsilon_A\cdot L_{\max}^2,\quad
+r_{\text{area}}=\max(0,;A_{\min}-A).
+]
+
+## S.6 Residual aggregation
+
+Add the guards where polygons are expanded in the desugared program:
+
+```
+residuals += w_shape * [
+  r_height(...), r_angle(...), r_area(...),  # per-object as applicable
+  ...
+]
+```
+
+Ensure these **do not** participate in DDC (§16) — they are not geometric facts, only aesthetic stabilizers.
 
 ---
 
@@ -1155,7 +1227,45 @@ For each `intersect(Path1, Path2) at P` (including **On∩On** syntheses):
 
 **Stage G — Safety pass.**
 
+# NEW
 * Enforce **min-separation** and polygon **edge/area floors** at the seed by spreading any colliding points slightly along existing directions (without moving `G1,G2`).
+
+> **Parallelogram seed (new).** If a `parallelogram A-B-C-D` has no numeric angle/length fixing its shape, seed a comfortable slant to avoid needle starts:
+>
+> ```python
+> # A=(0,0), B=(base,0) already placed by the layout
+> φ0 = math.radians(60)      # any 45°..75° is fine
+> s  = 0.6 * base            # initial guess for adjacent side length
+> C  = B + s * rot(φ0)       # rot around B
+> D  = A + (C - B)           # enforce AB ∥ CD and BC ∥ AD
+> ```
+>
+> The shape guards will keep a healthy height; if the problem demands a different angle, the solver slides there easily.
+
+---
+
+## S.8 Optional: parallel-line gap (for stacked parallels)
+
+For two declared **parallel** carriers (\ell_1,\ell_2) with representative span (L) (e.g., longer intercepted segment),
+[
+r_{\text{gap}}=\max!\big(0,;\varepsilon_{\parallel},L - \operatorname{dist}(\ell_1,\ell_2)\big),\quad \varepsilon_{\parallel}\approx 0.04,
+]
+weighted by (w_{\text{shape}}). This preserves a readable gap when many constructions place nearly coincident parallels.
+
+---
+
+## S.9 Tests (add to your suite)
+
+1. **Bare parallelogram**: with only `parallelogram A-B-C-D`, assert after solve:
+
+   * height ( \ge \varepsilon_h \cdot \max(|AB|,|BC|));
+   * ( |\sin\angle ABC| \ge s_{\min} ).
+2. **Trapezoid** (no numeric height): height of bases respects **S.2**; legs remain non-parallel (your existing margin + angle cushion).
+3. **Legitimate skinny**: add a case with `angle A-B-C [degrees=3]`; verify guards back off (final angle ≈ 3°; residuals small; guards contribute near-zero).
+
+---
+
+**Result:** These additions keep polygons readable (no “squished” shapes) without altering mathematically correct solutions. The guards are soft, scale-aware, and kick in only when needed; the new parallelogram seed speeds convergence and reduces wrong local minima.
 
 ### 18.3 Reseed policy
 
@@ -2057,4 +2167,3 @@ score(a) =
 * Ensure **no segment is re-drawn** in `fg` if already emitted in `main`.
 
 ---
-
