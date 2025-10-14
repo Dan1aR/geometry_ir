@@ -163,6 +163,26 @@ def test_point_on_segment_midpoint_mark_adds_ticks() -> None:
     assert "\\draw[aux, tick1] (M) -- (B);" in tikz
 
 
+def test_line_tangent_at_draws_tangent_line() -> None:
+    program = Program(
+        [
+            Stmt(
+                "line_tangent_at",
+                Span(1, 1),
+                {"edge": ("A", "B"), "center": "O", "at": "B"},
+                {"radius_point": "M"},
+            )
+        ]
+    )
+    coords = {"A": (0.0, 0.0), "B": (1.0, 0.0), "O": (0.0, 1.0), "M": (0.0, 1.0)}
+
+    tikz = generate_tikz_code(program, coords)
+
+    assert "\\draw[carrier] (A) -- (B);" in tikz
+    assert "\\draw[aux] (-1, 0) -- (2, 0);" in tikz
+    assert "right angle=A--B--O" in tikz
+
+
 def test_isosceles_triangle_adds_ticks_on_legs() -> None:
     program = Program(
         [
