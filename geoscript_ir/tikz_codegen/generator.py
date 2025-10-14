@@ -600,6 +600,8 @@ def _build_render_plan(
                 explicit=True,
             )
         elif kind == "sidelabel":
+            # Can't handle sidelabels nicely for now;
+            continue
             edge = _edge_from_data(data.get("edge"))
             text = data.get("text")
             if not edge or not isinstance(text, str):
