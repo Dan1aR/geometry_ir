@@ -155,6 +155,30 @@ def check_consistency(prog: Program) -> List[ConsistencyWarning]:
                         hotfixes=hotfixes,
                     )
                 )
+        elif stmt.kind == 'parallel_edges':
+            edges = stmt.data.get('edges', [])
+            missing_edges: List[Ray] = []
+            for edge in edges:
+                edge_norm = _normalize_edge(edge)
+                if edge_norm not in source_segments:
+                    missing_edges.append(edge_norm)
+            if missing_edges:
+                missing_edges = list(dict.fromkeys(missing_edges))
+                missing_text = ', '.join(_format_ray(edge) for edge in missing_edges)
+                hotfixes = [_segment_hotfix(edge, stmt.span) for edge in missing_edges]
+                message = (
+                    f"[line {stmt.span.line}, col {stmt.span.col}] {stmt.kind} "
+                    f"missing segments: {missing_text}"
+                )
+                warnings.append(
+                    ConsistencyWarning(
+                        line=stmt.span.line,
+                        col=stmt.span.col,
+                        kind=stmt.kind,
+                        message=message,
+                        hotfixes=hotfixes,
+                    )
+                )
         elif stmt.kind == 'equal_segments':
             segments = list(stmt.data['lhs']) + list(stmt.data['rhs'])
             missing_edges: List[Ray] = []
