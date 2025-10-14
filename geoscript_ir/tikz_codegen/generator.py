@@ -428,9 +428,11 @@ def _build_render_plan(
             center = data.get("center")
             at = data.get("at")
             if edge and isinstance(center, str) and isinstance(at, str):
-                aux_lines.append(
-                    (AuxPath("line", {"points": edge}), {"base": "carrier"})
-                )
+                key = _normalize_edge(edge)
+                carriers.setdefault(key, (edge[0], edge[1], {"source": kind}))
+                carrier_lookup[key] = (edge[0], edge[1])
+                record_edge_orientation(key, (edge[0], edge[1]))
+                aux_lines.append((AuxPath("line", {"points": edge}), {}))
                 special_points.add(at)
                 tangent_partner: Optional[str]
                 if at == edge[0]:
