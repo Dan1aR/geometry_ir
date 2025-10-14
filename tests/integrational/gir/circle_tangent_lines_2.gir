@@ -1,0 +1,23 @@
+# Даны окружность с центром $О$ радиуса $4,5$ см и точка $А$. Через точку $А$ проведены две касательные к окружности. Найдите угол между ними, если $ОА = 9$ см.
+# Success: True
+# Points:
+# O: (4.318800, 0.000000)
+# A: (4.364108, 10.000000)
+# K: (9.318851, 0.000000)
+# T1: (8.660254, 2.480381)
+# T2: (0.000000, 2.519619)
+# GeoScript (with hotfixes):
+scene "Tangents from A to circle center O"
+layout canonical=generic_auto scale=1.0
+points O, A, T1, T2, K
+rules [allow_auxiliary=true]
+circle center O radius-through K
+segment O-K [length=4.5]
+segment O-A [length=9]
+line A-T1 tangent to circle center O at T1 [choose=left radius_point=K ref=O-A]
+right-angle O-T1-A
+line A-T2 tangent to circle center O at T2 [choose=right radius_point=K ref=O-A]
+right-angle O-T2-A
+target angle T1-A-T2
+segment T1-O
+segment T2-O

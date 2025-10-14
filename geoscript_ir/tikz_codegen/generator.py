@@ -106,7 +106,7 @@ standalone_tpl = r"""\documentclass[border=2pt]{standalone}
 %% optional layers
 \pgfdeclarelayer{bg}\pgfdeclarelayer{fg}\pgfsetlayers{bg,main,fg}
 \begin{document}
-\begin{minipage}[t]{\linewidth} 
+\begin{minipage}[t]{\linewidth}
 %s
 
 \begin{adjustbox}{max width=\linewidth, max totalheight=\textheight, keepaspectratio}
