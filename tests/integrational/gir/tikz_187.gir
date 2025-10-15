@@ -1,0 +1,17 @@
+# Из концов диаметра $CD$ данной окружности проведены перпендикуляры $СС_1$ и $DD_1$ к касательной, не перпендикулярной к диаметру $CD$. Найдите $DD_1$, если $СС_1 = 11$ см, а $CD = 27$ см.
+scene "Circle diameter CD with perpendiculars to tangent"
+layout canonical=generic_auto scale=1.0
+rules [allow_auxiliary=true]
+points C, D, O, T, U, C1, D1
+segment C-D [length=27]
+midpoint O of C-D
+circle center O radius-through C
+point T on circle center O [choose=above radius_point=C ref=C-D]
+segment O-T
+segment T-U
+right-angle O-T-U
+line T-U
+foot C1 from C to T-U
+foot D1 from D to T-U
+segment C-C1 [length=11]
+target length D-D1

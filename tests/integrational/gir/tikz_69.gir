@@ -1,0 +1,29 @@
+# На стороне $CD$ параллелограмма $ABCD$ отмечена точка $Е$. Прямые $АЕ$ и $ВС$ пересекаются в точке $F$. Найдите: а) $EF$ и $FC$, если $DE = 8$ см, $ЕС = 4$ см, $ВС = 7$ см
+scene "Parallelogram ABCD with point E on CD"
+layout canonical=generic scale=1.0
+points A, B, C, D, E, F
+parallelogram A-B-C-D
+segment A-B
+segment C-D
+segment D-A
+parallel-edges (A-B ; C-D)
+parallel-edges (B-C ; D-A)
+equal-segments (A-B ; C-D)
+equal-segments (B-C ; D-A)
+point E on segment C-D
+segment B-C [length=7]
+segment D-E [length=8]
+segment E-C [length=4]
+line A-E
+line B-C
+intersect (line A-E) with (line B-C) at F
+point F on line A-E
+point F on line B-C
+target length E-F
+target length F-C
+segment A-B
+segment C-D
+segment D-A
+segment A-B
+segment C-D
+segment D-A

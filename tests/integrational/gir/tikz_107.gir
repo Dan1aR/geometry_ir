@@ -1,0 +1,13 @@
+# В треугольнике ABC, площадь которого равна $3\sqrt{3}$, угол $А$ острый, $AB = 4\sqrt{3}$, $AC = 3$. Найдите радиус окружности, описанной около треугольника.
+scene "Triangle ABC with area constraint for circumradius"
+layout canonical=triangle_ABC scale=1.0
+points A, B, C, H, O
+segment A-B [length=4*sqrt(3)]
+segment A-C [length=3]
+foot H from B to A-C
+segment B-H [length=2*sqrt(3)]
+point C on segment A-H
+intersect (perp-bisector of A-B) with (perp-bisector of A-C) at O
+point O on perp-bisector of A-B
+point O on perp-bisector of A-C
+target length O-A

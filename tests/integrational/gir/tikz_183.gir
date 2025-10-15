@@ -1,0 +1,21 @@
+# Высота прямоугольного треугольника, проведённая из вершины прямого угла, делит гипотенузу на отрезки, один из которых на $11$ см больше другого. Найдите гипотенузу, если катеты треугольника относятся как $6 : 5$.
+scene "Right triangle ABC with right angle at C, legs ratio 6:5, altitude CD divides hypotenuse AB into segments differing by 11 cm"
+layout canonical=triangle_ABC scale=1.0
+points A, B, C, D, F
+rules [allow_auxiliary=true]
+triangle A-B-C
+segment A-B
+segment B-C
+segment C-A
+right-angle A-C-B
+ratio (A-C : B-C = 6 : 5)
+foot D from C to A-B
+point F on segment A-D
+segment F-D [length=11]
+equal-segments (A-F ; D-B)
+target length A-B
+segment A-B
+segment B-C
+segment C-A
+segment A-F
+segment D-B

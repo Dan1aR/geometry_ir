@@ -1,0 +1,24 @@
+# Начертите прямую $l$. Отметьте точки $А$ и $В$, не лежащие на этой прямой, и точку $С$, принадлежащую ей. Постройте точки $А_1$, $В_1$, $С_1$, симметричные данным точкам относительно прямой $l$. С помощью масштабной линейки сравните длины отрезков $АВ$ и $А_1В_1$, $АС$ и $А_1С_1$, $ВС$ и $В_1С_1$
+scene "Reflection over a line"
+layout canonical=generic_auto scale=1.0
+points A, B, C, A1, B1, C1, P, Q
+line P-Q
+point C on line P-Q
+foot H_A from A to P-Q
+midpoint H_A of A-A1
+foot H_B from B to P-Q
+midpoint H_B of B-B1
+foot H_C from C to P-Q
+midpoint H_C of C-C1
+segment A-B
+segment A1-B1
+segment A-C
+segment A1-C1
+segment B-C
+segment B1-C1
+target length A-B
+target length A1-B1
+target length A-C
+target length A1-C1
+target length B-C
+target length B1-C1

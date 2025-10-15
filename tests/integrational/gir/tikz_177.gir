@@ -1,0 +1,32 @@
+# Найдите периметр параллелограмма, если его площадь равна $24 \ см^2$, а точка пересечения диагоналей удалена от сторон на $2$ см и $3$ см.
+scene "test"
+layout canonical=generic scale=1.0
+points A, B, C, D, O, H_AB, H_AD
+parallelogram A-B-C-D
+segment A-B
+segment B-C
+segment C-D
+segment D-A
+parallel-edges (A-B ; C-D)
+parallel-edges (B-C ; D-A)
+equal-segments (A-B ; C-D)
+equal-segments (B-C ; D-A)
+segment A-C
+segment B-D
+intersect (segment A-C) with (segment B-D) at O
+point O on segment A-C
+point O on segment B-D
+foot H_AB from O to A-B
+segment O-H_AB [length=2]
+foot H_AD from O to A-D
+segment O-H_AD [length=3]
+target length A-B
+target length A-D
+segment A-B
+segment B-C
+segment C-D
+segment D-A
+segment A-B
+segment C-D
+segment B-C
+segment D-A

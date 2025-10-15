@@ -1,0 +1,20 @@
+# Одна из диагоналей параллелограмма является его высотой. Найдите эту диагональ, если периметр параллелограмма равен $50$ см, а разность смежных сторон равна $1$ см.
+scene "Parallelogram with diagonal as height"
+layout canonical=generic scale=1.0
+points A, B, C, D
+segment A-B [length=12]
+segment A-D [length=13]
+parallelogram A-B-C-D
+segment B-C
+segment C-D
+parallel-edges (A-B ; C-D)
+parallel-edges (B-C ; D-A)
+equal-segments (A-B ; C-D)
+equal-segments (B-C ; D-A)
+segment A-C
+right-angle B-A-C
+target length A-C
+segment B-C
+segment C-D
+segment C-D
+segment B-C

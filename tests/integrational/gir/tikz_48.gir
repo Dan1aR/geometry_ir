@@ -1,0 +1,13 @@
+# Стороны $AB$ и $ВС$ треугольника $ABC$ равны соответственно $16$ см и $22$ см, а высота, проведённая к стороне $AB$, равна $11$ см. Найдите высоту, проведённую к стороне $ВС$.
+scene "Triangle with sides AB=16, BC=22, and height to AB=11"
+layout canonical=triangle_AB_horizontal scale=1.0
+points A, B, C, H_AB, H_BC
+triangle A-B-C
+segment C-A
+segment A-B [length=16]
+segment B-C [length=22]
+foot H_AB from C to A-B
+segment C-H_AB [length=11]
+foot H_BC from A to B-C
+target length A-H_BC
+segment C-A

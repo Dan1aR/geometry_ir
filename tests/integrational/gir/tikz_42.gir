@@ -1,0 +1,23 @@
+# Периметр параллелограмма $ABCD$ равен $46$ см, $AB = 14$ см. Какую сторону параллелограмма пересекает биссектриса угла А? Найдите отрезки, которые образуются при этом пересечении.
+scene "test"
+layout canonical=generic scale=1.0
+points A, B, C, D, N
+parallelogram A-B-C-D
+segment B-C
+segment C-D
+parallel-edges (A-B ; C-D)
+parallel-edges (B-C ; D-A)
+equal-segments (A-B ; C-D)
+equal-segments (B-C ; D-A)
+segment A-B [length=14]
+segment D-A [length=9]
+intersect (angle-bisector B-A-D) with (segment C-D) at N
+point N on angle-bisector B-A-D
+point N on segment C-D
+segment A-N
+target length C-N
+target length N-D
+segment B-C
+segment C-D
+segment C-D
+segment B-C

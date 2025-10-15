@@ -1,0 +1,10 @@
+# Радиус окружности с центром $О$ равен $16$. Найдите хорду $AB$, если: в) $\angle AOB = 180^\circ$.
+scene "Circle with central angle 180Â°"
+layout canonical=generic_auto scale=1.0
+points O, A, B
+segment O-A [length=16]
+circle center O radius-through A
+intersect (line A-O) with (circle center O) at B [anchor=O choose=other]
+point B on line A-O
+point B on circle center O [radius_point=A]
+target length A-B
