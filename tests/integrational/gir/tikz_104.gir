@@ -1,0 +1,18 @@
+# Найдите стороны треугольника $ABC$, если $\angle A = 45^\circ$, $\angle C = 30^\circ$, а высота $AD$ равна $3$ м.
+scene "Triangle ABC with angles 45Â° and 30Â°, height 3m"
+layout canonical=triangle_ABC scale=1.0
+points A, B, C, D
+triangle A-B-C
+segment A-B
+segment B-C
+segment C-A
+angle B-A-C [degrees=45]
+angle A-C-B [degrees=30]
+foot D from A to B-C
+segment A-D [length=3]
+target length A-B
+target length B-C
+target length A-C
+segment A-B
+segment B-C
+segment C-A

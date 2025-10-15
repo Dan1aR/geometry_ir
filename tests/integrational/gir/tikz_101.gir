@@ -1,0 +1,32 @@
+# Сторона $AB$ треугольника $ABC$ разделена на четыре равные части и через точки деления проведены прямые, параллельные стороне $ВС$. Стороны $AB$ и $АС$ треугольника отсекают на этих параллельных прямых три отрезка, наименьший из которых равен $3,4$ см. Найдите два других отрезка.
+scene "Triangle ABC with AB divided into four equal parts and parallels to BC"
+layout canonical=triangle_AB_horizontal scale=1.0
+points A, B, C, D, E, F, D1, E1, F1
+triangle A-B-C
+segment A-B
+segment B-C
+segment C-A
+point D on segment A-B
+point E on segment A-B
+point F on segment A-B
+ratio (A-D : D-B = 1 : 3)
+ratio (A-E : E-B = 1 : 1)
+ratio (A-F : F-B = 3 : 1)
+parallel through D to B-C
+parallel through E to B-C
+parallel through F to B-C
+intersect (parallel through D to B-C) with (segment A-C) at D1 [anchor=A choose=near]
+point D1 on parallel through D to B-C
+point D1 on segment A-C
+intersect (parallel through E to B-C) with (segment A-C) at E1 [anchor=A choose=near]
+point E1 on parallel through E to B-C
+point E1 on segment A-C
+intersect (parallel through F to B-C) with (segment A-C) at F1 [anchor=A choose=near]
+point F1 on parallel through F to B-C
+point F1 on segment A-C
+segment D-D1 [length=3.4]
+target length E-E1
+target length F-F1
+segment A-B
+segment B-C
+segment C-A

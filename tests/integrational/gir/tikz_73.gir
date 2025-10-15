@@ -1,0 +1,18 @@
+# Диагонали трапеции $ABCD$ с основаниями $AB$ и $CD$ пересекаются в точке $О$. Найдите: в) $АО$, если $AB = 9,6$ дм, $DC = 24$ см, $АС = 15$ см.
+scene "Trapezoid ABCD with diagonals intersecting at O"
+layout canonical=generic_auto scale=1.0
+points A, B, C, D, O
+trapezoid A-B-C-D [bases=A-B]
+segment B-C
+segment D-A
+parallel-edges (A-B ; C-D)
+segment A-B [length=96]
+segment C-D [length=24]
+segment A-C [length=15]
+segment B-D
+intersect (segment A-C) with (segment B-D) at O
+point O on segment A-C
+point O on segment B-D
+target length A-O
+segment B-C
+segment D-A
