@@ -12,7 +12,7 @@ Drop-in replacement:
 
 import copy
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from itertools import combinations
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple, TypedDict
@@ -23,7 +23,19 @@ import numbers
 import numpy as np
 from scipy.optimize import least_squares
 
-from .seeders import GraphMDSSeeder, SobolSeeder
+from .seeders import GraphMDSSeeder, SobolSeeder, align_gauge, pack_full_vector
+
+from .projections import (
+    ProjectionConstraint,
+    pocs_warm_start,
+    project_angle,
+    project_concyclic,
+    project_equal_segments,
+    project_parallel,
+    project_point_to_circle,
+    project_point_to_line,
+    project_ratio,
+)
 
 from .ast import Program, Stmt
 
@@ -3103,6 +3115,360 @@ def translate(program: Program) -> Model:
     return compile_with_plan(program, plan)
 
 
+def _projection_constraint_from_stmt(stmt: Stmt) -> List[ProjectionConstraint]:
+    constraints: List[ProjectionConstraint] = []
+    if stmt.kind == "point_on":
+        point = stmt.data.get("point")
+        path = stmt.data.get("path")
+        if not (isinstance(point, str) and isinstance(path, (list, tuple)) and len(path) == 2):
+            return constraints
+        path_kind, payload = path
+        if path_kind in {"line", "segment", "ray"}:
+            try:
+                edge = _as_edge(payload)
+            except ValueError:
+                return constraints
+
+            clamp = "segment" if path_kind == "segment" else "ray" if path_kind == "ray" else None
+
+            def projector(coords: Mapping[PointName, np.ndarray]) -> Dict[PointName, np.ndarray]:
+                try:
+                    anchor = coords[edge[0]]
+                    direction = coords[edge[1]] - anchor
+                    current = coords[point]
+                except KeyError:
+                    return {}
+                target = project_point_to_line(current, anchor, direction, clamp=clamp)
+                return {point: target}
+
+            constraints.append(
+                ProjectionConstraint(
+                    name=f"point_on:{point}",
+                    kind=f"point_on_{path_kind}",
+                    points=(point, edge[0], edge[1]),
+                    projector=projector,
+                )
+            )
+            return constraints
+
+        if path_kind == "circle" and isinstance(payload, str):
+            radius = stmt.opts.get("radius") or stmt.opts.get("distance")
+            radius_point = stmt.opts.get("radius_point")
+
+            def projector(coords: Mapping[PointName, np.ndarray]) -> Dict[PointName, np.ndarray]:
+                try:
+                    center = coords[payload]
+                    current = coords[point]
+                except KeyError:
+                    return {}
+                rad_val: Optional[float] = None
+                if isinstance(radius, numbers.Real):
+                    rad_val = float(radius)
+                elif isinstance(radius_point, str) and radius_point in coords:
+                    rad_val = float(np.linalg.norm(coords[radius_point] - center))
+                if rad_val is None or rad_val <= 1e-9:
+                    return {}
+                target = project_point_to_circle(current, center, rad_val)
+                return {point: target}
+
+            constraints.append(
+                ProjectionConstraint(
+                    name=f"point_on_circle:{point}",
+                    kind="point_on_circle",
+                    points=(point, payload),
+                    projector=projector,
+                )
+            )
+            return constraints
+
+    if stmt.kind in {"foot", "perpendicular_at"}:
+        foot = stmt.data.get("foot")
+        vertex = stmt.data.get("from") or stmt.data.get("at")
+        edge_raw = stmt.data.get("edge") or stmt.data.get("to")
+        if not (isinstance(foot, str) and isinstance(vertex, str) and edge_raw):
+            return constraints
+        try:
+            edge = _as_edge(edge_raw)
+        except ValueError:
+            return constraints
+        clamp = None if stmt.opts.get("allow_extension") else "segment"
+
+        def projector(coords: Mapping[PointName, np.ndarray]) -> Dict[PointName, np.ndarray]:
+            try:
+                source = coords[vertex]
+                anchor = coords[edge[0]]
+                direction = coords[edge[1]] - anchor
+            except KeyError:
+                return {}
+            target = project_point_to_line(source, anchor, direction, clamp=clamp)
+            return {foot: target}
+
+        constraints.append(
+            ProjectionConstraint(
+                name=f"foot:{vertex}->{foot}",
+                kind="foot",
+                points=(foot, vertex, edge[0], edge[1]),
+                projector=projector,
+            )
+        )
+        return constraints
+
+    if stmt.kind == "parallel_edges":
+        edges = stmt.data.get("edges", [])
+        if not isinstance(edges, (list, tuple)) or len(edges) < 2:
+            return constraints
+        try:
+            parsed = [_as_edge(e) for e in edges]
+        except ValueError:
+            return constraints
+        ref = parsed[0]
+        others = parsed[1:]
+        involved: Tuple[PointName, ...] = tuple(sorted({p for edge in parsed for p in edge}))
+
+        def projector(coords: Mapping[PointName, np.ndarray]) -> Dict[PointName, np.ndarray]:
+            try:
+                ref_vec = coords[ref[1]] - coords[ref[0]]
+            except KeyError:
+                return {}
+            updates: Dict[PointName, np.ndarray] = {}
+            for edge in others:
+                if edge[0] not in coords or edge[1] not in coords:
+                    continue
+                anchor = coords[edge[0]]
+                vec = coords[edge[1]] - anchor
+                target_vec = project_parallel(ref_vec, vec)
+                updates[edge[1]] = anchor + target_vec
+            return updates
+
+        constraints.append(
+            ProjectionConstraint(
+                name="parallel_edges",
+                kind="parallel",
+                points=involved,
+                projector=projector,
+            )
+        )
+        return constraints
+
+    if stmt.kind == "right_angle":
+        pts = stmt.data.get("points")
+        if not (isinstance(pts, (list, tuple)) and len(pts) == 3):
+            return constraints
+        a, at, c = pts
+
+        def projector(coords: Mapping[PointName, np.ndarray]) -> Dict[PointName, np.ndarray]:
+            if at not in coords or a not in coords or c not in coords:
+                return {}
+            vertex = coords[at]
+            vec_a = coords[a]
+            vec_c = coords[c]
+            len_a = float(np.linalg.norm(vec_a - vertex))
+            len_c = float(np.linalg.norm(vec_c - vertex))
+            target = project_angle(vertex, vec_a, vec_c, math.pi / 2.0)
+            if len_a <= len_c:
+                return {a: target}
+            return {c: target}
+
+        constraints.append(
+            ProjectionConstraint(
+                name="right_angle",
+                kind="angle",
+                points=(a, at, c),
+                projector=projector,
+            )
+        )
+        return constraints
+
+    if stmt.kind == "angle":
+        pts = stmt.data.get("points")
+        theta = stmt.opts.get("measure") or stmt.opts.get("degrees")
+        if not (isinstance(pts, (list, tuple)) and len(pts) == 3 and isinstance(theta, numbers.Real)):
+            return constraints
+        a, at, c = pts
+        theta_rad = math.radians(float(theta))
+
+        def projector(coords: Mapping[PointName, np.ndarray]) -> Dict[PointName, np.ndarray]:
+            if at not in coords or a not in coords or c not in coords:
+                return {}
+            vertex = coords[at]
+            vec_a = coords[a]
+            vec_c = coords[c]
+            len_a = float(np.linalg.norm(vec_a - vertex))
+            len_c = float(np.linalg.norm(vec_c - vertex))
+            target = project_angle(vertex, vec_a, vec_c, theta_rad)
+            if len_a <= len_c:
+                return {a: target}
+            return {c: target}
+
+        constraints.append(
+            ProjectionConstraint(
+                name=f"angle:{at}",
+                kind="angle",
+                points=(a, at, c),
+                projector=projector,
+            )
+        )
+        return constraints
+
+    if stmt.kind == "concyclic":
+        pts = stmt.data.get("points", [])
+        if not isinstance(pts, (list, tuple)) or len(pts) < 4:
+            return constraints
+        names = tuple(str(p) for p in pts)
+
+        def projector(coords: Mapping[PointName, np.ndarray]) -> Dict[PointName, np.ndarray]:
+            if any(name not in coords for name in names):
+                return {}
+            center, radius = project_concyclic([coords[name] for name in names])
+            if radius <= 1e-9:
+                return {}
+            updates: Dict[PointName, np.ndarray] = {}
+            for name in names:
+                vec = coords[name] - center
+                norm = float(np.linalg.norm(vec))
+                if norm <= 1e-12:
+                    continue
+                updates[name] = center + vec * (radius / norm)
+            return updates
+
+        constraints.append(
+            ProjectionConstraint(
+                name="concyclic",
+                kind="concyclic",
+                points=names,
+                projector=projector,
+            )
+        )
+        return constraints
+
+    if stmt.kind == "ratio":
+        edges = stmt.data.get("edges", [])
+        ratio = stmt.data.get("ratio")
+        if (
+            not isinstance(edges, (list, tuple))
+            or len(edges) != 2
+            or not isinstance(ratio, (list, tuple))
+            or len(ratio) != 2
+        ):
+            return constraints
+        try:
+            edge_a = _as_edge(edges[0])
+            edge_b = _as_edge(edges[1])
+        except ValueError:
+            return constraints
+        num_a, num_b = ratio
+        if num_a <= 0 or num_b <= 0:
+            return constraints
+
+        def projector(coords: Mapping[PointName, np.ndarray]) -> Dict[PointName, np.ndarray]:
+            if any(name not in coords for name in edge_a + edge_b):
+                return {}
+            anchor_a = coords[edge_a[0]]
+            vec_a = coords[edge_a[1]] - anchor_a
+            len_a = float(np.linalg.norm(vec_a))
+            if len_a <= 1e-9:
+                return {}
+            target_len = len_a * float(num_b) / float(num_a)
+            anchor_b = coords[edge_b[0]]
+            vec_b = coords[edge_b[1]] - anchor_b
+            if float(np.linalg.norm(vec_b)) <= 1e-9:
+                return {}
+            target = project_ratio(anchor_b, vec_b, target_len)
+            return {edge_b[1]: target}
+
+        constraints.append(
+            ProjectionConstraint(
+                name="ratio",
+                kind="ratio",
+                points=(edge_a[0], edge_a[1], edge_b[0], edge_b[1]),
+                projector=projector,
+            )
+        )
+        return constraints
+
+    if stmt.kind == "equal_segments":
+        segments = stmt.data.get("lhs", []) + stmt.data.get("rhs", [])
+        if len(segments) < 2:
+            return constraints
+        try:
+            edges = [_as_edge(e) for e in segments]
+        except ValueError:
+            return constraints
+        names = tuple(sorted({p for edge in edges for p in edge}))
+
+        def projector(coords: Mapping[PointName, np.ndarray]) -> Dict[PointName, np.ndarray]:
+            lengths: List[float] = []
+            for edge in edges:
+                if edge[0] not in coords or edge[1] not in coords:
+                    return {}
+                lengths.append(float(np.linalg.norm(coords[edge[1]] - coords[edge[0]])))
+            valid = [length for length in lengths if length > 1e-9]
+            if not valid:
+                return {}
+            target_len = float(np.mean(valid))
+            updates: Dict[PointName, np.ndarray] = {}
+            for edge in edges:
+                anchor = coords[edge[0]]
+                vec = coords[edge[1]] - anchor
+                if float(np.linalg.norm(vec)) <= 1e-9:
+                    continue
+                updates[edge[1]] = project_equal_segments(anchor, vec, target_len)
+            return updates
+
+        constraints.append(
+            ProjectionConstraint(
+                name="equal_segments",
+                kind="equal_segments",
+                points=names,
+                projector=projector,
+            )
+        )
+        return constraints
+
+    return constraints
+
+
+def _build_projection_constraints(model: Model) -> List[ProjectionConstraint]:
+    constraints: List[ProjectionConstraint] = []
+    seen: Set[int] = set()
+    for spec in model.residuals:
+        stmt = spec.source
+        if stmt is None:
+            continue
+        key = id(stmt)
+        if key in seen:
+            continue
+        seen.add(key)
+        constraints.extend(_projection_constraint_from_stmt(stmt))
+    return constraints
+
+
+def _apply_projection_warm_start(model: Model, guess: np.ndarray) -> Tuple[np.ndarray, Dict[str, object]]:
+    constraints = _build_projection_constraints(model)
+    if not constraints:
+        return guess, {"enabled": False}
+
+    coords = _full_vector_to_point_coords(model, guess)
+    step = 0.45
+    sweeps = 3
+    warmed, events = pocs_warm_start(coords, constraints, step=step, sweeps=sweeps)
+    warmed = align_gauge(warmed, model)
+    derived, guard_failures = _evaluate_plan_coords(model, dict(warmed))
+    if derived:
+        warmed.update(derived)
+    warmed = align_gauge(warmed, model)
+    updated = pack_full_vector(model, warmed)
+    info: Dict[str, object] = {
+        "enabled": True,
+        "step": step,
+        "sweeps": sweeps,
+        "event_log": events,
+        "guard_failures": [(str(name), str(reason)) for name, reason in guard_failures],
+        "constraint_count": len(constraints),
+    }
+    return updated, info
+
+
 def _record_seed_baseline(model: Model, guess: np.ndarray, attempt: int) -> None:
     baseline = getattr(model, "seed_baseline", None)
     if attempt == 0 or baseline is None:
@@ -3144,6 +3510,36 @@ def initial_guess(
     for seeder in order:
         result = seeder.seed(model, rng, attempt, plan=plan)
         if result is not None:
+            result, pocs_info = _apply_projection_warm_start(model, result)
+            pocs_debug: Dict[str, object] = {"enabled": False}
+            if pocs_info.get("enabled"):
+                events: List[Dict[str, object]] = list(pocs_info.get("event_log", []))
+                counts: Counter[str] = Counter()
+                deltas: Dict[str, float] = defaultdict(float)
+                for event in events:
+                    kind = str(event.get("kind", "unknown"))
+                    counts[kind] += 1
+                    delta_map = event.get("deltas", {})
+                    if isinstance(delta_map, Mapping):
+                        for value in delta_map.values():
+                            try:
+                                deltas[kind] += float(value)
+                            except (TypeError, ValueError):
+                                continue
+                pocs_debug = {
+                    "enabled": True,
+                    "step": pocs_info.get("step"),
+                    "sweeps": pocs_info.get("sweeps"),
+                    "event_count": len(events),
+                    "per_kind": {kind: {"count": counts[kind], "delta": deltas.get(kind, 0.0)} for kind in counts},
+                    "constraint_count": pocs_info.get("constraint_count", 0),
+                }
+                guard_failures = pocs_info.get("guard_failures") or []
+                if guard_failures:
+                    pocs_debug["guard_failures"] = guard_failures
+                if events:
+                    pocs_debug["events_sample"] = events[: min(5, len(events))]
+            model.seed_debug["pocs"] = pocs_debug
             _record_seed_baseline(model, result, attempt)
             model.seed_debug["jitter_history"] = list(model.seed_jitter_history)
             return result

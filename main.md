@@ -1232,6 +1232,12 @@ For each `intersect(Path1, Path2) at P` (including **On∩On** syntheses):
 # NEW
 * Enforce **min-separation** and polygon **edge/area floors** at the seed by spreading any colliding points slightly along existing directions (without moving `G1,G2`). During the very first solve attempt we smooth these guard residuals (`σ ≈ 0.25·min_sep`) so inequality walls do not dominate before other constraints engage.
 
+**Stage H — Projection warm-start (POCS).**
+
+* Build typed projection operators for every supported constraint (`point_on` carriers, `foot`/`perpendicular_at`, `parallel_edges`, `angle`/`right-angle`, `ratio`, `equal_segments`, `concyclic`, circle incidences). Each operator touches only the points involved in that statement.
+* Run 3 alternating-projection sweeps with a conservative blend (`α≈0.45`). Updates are capped to the affected points, then the model realigns gauges and re-evaluates deterministic derivations so derived points stay coherent.
+* Diagnostics capture how many times each constraint kind fired, the cumulative displacement magnitudes, and any guard failures observed during the warm-start so downstream logging pinpoints stubborn facts.
+
 > **Parallelogram seed (new).** If a `parallelogram A-B-C-D` has no numeric angle/length fixing its shape, seed a comfortable slant to avoid needle starts:
 >
 > ```python
