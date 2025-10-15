@@ -21,7 +21,7 @@ import math
 import numbers
 
 import numpy as np
-from scipy.optimize import least_squares
+from scipy.optimize import least_squares, minimize
 
 from .seeders import GraphMDSSeeder, SobolSeeder, align_gauge, pack_full_vector
 
@@ -1217,6 +1217,7 @@ class LossModeOptions:
     adam_lr: float = 0.05
     adam_steps: int = 800
     adam_clip: float = 10.0
+    adam_fd_eps: float = 1e-6
     lbfgs_maxiter: int = 500
     lbfgs_tol: float = 1e-9
     lm_trf_max_nfev: int = 5000
@@ -1247,6 +1248,114 @@ def _resolve_loss_schedule(model: Model, loss_opts: LossModeOptions) -> Tuple[Li
     capped_restarts = [min(loss_opts.multistart_cap, max(1, int(r))) for r in restarts]
 
     return sigmas, robusts, stages, capped_restarts
+
+
+def _scalar_loss_numpy(model: Model, x_vars: np.ndarray, *, sigma: float, robust: str) -> float:
+    """Evaluate the scalar robust loss for the given variable vector."""
+
+    vals, _, _ = _evaluate(model, x_vars, sigma=sigma)
+    return _robust_scalar(vals, robust)
+
+
+def _adam_minimize_with_fd(
+    model: Model,
+    x0: np.ndarray,
+    *,
+    sigma: float,
+    robust: str,
+    loss_opts: LossModeOptions,
+) -> Tuple[np.ndarray, float]:
+    """Run torch.optim.Adam using central finite-difference gradients."""
+
+    try:
+        import torch
+    except Exception as exc:  # pragma: no cover - runtime guard
+        raise ImportError("torch is required for loss-mode Adam") from exc
+
+    dtype = torch.float64
+    params = torch.nn.Parameter(torch.from_numpy(np.asarray(x0, dtype=np.float64)))
+    optimizer = torch.optim.Adam([params], lr=float(loss_opts.adam_lr))
+
+    best_loss = float("inf")
+    best_params = params.detach().clone()
+    base_eps = float(loss_opts.adam_fd_eps)
+    patience = max(20, min(80, int(loss_opts.adam_steps) // 10 or 1))
+    since_best = 0
+
+    for step in range(int(loss_opts.adam_steps)):
+        with torch.no_grad():
+            x_np = params.detach().cpu().numpy()
+
+        current_loss = _scalar_loss_numpy(model, x_np, sigma=sigma, robust=robust)
+
+        grad = np.zeros_like(x_np)
+        for idx, value in enumerate(x_np):
+            h = base_eps * max(1.0, abs(value))
+            if h <= 0.0:
+                h = base_eps
+            x_np[idx] = value + h
+            loss_plus = _scalar_loss_numpy(model, x_np, sigma=sigma, robust=robust)
+            x_np[idx] = value - h
+            loss_minus = _scalar_loss_numpy(model, x_np, sigma=sigma, robust=robust)
+            x_np[idx] = value
+            grad[idx] = (loss_plus - loss_minus) / (2.0 * h)
+
+        with torch.no_grad():
+            grad_tensor = torch.from_numpy(grad).to(dtype=dtype, device=params.device)
+            if loss_opts.adam_clip > 0.0:
+                grad_norm = float(torch.linalg.norm(grad_tensor))
+                if math.isfinite(grad_norm) and grad_norm > loss_opts.adam_clip:
+                    grad_tensor *= float(loss_opts.adam_clip) / grad_norm
+            params.grad = grad_tensor
+            optimizer.step()
+
+        if current_loss < best_loss:
+            best_loss = current_loss
+            best_params = params.detach().clone()
+            since_best = 0
+        else:
+            since_best += 1
+
+        if since_best > patience and best_loss <= current_loss * (1.0 + loss_opts.early_stop_factor):
+            break
+
+    return best_params.detach().cpu().numpy(), float(best_loss)
+
+
+def _lbfgs_minimize(
+    model: Model,
+    x0: np.ndarray,
+    *,
+    sigma: float,
+    robust: str,
+    loss_opts: LossModeOptions,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Run scipy.optimize.minimize with L-BFGS-B on the scalar robust loss."""
+
+    def objective(vec: np.ndarray) -> float:
+        return _scalar_loss_numpy(model, vec, sigma=sigma, robust=robust)
+
+    result = minimize(
+        objective,
+        x0,
+        method="L-BFGS-B",
+        options={
+            "maxiter": int(loss_opts.lbfgs_maxiter),
+            "ftol": float(loss_opts.lbfgs_tol),
+        },
+    )
+
+    if hasattr(result, "x"):
+        vars_solution = np.asarray(result.x, dtype=float)
+    else:  # pragma: no cover - defensive fallback
+        vars_solution = np.asarray(x0, dtype=float)
+
+    info: Dict[str, Any] = {
+        "success": bool(getattr(result, "success", True)),
+        "nit": int(getattr(result, "nit", 0)) if hasattr(result, "nit") else 0,
+        "message": getattr(result, "message", None),
+    }
+    return vars_solution, info
 
 
 @dataclass
@@ -1490,6 +1599,7 @@ def _solve_with_loss_mode(
     incumbent: Optional[
         Tuple[float, np.ndarray, List[Tuple[ResidualSpec, np.ndarray]], List[Tuple[PointName, str]], float, bool]
     ] = None
+    incumbent_score: Optional[Tuple[int, float, float]] = None
 
     seed_attempt = 0
 
@@ -1512,43 +1622,82 @@ def _solve_with_loss_mode(
                 stage_loss = 0.0
                 converged_stage = True
             else:
-                def fun(vec: np.ndarray) -> np.ndarray:
-                    vals, _, _ = _evaluate(model, vec, sigma=sigma)
-                    return vals
+                vars_solution = x0
+                stage_vals = np.zeros(0, dtype=float)
+                stage_loss = float("inf")
+                converged_stage = False
+                run_scipy = True
 
-                method = "lm" if stage == "lm" else options.method
-                if stage == "lm" and robust != "linear":
-                    robust = "linear"
-                max_nfev = loss_opts.lm_trf_max_nfev if stage == "lm" else options.max_nfev
-                result = least_squares(
-                    fun,
-                    x0,
-                    method=method,
-                    loss=robust,
-                    max_nfev=max_nfev,
-                    ftol=options.tol,
-                    xtol=options.tol,
-                    gtol=options.tol,
-                )
-                vars_solution = result.x
-                stage_vals, _, _ = _evaluate(model, vars_solution, sigma=sigma)
-                stage_loss = _robust_scalar(stage_vals, robust)
-                converged_stage = bool(getattr(result, "success", True))
+                if stage == "adam" and loss_opts.autodiff == "torch":
+                    try:
+                        best_vars, _ = _adam_minimize_with_fd(
+                            model,
+                            x0,
+                            sigma=sigma,
+                            robust=robust,
+                            loss_opts=loss_opts,
+                        )
+                        vars_solution = best_vars
+                        stage_vals, _, _ = _evaluate(model, vars_solution, sigma=sigma)
+                        stage_loss = _robust_scalar(stage_vals, robust)
+                        converged_stage = True
+                        run_scipy = False
+                    except Exception as exc:  # pragma: no cover - runtime guard
+                        warnings.append(
+                            f"Adam stage failed ({type(exc).__name__}); falling back to SciPy: {exc}"
+                        )
+
+                if run_scipy and stage == "lbfgs":
+                    vars_solution, info = _lbfgs_minimize(
+                        model,
+                        x0,
+                        sigma=sigma,
+                        robust=robust,
+                        loss_opts=loss_opts,
+                    )
+                    stage_vals, _, _ = _evaluate(model, vars_solution, sigma=sigma)
+                    stage_loss = _robust_scalar(stage_vals, robust)
+                    converged_stage = bool(info.get("success", True))
+                    if not converged_stage and info.get("message"):
+                        warnings.append(f"L-BFGS stage warning: {info['message']}")
+                    run_scipy = not converged_stage
+
+                if run_scipy:
+                    def fun(vec: np.ndarray) -> np.ndarray:
+                        vals, _, _ = _evaluate(model, vec, sigma=sigma)
+                        return vals
+
+                    method = "lm" if stage == "lm" else options.method
+                    local_robust = robust
+                    if stage == "lm" and local_robust != "linear":
+                        local_robust = "linear"
+                    max_nfev = loss_opts.lm_trf_max_nfev if stage == "lm" else options.max_nfev
+                    initial_vec = np.asarray(vars_solution, dtype=float)
+                    result = least_squares(
+                        fun,
+                        initial_vec,
+                        method=method,
+                        loss=local_robust,
+                        max_nfev=max_nfev,
+                        ftol=options.tol,
+                        xtol=options.tol,
+                        gtol=options.tol,
+                    )
+                    vars_solution = result.x
+                    stage_vals, _, _ = _evaluate(model, vars_solution, sigma=sigma)
+                    stage_loss = _robust_scalar(stage_vals, local_robust)
+                    converged_stage = bool(getattr(result, "success", True))
 
             final_vals, breakdown, guard_failures = _evaluate(model, vars_solution, sigma=0.0)
             max_res = float(np.max(np.abs(final_vals))) if final_vals.size else 0.0
             converged = converged_stage and max_res <= options.tol
 
-            update = False
-            if incumbent is None:
-                update = True
-            else:
-                incumbent_loss = incumbent[0]
-                if stage_loss + loss_opts.early_stop_factor * max(1.0, incumbent_loss) < incumbent_loss:
-                    update = True
+            final_obj = _scalar_loss_numpy(model, vars_solution, sigma=0.0, robust="linear")
+            score_tuple = (0 if max_res <= options.tol else 1, max_res, final_obj)
 
-            if update:
+            if incumbent_score is None or score_tuple < incumbent_score:
                 incumbent = (stage_loss, vars_solution, breakdown, guard_failures, max_res, converged)
+                incumbent_score = score_tuple
 
     if incumbent is None:
         raise RuntimeError("loss-mode solver did not produce a solution")
