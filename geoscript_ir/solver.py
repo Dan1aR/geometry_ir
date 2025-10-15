@@ -10,6 +10,7 @@ Drop-in replacement:
 - Unit-span gauge on orientation edge when no numeric scale is present
 """
 
+import copy
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -1084,6 +1085,38 @@ class ResidualSpec:
 
 
 @dataclass
+class ResidualBuilderConfig:
+    """Tunables for residual construction and polygon shape guards."""
+
+    min_separation_scale: float = 1e-1
+    edge_floor_scale: float = 1e-1
+    carrier_edge_floor_scale: float = 2e-2
+    trapezoid_leg_margin: float = math.sin(math.radians(1e-1))
+    shape_height_epsilon: float = 0.06
+    shape_angle_s_min: float = 0.10
+    shape_area_epsilon: float = 0.02
+    shape_weight: float = 0.05
+
+
+_RESIDUAL_CONFIG = ResidualBuilderConfig()
+
+
+def get_residual_builder_config() -> ResidualBuilderConfig:
+    """Return a copy of the residual-builder configuration."""
+
+    return copy.deepcopy(_RESIDUAL_CONFIG)
+
+
+def set_residual_builder_config(config: ResidualBuilderConfig) -> None:
+    """Replace the residual-builder configuration."""
+
+    if not isinstance(config, ResidualBuilderConfig):
+        raise TypeError("config must be a ResidualBuilderConfig instance")
+    global _RESIDUAL_CONFIG
+    _RESIDUAL_CONFIG = copy.deepcopy(config)
+
+
+@dataclass
 class Model:
     points: List[PointName]
     index: Dict[PointName, int]
@@ -1100,6 +1133,8 @@ class Model:
     layout_scale: Optional[float] = None
     gauge_anchor: Optional[str] = None
     primary_gauge_edge: Optional[Edge] = None
+    polygons: List[Dict[str, object]] = field(default_factory=list)
+    residual_config: ResidualBuilderConfig = field(default_factory=ResidualBuilderConfig)
 
 
 @dataclass
@@ -1299,24 +1334,6 @@ def _pick_triangle_base_edge(
 
 _TURN_MARGIN = math.sin(math.radians(1.0))
 _TURN_SIGN_MARGIN = 0.5 * (_TURN_MARGIN ** 2)
-_MIN_SEP_SCALE = 1e-1         # was 1e-3 → much stronger
-_EDGE_FLOOR_SCALE = 1e-1      # per-edge floor on polygon edges
-_CARRIER_EDGE_FLOOR = 2e-2    # light floor for non-polygon carrier edges
-# Area guards should be strong enough to avoid near-degenerate solutions but
-# still be compatible with the minimum edge floors we enforce below.  The
-# tightest configuration allowed by the edge floors is roughly a base/height of
-# ``_EDGE_FLOOR_SCALE * scene_scale`` which yields an area on the order of
-# ``0.5 * _EDGE_FLOOR_SCALE ** 2``.  A moderately sized floor keeps polygons from
-# collapsing without overwhelming legitimate configurations (e.g. the circle and
-# trapezoid examples in the repository).
-_AREA_MIN_SCALE = 2e-2
-# Likewise the non-parallel margin for trapezoid legs needs to be permissive
-# enough for nearly-parallel but valid configurations while still preventing
-# truly degenerate layouts.  Using a tiny angular margin keeps the guard
-# effective (it still rejects perfectly parallel legs) without overwhelming the
-# actual geometric constraints.  The previous margin of half a degree was large
-# enough to conflict with legitimate isosceles trapezoids.
-_TAU_NONPAR = math.sin(math.radians(1e-1))
 
 
 def _safe_norm(vec: np.ndarray) -> float:
@@ -1356,29 +1373,6 @@ def _quadrilateral_convexity_residuals(edges: Sequence[np.ndarray]) -> np.ndarra
     return np.asarray(residuals, dtype=float)
 
 
-def _build_turn_margin(ids: Sequence[PointName], index: Dict[PointName, int]) -> ResidualSpec:
-    unique = [pid for pid in ids]
-    if len(unique) < 3:
-        raise ValueError("turn margin requires at least three points")
-
-    def func(x: np.ndarray) -> np.ndarray:
-        pts = [_vec(x, index, name) for name in unique]
-        res: List[float] = []
-        n = len(pts)
-        for i in range(n):
-            prev_pt = pts[(i - 1) % n]
-            cur_pt = pts[i]
-            next_pt = pts[(i + 1) % n]
-            u = cur_pt - prev_pt
-            v = next_pt - cur_pt
-            turn = _normalized_cross(u, v)
-            res.append(_smooth_hinge(_TURN_MARGIN - abs(turn)))
-        return np.asarray(res, dtype=float)
-
-    key = "turn_margin(" + "-".join(unique) + ")"
-    return ResidualSpec(key=key, func=func, size=len(unique), kind="turn_margin", source=None)
-
-
 def _polygon_area(pts: Sequence[np.ndarray]) -> float:
     area = 0.0
     n = len(pts)
@@ -1389,20 +1383,177 @@ def _polygon_area(pts: Sequence[np.ndarray]) -> float:
     return 0.5 * area
 
 
-def _build_area_floor(ids: Sequence[PointName], index: Dict[PointName, int], min_area: float) -> ResidualSpec:
-    unique = [pid for pid in ids]
-    if len(unique) < 3:
-        raise ValueError("area floor requires at least three points")
-
-    abs_min_area = abs(min_area)
+def _shape_residual(
+    key: str,
+    base_func: Callable[[np.ndarray], np.ndarray],
+    size: int,
+    *,
+    weight: Optional[float] = None,
+    meta: Optional[Dict[str, object]] = None,
+) -> ResidualSpec:
+    cfg = _RESIDUAL_CONFIG
+    shape_weight = cfg.shape_weight if weight is None else float(weight)
 
     def func(x: np.ndarray) -> np.ndarray:
-        pts = [_vec(x, index, name) for name in unique]
-        area = abs(_polygon_area(pts))
-        return np.array([_smooth_hinge(abs_min_area - area)], dtype=float)
+        return shape_weight * base_func(x)
 
-    key = "area_floor(" + "-".join(unique) + ")"
-    return ResidualSpec(key=key, func=func, size=1, kind="area_floor", source=None)
+    return ResidualSpec(
+        key=f"shape:{key}",
+        func=func,
+        size=size,
+        kind="shape_guard",
+        source=None,
+        meta=meta,
+    )
+
+
+def _build_shape_min_separation(
+    pair: Edge,
+    index: Dict[PointName, int],
+    min_distance: float,
+    *,
+    weight: Optional[float] = None,
+    reason: Optional[str] = None,
+) -> ResidualSpec:
+    if pair[0] == pair[1]:
+        raise ValueError("shape min separation requires distinct points")
+    min_sq = float(min_distance * min_distance)
+
+    def base(x: np.ndarray) -> np.ndarray:
+        diff = _vec(x, index, pair[1]) - _vec(x, index, pair[0])
+        dist_sq = _norm_sq(diff)
+        return np.array([_smooth_hinge(min_sq - dist_sq)], dtype=float)
+
+    meta: Dict[str, object] = {"pair": pair, "type": "min_separation"}
+    if reason:
+        meta["reason"] = reason
+    return _shape_residual(
+        f"min_sep({_format_edge(pair)})",
+        base,
+        1,
+        weight=weight,
+        meta=meta,
+    )
+
+
+def _build_shape_edge_floor(
+    edge: Edge,
+    index: Dict[PointName, int],
+    min_len: float,
+    *,
+    weight: Optional[float] = None,
+) -> ResidualSpec:
+    min_sq = float(min_len * min_len)
+
+    def base(x: np.ndarray) -> np.ndarray:
+        vec = _edge_vec(x, index, edge)
+        return np.array([_smooth_hinge(min_sq - _norm_sq(vec))], dtype=float)
+
+    meta = {"edge": edge, "type": "edge_floor"}
+    return _shape_residual(
+        f"edge_floor({_format_edge(edge)})",
+        base,
+        1,
+        weight=weight,
+        meta=meta,
+    )
+
+
+def _build_shape_area_floor(
+    ids: Sequence[PointName], index: Dict[PointName, int]
+) -> ResidualSpec:
+    vertices = [pid for pid in ids]
+    if len(vertices) < 3:
+        raise ValueError("shape area floor requires at least three points")
+    cfg = _RESIDUAL_CONFIG
+
+    def base(x: np.ndarray) -> np.ndarray:
+        pts = [_vec(x, index, name) for name in vertices]
+        n = len(pts)
+        edges = [pts[(i + 1) % n] - pts[i] for i in range(n)]
+        lengths = [
+            _safe_norm(edge) for edge in edges
+        ]
+        l_max = max(lengths) if lengths else 0.0
+        area = abs(_polygon_area(pts))
+        if l_max <= _DENOM_EPS:
+            area_min = 0.0
+        else:
+            area_min = cfg.shape_area_epsilon * (l_max ** 2)
+        return np.array([_smooth_hinge(area_min - area)], dtype=float)
+
+    meta = {"polygon": vertices, "type": "area"}
+    return _shape_residual(
+        "area(" + "-".join(vertices) + ")",
+        base,
+        1,
+        meta=meta,
+    )
+
+
+def _build_shape_angle_cushion(
+    ids: Sequence[PointName], index: Dict[PointName, int]
+) -> ResidualSpec:
+    vertices = [pid for pid in ids]
+    if len(vertices) < 3:
+        raise ValueError("shape angle cushion requires at least three points")
+    cfg = _RESIDUAL_CONFIG
+
+    def base(x: np.ndarray) -> np.ndarray:
+        pts = [_vec(x, index, name) for name in vertices]
+        n = len(pts)
+        result = np.zeros(n, dtype=float)
+        for i in range(n):
+            prev_pt = pts[(i - 1) % n]
+            cur_pt = pts[i]
+            next_pt = pts[(i + 1) % n]
+            u = cur_pt - prev_pt
+            v = next_pt - cur_pt
+            denom = max(_safe_norm(u) * _safe_norm(v), _DENOM_EPS)
+            s = abs(_cross_2d(u, v)) / denom
+            result[i] = _smooth_hinge(cfg.shape_angle_s_min - s)
+        return result
+
+    meta = {"polygon": vertices, "type": "angle"}
+    return _shape_residual(
+        "angle(" + "-".join(vertices) + ")",
+        base,
+        len(vertices),
+        meta=meta,
+    )
+
+
+def _build_shape_height(
+    edge: Edge,
+    vertex: PointName,
+    index: Dict[PointName, int],
+    *,
+    weight: Optional[float] = None,
+) -> ResidualSpec:
+    cfg = _RESIDUAL_CONFIG
+
+    def base(x: np.ndarray) -> np.ndarray:
+        a = _vec(x, index, edge[0])
+        b = _vec(x, index, edge[1])
+        c = _vec(x, index, vertex)
+        base_vec = b - a
+        base_len = _safe_norm(base_vec)
+        if base_len <= _DENOM_EPS:
+            height = 0.0
+        else:
+            height = abs(_cross_2d(base_vec, c - a)) / base_len
+        opp = _safe_norm(c - b)
+        height_min = cfg.shape_height_epsilon * max(base_len, opp)
+        return np.array([_smooth_hinge(height_min - height)], dtype=float)
+
+    meta = {"base": edge, "vertex": vertex, "type": "height"}
+    return _shape_residual(
+        f"height({_format_edge(edge)};{vertex})",
+        base,
+        1,
+        weight=weight,
+        meta=meta,
+    )
 
 
 def _build_min_separation(
@@ -1449,15 +1600,22 @@ def _build_edge_floor(edge: Edge, index: Dict[PointName, int], min_len: float) -
 
 # --- require two edges not to be parallel (tiny margin) ---
 def _build_nonparallel(edge1: Edge, edge2: Edge, index: Dict[PointName, int]) -> ResidualSpec:
-    def func(x: np.ndarray) -> np.ndarray:
+    margin = _RESIDUAL_CONFIG.trapezoid_leg_margin
+
+    def base(x: np.ndarray) -> np.ndarray:
         u = _edge_vec(x, index, edge1)
         v = _edge_vec(x, index, edge2)
         denom = max(_safe_norm(u) * _safe_norm(v), _DENOM_EPS)
         s = abs(_cross_2d(u, v)) / denom  # |sin(angle)|
-        return np.array([_smooth_hinge(_TAU_NONPAR - s)], dtype=float)
+        return np.array([_smooth_hinge(margin - s)], dtype=float)
 
-    key = f"nonparallel({_format_edge(edge1)},{_format_edge(edge2)})"
-    return ResidualSpec(key=key, func=func, size=1, kind="nonparallel", source=None)
+    meta = {"edge1": edge1, "edge2": edge2, "type": "nonparallel"}
+    return _shape_residual(
+        f"nonparallel({_format_edge(edge1)},{_format_edge(edge2)})",
+        base,
+        1,
+        meta=meta,
+    )
 
 
 def _format_numeric(value: float) -> str:
@@ -2208,33 +2366,49 @@ def _compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
                 equal_segment_groups.append(group)
 
         if stmt.kind in {"polygon", "triangle", "quadrilateral", "parallelogram", "trapezoid", "rectangle", "square", "rhombus"}:
-            ids = tuple(data.get("ids", []))
-            if len(ids) >= 3 and ids not in polygon_sequences:
-                polygon_sequences[ids] = stmt.kind
+            raw_ids = data.get("ids", [])
+            ids_list: List[str] = []
+            for raw in raw_ids:
+                if isinstance(raw, str) and _is_point_name(raw):
+                    ids_list.append(raw)
+                elif isinstance(raw, (list, tuple)):
+                    value = "-".join(str(part) for part in raw)
+                    if _is_point_name(value):
+                        ids_list.append(value)
+                elif raw is not None:
+                    candidate = str(raw)
+                    if _is_point_name(candidate):
+                        ids_list.append(candidate)
+            ids = tuple(ids_list)
+            if len(ids) >= 3:
+                if ids not in polygon_sequences:
+                    polygon_sequences[ids] = stmt.kind
+                meta_entry = polygon_meta.setdefault(ids, {"kind": stmt.kind})
+                meta_entry.setdefault("kind", stmt.kind)
 
-            # detect trapezoid bases for orientation + leg non-parallel
-            if stmt.kind == "trapezoid" and len(ids) == 4:
-                bases_opt = opts.get("bases")
-                base_edge: Optional[Edge] = None
-                if isinstance(bases_opt, str) and "-" in bases_opt:
-                    a, b = bases_opt.split("-", 1)
-                    base_edge = (a.strip(), b.strip())
-                elif isinstance(bases_opt, (list, tuple)) and len(bases_opt) == 2:
-                    base_edge = (str(bases_opt[0]), str(bases_opt[1]))
-                if base_edge and all(p in ids for p in base_edge):
-                    remaining = [p for p in ids if p not in base_edge]
-                    if len(remaining) == 2:
-                        other_base = (remaining[0], remaining[1])
-                        polygon_meta[ids] = {"kind": "trapezoid", "bases": (base_edge, other_base)}
-                        if preferred_base_edge is None:
-                            preferred_base_edge = base_edge
+                # detect trapezoid bases for orientation + leg non-parallel
+                if stmt.kind == "trapezoid" and len(ids) == 4:
+                    bases_opt = opts.get("bases")
+                    base_edge: Optional[Edge] = None
+                    if isinstance(bases_opt, str) and "-" in bases_opt:
+                        a, b = bases_opt.split("-", 1)
+                        base_edge = (a.strip(), b.strip())
+                    elif isinstance(bases_opt, (list, tuple)) and len(bases_opt) == 2:
+                        base_edge = (str(bases_opt[0]), str(bases_opt[1]))
+                    if base_edge and all(p in ids for p in base_edge):
+                        remaining = [p for p in ids if p not in base_edge]
+                        if len(remaining) == 2:
+                            other_base = (remaining[0], remaining[1])
+                            meta_entry.update({"bases": (base_edge, other_base)})
+                            if preferred_base_edge is None:
+                                preferred_base_edge = base_edge
 
-            if stmt.kind == "triangle" and len(ids) == 3 and stmt.origin == "source":
-                names = tuple(str(name) for name in ids)
-                if all(_is_point_name(name) for name in names):
-                    iso_opt = stmt.opts.get("isosceles")
-                    iso_val = str(iso_opt) if isinstance(iso_opt, str) else None
-                    triangle_candidates.append((stmt_index, names, iso_val))
+                if stmt.kind == "triangle" and len(ids) == 3 and stmt.origin == "source":
+                    names = tuple(str(name) for name in ids)
+                    if all(_is_point_name(name) for name in names):
+                        iso_opt = stmt.opts.get("isosceles")
+                        iso_val = str(iso_opt) if isinstance(iso_opt, str) else None
+                        triangle_candidates.append((stmt_index, names, iso_val))
 
         # register points referenced by names/fields
         if "point" in data and isinstance(data["point"], str):
@@ -2391,9 +2565,10 @@ def _compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
 
     # global guards
     scene_scale = max(scale_samples) if scale_samples else 1.0
+    cfg = _RESIDUAL_CONFIG
 
     # min separation for distinct pairs
-    min_sep = _MIN_SEP_SCALE * scene_scale
+    min_sep = cfg.min_separation_scale * scene_scale
     if min_sep > 0:
         for pair in sorted(distinct_pairs):
             reasons = sorted(distinct_pairs.get(pair, ()))
@@ -2401,35 +2576,83 @@ def _compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
 
     # polygon-level guards + track polygon edges for de-dup
     polygon_edges_set: Set[Edge] = set()
+    polygon_data_list: List[Dict[str, object]] = []
     if polygon_sequences:
-        area_floor = _AREA_MIN_SCALE * scene_scale * scene_scale
-        edge_floor = _EDGE_FLOOR_SCALE * scene_scale
-        for ids in polygon_sequences:
+        edge_floor = cfg.edge_floor_scale * scene_scale
+        polygon_min_sep = cfg.min_separation_scale * scene_scale
+        for ids, kind in polygon_sequences.items():
             if len(ids) < 3:
                 continue
-            # convex-ish turns + area floor
-            residuals.append(_build_turn_margin(ids, index))
-            residuals.append(_build_area_floor(ids, index, area_floor))
+            meta = dict(polygon_meta.get(ids, {}))
+            record_kind = str(meta.get("kind", kind))
+            record: Dict[str, object] = {"ids": list(ids), "kind": record_kind}
+            if meta:
+                record["meta"] = meta
+            polygon_data_list.append(record)
+
+            residuals.append(_build_shape_area_floor(ids, index))
+            residuals.append(_build_shape_angle_cushion(ids, index))
+
+            # pairwise min-separation (soft)
+            if polygon_min_sep > 0:
+                for i in range(len(ids)):
+                    for j in range(i + 1, len(ids)):
+                        residuals.append(
+                            _build_shape_min_separation(
+                                (ids[i], ids[j]),
+                                index,
+                                polygon_min_sep,
+                                reason="polygon",
+                            )
+                        )
+
             # per-edge floors
-            loop = list(ids)
-            for i in range(len(loop)):
-                e = (loop[i], loop[(i + 1) % len(loop)])
-                residuals.append(_build_edge_floor(e, index, edge_floor))
-                # store both orientations for quick membership checks
-                polygon_edges_set.add(e if e[0] <= e[1] else (e[1], e[0]))
-            # trapezoid: ensure legs not parallel if bases known
-            meta = polygon_meta.get(ids)
-            if meta and meta.get("kind") == "trapezoid":
-                base1, base2 = meta["bases"]  # type: ignore[assignment]
-                a, d = base1
-                b, c = base2
-                leg1 = (a, b)
-                leg2 = (c, d)
-                residuals.append(_build_nonparallel(leg1, leg2, index))
+            for i in range(len(ids)):
+                edge = (ids[i], ids[(i + 1) % len(ids)])
+                residuals.append(_build_shape_edge_floor(edge, index, edge_floor))
+                key = edge if edge[0] <= edge[1] else (edge[1], edge[0])
+                polygon_edges_set.add(key)
+
+            kind_lower = record_kind.lower()
+            if kind_lower == "triangle" and len(ids) == 3:
+                tri_edges = [
+                    (ids[0], ids[1]),
+                    (ids[1], ids[2]),
+                    (ids[2], ids[0]),
+                ]
+                opp_vertices = [ids[2], ids[0], ids[1]]
+                weight = cfg.shape_weight / 3.0 if cfg.shape_weight else None
+                for edge, vertex in zip(tri_edges, opp_vertices):
+                    residuals.append(
+                        _build_shape_height(edge, vertex, index, weight=weight)
+                    )
+            elif kind_lower in {"parallelogram", "rectangle", "square", "rhombus"} and len(ids) == 4:
+                residuals.append(_build_shape_height((ids[0], ids[1]), ids[2], index))
+                residuals.append(_build_shape_height((ids[1], ids[2]), ids[3], index))
+            elif kind_lower == "trapezoid" and len(ids) == 4:
+                bases: List[Edge] = []
+                meta_bases = meta.get("bases") if isinstance(meta, dict) else None
+                if isinstance(meta_bases, (list, tuple)) and len(meta_bases) == 2:
+                    for base in meta_bases:
+                        if isinstance(base, (list, tuple)) and len(base) == 2:
+                            bases.append((str(base[0]), str(base[1])))
+                if not bases:
+                    bases = [(ids[0], ids[1]), (ids[2], ids[3])]
+                for base in bases:
+                    others = [p for p in ids if p not in base]
+                    for vertex in others:
+                        residuals.append(_build_shape_height(base, vertex, index))
+                if len(bases) >= 2:
+                    leg1 = (bases[0][0], bases[1][0])
+                    leg2 = (bases[0][1], bases[1][1])
+                    residuals.append(_build_nonparallel(leg1, leg2, index))
+
+    else:
+        polygon_data_list = []
 
     # add light floors to non-polygon "carrier" edges
     if carrier_edges:
-        carrier_floor = _CARRIER_EDGE_FLOOR * scene_scale
+        carrier_floor = cfg.carrier_edge_floor_scale * scene_scale
         for e in sorted(carrier_edges):
             key = e if e[0] <= e[1] else (e[1], e[0])
             if key not in polygon_edges_set:
@@ -2529,6 +2752,8 @@ def _compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
         layout_scale=model_layout_scale,
         gauge_anchor=anchor_point,
         primary_gauge_edge=orientation_edge,
+        polygons=polygon_data_list,
+        residual_config=copy.deepcopy(cfg),
     )
 
 
@@ -3268,7 +3493,11 @@ def initial_guess(
             set_coord(name, new_pos)
 
     def safety_pass() -> None:
-        min_sep = 1e-3 * base_scale
+        cfg_local = model.residual_config if isinstance(model.residual_config, ResidualBuilderConfig) else _RESIDUAL_CONFIG
+        min_sep = max(cfg_local.min_separation_scale * base_scale, 1e-6)
+        edge_floor = max(cfg_local.edge_floor_scale * base_scale, 0.0)
+        polygons_meta = model.polygons if isinstance(model.polygons, list) else []
+
         names = list(coords.keys())
         for i, name_a in enumerate(names):
             for name_b in names[i + 1 :]:
@@ -3279,13 +3508,98 @@ def initial_guess(
                 diff = _vec2(pa, pb)
                 dist = _norm2(diff)
                 if dist < min_sep and dist > 1e-9:
-                    adjust = (diff[0] / dist * (min_sep - dist) * 0.5, diff[1] / dist * (min_sep - dist) * 0.5)
+                    adjust = (
+                        diff[0] / dist * (min_sep - dist) * 0.5,
+                        diff[1] / dist * (min_sep - dist) * 0.5,
+                    )
                     set_coord(name_a, (pa[0] - adjust[0], pa[1] - adjust[1]))
                     set_coord(name_b, (pb[0] + adjust[0], pb[1] + adjust[1]))
                 elif dist <= 1e-9:
                     offset = 0.5 * min_sep
                     set_coord(name_a, (pa[0] - offset, pa[1]))
                     set_coord(name_b, (pb[0] + offset, pb[1]))
+
+        def enforce_edge_floor(a: str, b: str) -> None:
+            if edge_floor <= 0:
+                return
+            if a not in coords or b not in coords:
+                return
+            pa = get_coord(a)
+            pb = get_coord(b)
+            vec = _vec2(pa, pb)
+            dist = _norm2(vec)
+            if dist >= edge_floor:
+                return
+            direction = normalize_vec(vec)
+            if not direction:
+                direction = (0.0, 1.0)
+            need = edge_floor - dist
+            if a not in protected and b not in protected:
+                delta = (direction[0] * need * 0.5, direction[1] * need * 0.5)
+                set_coord(a, (pa[0] - delta[0], pa[1] - delta[1]))
+                set_coord(b, (pb[0] + delta[0], pb[1] + delta[1]))
+            elif a in protected and b not in protected:
+                delta = (direction[0] * need, direction[1] * need)
+                set_coord(b, (pb[0] + delta[0], pb[1] + delta[1]))
+            elif b in protected and a not in protected:
+                delta = (direction[0] * need, direction[1] * need)
+                set_coord(a, (pa[0] - delta[0], pa[1] - delta[1]))
+
+        def polygon_area(points: Sequence[Tuple[float, float]]) -> float:
+            area_val = 0.0
+            n = len(points)
+            for idx in range(n):
+                x1, y1 = points[idx]
+                x2, y2 = points[(idx + 1) % n]
+                area_val += x1 * y2 - x2 * y1
+            return 0.5 * area_val
+
+        for record in polygons_meta:
+            ids = record.get("ids")
+            if not isinstance(ids, list) or len(ids) < 3:
+                continue
+            polygon_ids = [str(name) for name in ids if _is_point_name(str(name)) and str(name) in coords]
+            if len(polygon_ids) < 3:
+                continue
+
+            # Enforce edge floors along polygon edges
+            for i in range(len(polygon_ids)):
+                enforce_edge_floor(polygon_ids[i], polygon_ids[(i + 1) % len(polygon_ids)])
+
+            points = [get_coord(name) for name in polygon_ids]
+            lengths = [
+                _norm2(_vec2(points[i], points[(i + 1) % len(points)])) for i in range(len(points))
+            ]
+            l_max = max(lengths) if lengths else 0.0
+            if l_max <= 1e-9:
+                continue
+            area_current = abs(polygon_area(points))
+            area_min = cfg_local.shape_area_epsilon * (l_max ** 2)
+            if area_current >= area_min or area_min <= 0:
+                continue
+            centroid = (
+                sum(pt[0] for pt in points) / len(points),
+                sum(pt[1] for pt in points) / len(points),
+            )
+            scale_factor = math.sqrt(area_min / max(area_current, 1e-9))
+            if scale_factor < 1.0:
+                scale_factor = 1.0
+            for idx, name in enumerate(polygon_ids):
+                if name in protected:
+                    continue
+                current = get_coord(name)
+                vec = (current[0] - centroid[0], current[1] - centroid[1])
+                norm = math.hypot(vec[0], vec[1])
+                if norm <= 1e-9:
+                    angle = (2.0 * math.pi * idx) / len(polygon_ids)
+                    vec = (math.cos(angle) * base_scale * 0.5, math.sin(angle) * base_scale * 0.5)
+                new_vec = (vec[0] * scale_factor, vec[1] * scale_factor)
+                new_pos = (centroid[0] + new_vec[0], centroid[1] + new_vec[1])
+                set_coord(name, new_pos)
+
+            # Re-apply edge floors after scaling
+            for i in range(len(polygon_ids)):
+                enforce_edge_floor(polygon_ids[i], polygon_ids[(i + 1) % len(polygon_ids)])
 
     # Stage A – canonical scaffold
     anchor_name = model.gauge_anchor or (model.points[0] if model.points else None)
@@ -3692,7 +4006,8 @@ def solve(
         # Identify min-separation guards that keep nearly-coincident points apart.
         relaxed_specs: List[ResidualSpec] = []
         relaxed_pairs: List[str] = []
-        min_sep_target = _MIN_SEP_SCALE * max(model.scale, 1.0)
+        cfg_local = model.residual_config if isinstance(model.residual_config, ResidualBuilderConfig) else _RESIDUAL_CONFIG
+        min_sep_target = cfg_local.min_separation_scale * max(model.scale, 1.0)
         close_threshold = min_sep_target * 0.25
         abs_threshold = max(1e-3 * max(model.scale, 1.0), 5e-4)
         drop_threshold = min(close_threshold, abs_threshold)

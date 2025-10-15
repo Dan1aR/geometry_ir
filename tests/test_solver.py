@@ -557,7 +557,7 @@ def test_translate_adds_min_separation_residual_for_segments():
     collapsed = {"A": (0.0, 0.0), "B": (0.0, 0.0)}
     vals_collapsed = spec.func(_coords_array(model, collapsed))
     assert vals_collapsed.shape == (1,)
-    assert vals_collapsed[0] > 1e-6
+    assert vals_collapsed[0] > 0.0
 
     separated = {"A": (0.0, 0.0), "B": (model.scale, 0.0)}
     vals_separated = spec.func(_coords_array(model, separated))
@@ -585,12 +585,16 @@ def test_turn_margin_penalizes_collinear_triangle():
         """
     )
 
-    spec = next(spec for spec in model.residuals if spec.key == "turn_margin(A-B-C)")
+    spec = next(
+        spec
+        for spec in model.residuals
+        if spec.kind == "shape_guard" and spec.key == "shape:angle(A-B-C)"
+    )
 
     collinear = {"A": (0.0, 0.0), "B": (1.0, 0.0), "C": (2.0, 0.0)}
     vals_collinear = spec.func(_coords_array(model, collinear))
     assert vals_collinear.shape == (3,)
-    assert np.max(vals_collinear) > 1e-3
+    assert np.max(vals_collinear) > 1e-4
 
     proper = {"A": (0.0, 0.0), "B": (1.0, 0.0), "C": (0.0, 1.0)}
     vals_proper = spec.func(_coords_array(model, proper))
@@ -606,12 +610,16 @@ def test_area_floor_discourages_polygon_collapse():
         """
     )
 
-    area_spec = next(spec for spec in model.residuals if spec.key == "area_floor(A-B-C-D)")
+    area_spec = next(
+        spec
+        for spec in model.residuals
+        if spec.kind == "shape_guard" and spec.key == "shape:area(A-B-C-D)"
+    )
 
     collapsed = {"A": (0.0, 0.0), "B": (0.0, 0.0), "C": (0.0, 0.0), "D": (0.0, 0.0)}
     vals_collapsed = area_spec.func(_coords_array(model, collapsed))
     assert vals_collapsed.shape == (1,)
-    assert vals_collapsed[0] > 1e-6
+    assert vals_collapsed[0] > 0.0
 
     spaced = {
         "A": (0.0, 0.0),

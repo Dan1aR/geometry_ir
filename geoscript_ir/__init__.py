@@ -21,7 +21,10 @@ from .solver import (
     VariantSolveResult,
     normalize_point_coords,
     initial_guess,
-    score_solution
+    score_solution,
+    ResidualBuilderConfig,
+    get_residual_builder_config,
+    set_residual_builder_config,
 )
 from .ddc import derive_and_check, evaluate_ddc, DDCCheckResult
 
@@ -47,6 +50,9 @@ __all__ = [
     'VariantSolveResult',
     'normalize_point_coords',
     'initial_guess',
+    'ResidualBuilderConfig',
+    'get_residual_builder_config',
+    'set_residual_builder_config',
     'derive_and_check',
     'evaluate_ddc',
     'DDCCheckResult',
