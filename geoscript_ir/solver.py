@@ -12,7 +12,7 @@ Drop-in replacement:
 
 import copy
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from itertools import combinations
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple, TypedDict
@@ -23,7 +23,19 @@ import numbers
 import numpy as np
 from scipy.optimize import least_squares
 
-from .seeders import GraphMDSSeeder, SobolSeeder
+from .seeders import GraphMDSSeeder, SobolSeeder, align_gauge, pack_full_vector
+
+from .projections import (
+    ProjectionConstraint,
+    pocs_warm_start,
+    project_angle,
+    project_concyclic,
+    project_equal_segments,
+    project_parallel,
+    project_point_to_circle,
+    project_point_to_line,
+    project_ratio,
+)
 
 from .ast import Program, Stmt
 
@@ -301,6 +313,19 @@ def build_seed_hints(program: Program, plan: Optional[DerivationPlan]) -> SeedHi
     diameter_opposites: Dict[Tuple[str, str], str] = {}
     diameter_segments: Dict[str, Set[Tuple[str, str]]] = defaultdict(set)
 
+    def _register_on_path(point: Optional[str], spec: Optional[PathSpec], payload: Optional[Dict[str, Any]] = None) -> None:
+        if not (_is_point_name(point) and isinstance(spec, Mapping)):
+            return
+        hint_payload = dict(payload or {})
+        hint: SeedHint = {
+            "kind": "on_path",
+            "point": str(point),
+            "path": spec,  # type: ignore[arg-type]
+            "payload": hint_payload,
+        }
+        by_point[str(point)].append(hint)
+        on_path_groups[str(point)].append(hint)
+
     for stmt in program.stmts:
         data = stmt.data
         opts = stmt.opts
@@ -366,14 +391,7 @@ def build_seed_hints(program: Program, plan: Optional[DerivationPlan]) -> SeedHi
                     segs = diameter_segments.get(point, set())
                     if segs and (points in segs):
                         payload.setdefault("midpoint_of", points)
-            hint: SeedHint = {
-                "kind": "on_path",
-                "point": str(point),
-                "path": spec,
-                "payload": payload,
-            }
-            by_point[str(point)].append(hint)
-            on_path_groups[str(point)].append(hint)
+            _register_on_path(str(point), spec, payload)
             continue
 
         if stmt.kind == "intersect":
@@ -392,6 +410,40 @@ def build_seed_hints(program: Program, plan: Optional[DerivationPlan]) -> SeedHi
                     "payload": dict(payload),
                 }
                 by_point[str(point)].append(hint)
+            continue
+
+        if stmt.kind in {"foot", "perpendicular_at"}:
+            foot_point = data.get("foot")
+            edge = data.get("edge") or data.get("to")
+            if (
+                _is_point_name(foot_point)
+                and isinstance(edge, (list, tuple))
+                and len(edge) == 2
+                and _is_point_name(edge[0])
+                and _is_point_name(edge[1])
+            ):
+                spec: PathSpec = {
+                    "kind": "segment",
+                    "points": (str(edge[0]), str(edge[1])),
+                }
+                payload = _normalize_hint_payload(opts)
+                payload.setdefault("clamp", True)
+                _register_on_path(str(foot_point), spec, payload)
+            continue
+
+        if stmt.kind == "right_angle_at":
+            pts = data.get("points")
+            if (
+                isinstance(pts, (list, tuple))
+                and len(pts) == 3
+                and all(_is_point_name(p) for p in pts)
+            ):
+                b, a, d = (str(pts[0]), str(pts[1]), str(pts[2]))
+                payload = _normalize_hint_payload(opts)
+                leg_spec = {"kind": "line", "points": (a, b)}
+                _register_on_path(b, leg_spec, payload)
+                perp_spec: PathSpec = {"kind": "perpendicular", "at": a, "to": (a, b)}
+                _register_on_path(d, perp_spec, payload)
             continue
 
         if stmt.kind == "segment":
@@ -1137,6 +1189,9 @@ class Model:
     primary_gauge_edge: Optional[Edge] = None
     polygons: List[Dict[str, object]] = field(default_factory=list)
     residual_config: ResidualBuilderConfig = field(default_factory=ResidualBuilderConfig)
+    seed_debug: Dict[str, Any] = field(default_factory=dict)
+    seed_baseline: Optional[np.ndarray] = None
+    seed_jitter_history: List[float] = field(default_factory=list)
 
 
 @dataclass
@@ -1201,6 +1256,7 @@ class Solution:
     max_residual: float
     residual_breakdown: List[Dict[str, object]]
     warnings: List[str]
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
 
     def normalized_point_coords(self, scale: float = 100.0) -> Dict[PointName, Tuple[float, float]]:
         """Return normalized point coordinates scaled to ``scale``.
@@ -1527,6 +1583,7 @@ def _solve_with_loss_mode(
         max_residual=max_res,
         residual_breakdown=breakdown_info,
         warnings=warnings,
+        diagnostics={"mode": "loss", "attempts": []},
     )
 
 
@@ -3058,6 +3115,378 @@ def translate(program: Program) -> Model:
     return compile_with_plan(program, plan)
 
 
+def _projection_constraint_from_stmt(stmt: Stmt) -> List[ProjectionConstraint]:
+    constraints: List[ProjectionConstraint] = []
+    if stmt.kind == "point_on":
+        point = stmt.data.get("point")
+        path = stmt.data.get("path")
+        if not (isinstance(point, str) and isinstance(path, (list, tuple)) and len(path) == 2):
+            return constraints
+        path_kind, payload = path
+        if path_kind in {"line", "segment", "ray"}:
+            try:
+                edge = _as_edge(payload)
+            except ValueError:
+                return constraints
+
+            clamp = "segment" if path_kind == "segment" else "ray" if path_kind == "ray" else None
+
+            def projector(coords: Mapping[PointName, np.ndarray]) -> Dict[PointName, np.ndarray]:
+                try:
+                    anchor = coords[edge[0]]
+                    direction = coords[edge[1]] - anchor
+                    current = coords[point]
+                except KeyError:
+                    return {}
+                target = project_point_to_line(current, anchor, direction, clamp=clamp)
+                return {point: target}
+
+            constraints.append(
+                ProjectionConstraint(
+                    name=f"point_on:{point}",
+                    kind=f"point_on_{path_kind}",
+                    points=(point, edge[0], edge[1]),
+                    projector=projector,
+                )
+            )
+            return constraints
+
+        if path_kind == "circle" and isinstance(payload, str):
+            radius = stmt.opts.get("radius") or stmt.opts.get("distance")
+            radius_point = stmt.opts.get("radius_point")
+
+            def projector(coords: Mapping[PointName, np.ndarray]) -> Dict[PointName, np.ndarray]:
+                try:
+                    center = coords[payload]
+                    current = coords[point]
+                except KeyError:
+                    return {}
+                rad_val: Optional[float] = None
+                if isinstance(radius, numbers.Real):
+                    rad_val = float(radius)
+                elif isinstance(radius_point, str) and radius_point in coords:
+                    rad_val = float(np.linalg.norm(coords[radius_point] - center))
+                if rad_val is None or rad_val <= 1e-9:
+                    return {}
+                target = project_point_to_circle(current, center, rad_val)
+                return {point: target}
+
+            constraints.append(
+                ProjectionConstraint(
+                    name=f"point_on_circle:{point}",
+                    kind="point_on_circle",
+                    points=(point, payload),
+                    projector=projector,
+                )
+            )
+            return constraints
+
+    if stmt.kind in {"foot", "perpendicular_at"}:
+        foot = stmt.data.get("foot")
+        vertex = stmt.data.get("from") or stmt.data.get("at")
+        edge_raw = stmt.data.get("edge") or stmt.data.get("to")
+        if not (isinstance(foot, str) and isinstance(vertex, str) and edge_raw):
+            return constraints
+        try:
+            edge = _as_edge(edge_raw)
+        except ValueError:
+            return constraints
+        clamp = None if stmt.opts.get("allow_extension") else "segment"
+
+        def projector(coords: Mapping[PointName, np.ndarray]) -> Dict[PointName, np.ndarray]:
+            try:
+                source = coords[vertex]
+                anchor = coords[edge[0]]
+                direction = coords[edge[1]] - anchor
+            except KeyError:
+                return {}
+            target = project_point_to_line(source, anchor, direction, clamp=clamp)
+            return {foot: target}
+
+        constraints.append(
+            ProjectionConstraint(
+                name=f"foot:{vertex}->{foot}",
+                kind="foot",
+                points=(foot, vertex, edge[0], edge[1]),
+                projector=projector,
+            )
+        )
+        return constraints
+
+    if stmt.kind == "parallel_edges":
+        edges = stmt.data.get("edges", [])
+        if not isinstance(edges, (list, tuple)) or len(edges) < 2:
+            return constraints
+        try:
+            parsed = [_as_edge(e) for e in edges]
+        except ValueError:
+            return constraints
+        ref = parsed[0]
+        others = parsed[1:]
+        involved: Tuple[PointName, ...] = tuple(sorted({p for edge in parsed for p in edge}))
+
+        def projector(coords: Mapping[PointName, np.ndarray]) -> Dict[PointName, np.ndarray]:
+            try:
+                ref_vec = coords[ref[1]] - coords[ref[0]]
+            except KeyError:
+                return {}
+            updates: Dict[PointName, np.ndarray] = {}
+            for edge in others:
+                if edge[0] not in coords or edge[1] not in coords:
+                    continue
+                anchor = coords[edge[0]]
+                vec = coords[edge[1]] - anchor
+                target_vec = project_parallel(ref_vec, vec)
+                updates[edge[1]] = anchor + target_vec
+            return updates
+
+        constraints.append(
+            ProjectionConstraint(
+                name="parallel_edges",
+                kind="parallel",
+                points=involved,
+                projector=projector,
+            )
+        )
+        return constraints
+
+    if stmt.kind == "right_angle":
+        pts = stmt.data.get("points")
+        if not (isinstance(pts, (list, tuple)) and len(pts) == 3):
+            return constraints
+        a, at, c = pts
+
+        def projector(coords: Mapping[PointName, np.ndarray]) -> Dict[PointName, np.ndarray]:
+            if at not in coords or a not in coords or c not in coords:
+                return {}
+            vertex = coords[at]
+            vec_a = coords[a]
+            vec_c = coords[c]
+            len_a = float(np.linalg.norm(vec_a - vertex))
+            len_c = float(np.linalg.norm(vec_c - vertex))
+            target = project_angle(vertex, vec_a, vec_c, math.pi / 2.0)
+            if len_a <= len_c:
+                return {a: target}
+            return {c: target}
+
+        constraints.append(
+            ProjectionConstraint(
+                name="right_angle",
+                kind="angle",
+                points=(a, at, c),
+                projector=projector,
+            )
+        )
+        return constraints
+
+    if stmt.kind == "angle":
+        pts = stmt.data.get("points")
+        theta = stmt.opts.get("measure") or stmt.opts.get("degrees")
+        if not (isinstance(pts, (list, tuple)) and len(pts) == 3 and isinstance(theta, numbers.Real)):
+            return constraints
+        a, at, c = pts
+        theta_rad = math.radians(float(theta))
+
+        def projector(coords: Mapping[PointName, np.ndarray]) -> Dict[PointName, np.ndarray]:
+            if at not in coords or a not in coords or c not in coords:
+                return {}
+            vertex = coords[at]
+            vec_a = coords[a]
+            vec_c = coords[c]
+            len_a = float(np.linalg.norm(vec_a - vertex))
+            len_c = float(np.linalg.norm(vec_c - vertex))
+            target = project_angle(vertex, vec_a, vec_c, theta_rad)
+            if len_a <= len_c:
+                return {a: target}
+            return {c: target}
+
+        constraints.append(
+            ProjectionConstraint(
+                name=f"angle:{at}",
+                kind="angle",
+                points=(a, at, c),
+                projector=projector,
+            )
+        )
+        return constraints
+
+    if stmt.kind == "concyclic":
+        pts = stmt.data.get("points", [])
+        if not isinstance(pts, (list, tuple)) or len(pts) < 4:
+            return constraints
+        names = tuple(str(p) for p in pts)
+
+        def projector(coords: Mapping[PointName, np.ndarray]) -> Dict[PointName, np.ndarray]:
+            if any(name not in coords for name in names):
+                return {}
+            center, radius = project_concyclic([coords[name] for name in names])
+            if radius <= 1e-9:
+                return {}
+            updates: Dict[PointName, np.ndarray] = {}
+            for name in names:
+                vec = coords[name] - center
+                norm = float(np.linalg.norm(vec))
+                if norm <= 1e-12:
+                    continue
+                updates[name] = center + vec * (radius / norm)
+            return updates
+
+        constraints.append(
+            ProjectionConstraint(
+                name="concyclic",
+                kind="concyclic",
+                points=names,
+                projector=projector,
+            )
+        )
+        return constraints
+
+    if stmt.kind == "ratio":
+        edges = stmt.data.get("edges", [])
+        ratio = stmt.data.get("ratio")
+        if (
+            not isinstance(edges, (list, tuple))
+            or len(edges) != 2
+            or not isinstance(ratio, (list, tuple))
+            or len(ratio) != 2
+        ):
+            return constraints
+        try:
+            edge_a = _as_edge(edges[0])
+            edge_b = _as_edge(edges[1])
+        except ValueError:
+            return constraints
+        num_a, num_b = ratio
+        if num_a <= 0 or num_b <= 0:
+            return constraints
+
+        def projector(coords: Mapping[PointName, np.ndarray]) -> Dict[PointName, np.ndarray]:
+            if any(name not in coords for name in edge_a + edge_b):
+                return {}
+            anchor_a = coords[edge_a[0]]
+            vec_a = coords[edge_a[1]] - anchor_a
+            len_a = float(np.linalg.norm(vec_a))
+            if len_a <= 1e-9:
+                return {}
+            target_len = len_a * float(num_b) / float(num_a)
+            anchor_b = coords[edge_b[0]]
+            vec_b = coords[edge_b[1]] - anchor_b
+            if float(np.linalg.norm(vec_b)) <= 1e-9:
+                return {}
+            target = project_ratio(anchor_b, vec_b, target_len)
+            return {edge_b[1]: target}
+
+        constraints.append(
+            ProjectionConstraint(
+                name="ratio",
+                kind="ratio",
+                points=(edge_a[0], edge_a[1], edge_b[0], edge_b[1]),
+                projector=projector,
+            )
+        )
+        return constraints
+
+    if stmt.kind == "equal_segments":
+        segments = stmt.data.get("lhs", []) + stmt.data.get("rhs", [])
+        if len(segments) < 2:
+            return constraints
+        try:
+            edges = [_as_edge(e) for e in segments]
+        except ValueError:
+            return constraints
+        names = tuple(sorted({p for edge in edges for p in edge}))
+
+        def projector(coords: Mapping[PointName, np.ndarray]) -> Dict[PointName, np.ndarray]:
+            lengths: List[float] = []
+            for edge in edges:
+                if edge[0] not in coords or edge[1] not in coords:
+                    return {}
+                lengths.append(float(np.linalg.norm(coords[edge[1]] - coords[edge[0]])))
+            valid = [length for length in lengths if length > 1e-9]
+            if not valid:
+                return {}
+            target_len = float(np.mean(valid))
+            updates: Dict[PointName, np.ndarray] = {}
+            for edge in edges:
+                anchor = coords[edge[0]]
+                vec = coords[edge[1]] - anchor
+                if float(np.linalg.norm(vec)) <= 1e-9:
+                    continue
+                updates[edge[1]] = project_equal_segments(anchor, vec, target_len)
+            return updates
+
+        constraints.append(
+            ProjectionConstraint(
+                name="equal_segments",
+                kind="equal_segments",
+                points=names,
+                projector=projector,
+            )
+        )
+        return constraints
+
+    return constraints
+
+
+def _build_projection_constraints(model: Model) -> List[ProjectionConstraint]:
+    constraints: List[ProjectionConstraint] = []
+    seen: Set[int] = set()
+    for spec in model.residuals:
+        stmt = spec.source
+        if stmt is None:
+            continue
+        key = id(stmt)
+        if key in seen:
+            continue
+        seen.add(key)
+        constraints.extend(_projection_constraint_from_stmt(stmt))
+    return constraints
+
+
+def _apply_projection_warm_start(model: Model, guess: np.ndarray) -> Tuple[np.ndarray, Dict[str, object]]:
+    constraints = _build_projection_constraints(model)
+    if not constraints:
+        return guess, {"enabled": False}
+
+    coords = _full_vector_to_point_coords(model, guess)
+    step = 0.45
+    sweeps = 3
+    warmed, events = pocs_warm_start(coords, constraints, step=step, sweeps=sweeps)
+    warmed = align_gauge(warmed, model)
+    derived, guard_failures = _evaluate_plan_coords(model, dict(warmed))
+    if derived:
+        warmed.update(derived)
+    warmed = align_gauge(warmed, model)
+    updated = pack_full_vector(model, warmed)
+    info: Dict[str, object] = {
+        "enabled": True,
+        "step": step,
+        "sweeps": sweeps,
+        "event_log": events,
+        "guard_failures": [(str(name), str(reason)) for name, reason in guard_failures],
+        "constraint_count": len(constraints),
+    }
+    return updated, info
+
+
+def _record_seed_baseline(model: Model, guess: np.ndarray, attempt: int) -> None:
+    baseline = getattr(model, "seed_baseline", None)
+    if attempt == 0 or baseline is None:
+        model.seed_baseline = np.asarray(guess, dtype=float).copy()
+        baseline = model.seed_baseline
+    if baseline is None:
+        return
+    diff = np.asarray(guess, dtype=float) - baseline
+    jitter_norm = float(np.linalg.norm(diff))
+    history = getattr(model, "seed_jitter_history", None)
+    if history is None:
+        model.seed_jitter_history = [jitter_norm]
+    else:
+        history.append(jitter_norm)
+    model.seed_debug.setdefault("jitter_history", list(model.seed_jitter_history))
+    model.seed_debug["jitter_norm"] = jitter_norm
+
+
 def initial_guess(
     model: Model,
     rng: np.random.Generator,
@@ -3070,6 +3499,8 @@ def initial_guess(
     graph_seeder = GraphMDSSeeder()
     sobol_seeder = SobolSeeder()
 
+    model.seed_debug = {"strategy": None, "attempt": attempt}
+
     if attempt == 0:
         order = (graph_seeder, sobol_seeder)
     else:
@@ -3079,6 +3510,38 @@ def initial_guess(
     for seeder in order:
         result = seeder.seed(model, rng, attempt, plan=plan)
         if result is not None:
+            result, pocs_info = _apply_projection_warm_start(model, result)
+            pocs_debug: Dict[str, object] = {"enabled": False}
+            if pocs_info.get("enabled"):
+                events: List[Dict[str, object]] = list(pocs_info.get("event_log", []))
+                counts: Counter[str] = Counter()
+                deltas: Dict[str, float] = defaultdict(float)
+                for event in events:
+                    kind = str(event.get("kind", "unknown"))
+                    counts[kind] += 1
+                    delta_map = event.get("deltas", {})
+                    if isinstance(delta_map, Mapping):
+                        for value in delta_map.values():
+                            try:
+                                deltas[kind] += float(value)
+                            except (TypeError, ValueError):
+                                continue
+                pocs_debug = {
+                    "enabled": True,
+                    "step": pocs_info.get("step"),
+                    "sweeps": pocs_info.get("sweeps"),
+                    "event_count": len(events),
+                    "per_kind": {kind: {"count": counts[kind], "delta": deltas.get(kind, 0.0)} for kind in counts},
+                    "constraint_count": pocs_info.get("constraint_count", 0),
+                }
+                guard_failures = pocs_info.get("guard_failures") or []
+                if guard_failures:
+                    pocs_debug["guard_failures"] = guard_failures
+                if events:
+                    pocs_debug["events_sample"] = events[: min(5, len(events))]
+            model.seed_debug["pocs"] = pocs_debug
+            _record_seed_baseline(model, result, attempt)
+            model.seed_debug["jitter_history"] = list(model.seed_jitter_history)
             return result
 
     # Deterministic final fallback – Sobol with a slightly advanced attempt index.
@@ -3233,6 +3696,7 @@ def solve(
 
     rng = np.random.default_rng(options.random_seed)
     warnings: List[str] = []
+    attempt_logs: List[Dict[str, Any]] = []
     best_result: Optional[
         Tuple[
             Tuple[int, float],
@@ -3243,6 +3707,7 @@ def solve(
             List[Tuple[PointName, str]],
         ]
     ] = None
+    best_attempt_idx: Optional[int] = None
     best_residual = math.inf
 
     base_attempts = max(1, options.reseed_attempts)
@@ -3252,13 +3717,24 @@ def solve(
     # the best residual is still large, e.g. >1e-4).
     fallback_limit = base_attempts + 2
     def run_attempt(attempt_index: int) -> Tuple[float, bool]:
-        nonlocal best_result, best_residual
+        nonlocal best_result, best_residual, best_attempt_idx
 
         full_guess = initial_guess(model, rng, attempt_index, plan=plan)
         x0 = _extract_variable_vector(model, full_guess)
+        seeding_info = copy.deepcopy(getattr(model, "seed_debug", {}))
+        cfg_local = (
+            model.residual_config
+            if isinstance(model.residual_config, ResidualBuilderConfig)
+            else _RESIDUAL_CONFIG
+        )
+        scene_scale = max(float(model.scale or 1.0), 1.0)
+        sigma = 0.0
+        if attempt_index == 0:
+            sigma = 0.25 * cfg_local.min_separation_scale * scene_scale
+        seeding_info["sigma"] = sigma
 
         def fun(x: np.ndarray) -> np.ndarray:
-            vals, _, _ = _evaluate(model, x)
+            vals, _, _ = _evaluate(model, x, sigma=sigma)
             return vals
 
         if x0.size:
@@ -3279,7 +3755,7 @@ def solve(
                 success = True
 
             result = _Result()  # type: ignore[assignment]
-        vals, breakdown, guard_failures = _evaluate(model, vars_solution)
+        vals, breakdown, guard_failures = _evaluate(model, vars_solution, sigma=sigma)
         max_res = float(np.max(np.abs(vals))) if vals.size else 0.0
         relaxed_tol = max(options.tol, options.tol * 5.0)
         converged = bool(getattr(result, "success", True) and max_res <= relaxed_tol)
@@ -3288,9 +3764,43 @@ def solve(
                 f"solver relaxed success with residual {max_res:.3e} (tol {options.tol:.1e})"
             )
 
+        top_entries: List[Dict[str, Any]] = []
+        for spec, values in breakdown:
+            max_abs = float(np.max(np.abs(values))) if values.size else 0.0
+            if max_abs <= 0.0:
+                continue
+            top_entries.append(
+                {
+                    "key": spec.key,
+                    "kind": spec.kind,
+                    "max_abs": max_abs,
+                    "source_kind": spec.source.kind if spec.source else None,
+                }
+            )
+        top_entries.sort(key=lambda item: item["max_abs"], reverse=True)
+        if len(top_entries) > 5:
+            top_entries = top_entries[:5]
+
+        attempt_log: Dict[str, Any] = {
+            "attempt": attempt_index + 1,
+            "max_residual": max_res,
+            "converged": converged,
+            "residual_count": int(vals.size),
+            "seed": seeding_info,
+            "seed_strategy": seeding_info.get("strategy"),
+            "top_residuals": top_entries,
+            "guard_failures": [(str(p), str(reason)) for p, reason in guard_failures],
+            "nfev": int(getattr(result, "nfev", 0)) if hasattr(result, "nfev") else None,
+            "cost": float(getattr(result, "cost", 0.0)) if hasattr(result, "cost") else None,
+            "status": getattr(result, "status", None),
+            "message": getattr(result, "message", None),
+        }
+        attempt_logs.append(attempt_log)
+
         score = (0 if converged else 1, max_res)
         if best_result is None or score < best_result[0]:
             best_result = (score, max_res, vars_solution, breakdown, converged, guard_failures)
+            best_attempt_idx = attempt_index
 
         best_residual = min(best_residual, max_res)
         return max_res, converged
@@ -3323,6 +3833,9 @@ def solve(
 
     if best_result is None:
         raise RuntimeError("solver failed to evaluate residuals")
+
+    if best_attempt_idx is None:
+        best_attempt_idx = 0
 
     _, max_res, best_x, breakdown, converged, guard_failures = best_result
 
@@ -3409,6 +3922,27 @@ def solve(
                 relaxed_solution.warnings = combined_warnings
                 return relaxed_solution
 
+    best_attempt_log = (
+        attempt_logs[best_attempt_idx]
+        if 0 <= best_attempt_idx < len(attempt_logs)
+        else None
+    )
+
+    if (not converged or max_res > options.tol) and best_attempt_log:
+        strategy = best_attempt_log.get("seed_strategy")
+        attempt_no = best_attempt_log.get("attempt")
+        if strategy:
+            warnings.append(
+                f"best attempt #{attempt_no} used seed {strategy}"
+            )
+        top_hotspots = best_attempt_log.get("top_residuals") or []
+        if top_hotspots:
+            hotspot = ", ".join(
+                f"{entry['key']}={entry['max_abs']:.3e}"
+                for entry in top_hotspots[:3]
+            )
+            warnings.append(f"residual hotspots: {hotspot}")
+
     if not converged:
         warnings.append(
             f"solver did not converge within tolerance {options.tol:.1e}; max residual {max_res:.3e}"
@@ -3428,12 +3962,33 @@ def solve(
             }
         )
 
+    final_top = sorted(
+        (
+            {
+                "key": entry["key"],
+                "kind": entry["kind"],
+                "max_abs": entry["max_abs"],
+            }
+            for entry in breakdown_info
+        ),
+        key=lambda item: item["max_abs"],
+        reverse=True,
+    )[:5]
+
+    diagnostics = {
+        "attempts": attempt_logs,
+        "best_attempt_index": best_attempt_idx,
+        "best_attempt_number": best_attempt_idx + 1 if best_attempt_idx is not None else None,
+        "final_top_residuals": final_top,
+    }
+
     return Solution(
         point_coords=coords,
         success=converged,
         max_residual=max_res,
         residual_breakdown=breakdown_info,
         warnings=warnings,
+        diagnostics=diagnostics,
     )
 
 
