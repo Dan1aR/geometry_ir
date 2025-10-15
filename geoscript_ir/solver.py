@@ -1137,6 +1137,7 @@ class Model:
     primary_gauge_edge: Optional[Edge] = None
     polygons: List[Dict[str, object]] = field(default_factory=list)
     residual_config: ResidualBuilderConfig = field(default_factory=ResidualBuilderConfig)
+    seed_debug: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -1201,6 +1202,7 @@ class Solution:
     max_residual: float
     residual_breakdown: List[Dict[str, object]]
     warnings: List[str]
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
 
     def normalized_point_coords(self, scale: float = 100.0) -> Dict[PointName, Tuple[float, float]]:
         """Return normalized point coordinates scaled to ``scale``.
@@ -1527,6 +1529,7 @@ def _solve_with_loss_mode(
         max_residual=max_res,
         residual_breakdown=breakdown_info,
         warnings=warnings,
+        diagnostics={"mode": "loss", "attempts": []},
     )
 
 
@@ -3070,6 +3073,8 @@ def initial_guess(
     graph_seeder = GraphMDSSeeder()
     sobol_seeder = SobolSeeder()
 
+    model.seed_debug = {"strategy": None, "attempt": attempt}
+
     if attempt == 0:
         order = (graph_seeder, sobol_seeder)
     else:
@@ -3233,6 +3238,7 @@ def solve(
 
     rng = np.random.default_rng(options.random_seed)
     warnings: List[str] = []
+    attempt_logs: List[Dict[str, Any]] = []
     best_result: Optional[
         Tuple[
             Tuple[int, float],
@@ -3243,6 +3249,7 @@ def solve(
             List[Tuple[PointName, str]],
         ]
     ] = None
+    best_attempt_idx: Optional[int] = None
     best_residual = math.inf
 
     base_attempts = max(1, options.reseed_attempts)
@@ -3252,10 +3259,11 @@ def solve(
     # the best residual is still large, e.g. >1e-4).
     fallback_limit = base_attempts + 2
     def run_attempt(attempt_index: int) -> Tuple[float, bool]:
-        nonlocal best_result, best_residual
+        nonlocal best_result, best_residual, best_attempt_idx
 
         full_guess = initial_guess(model, rng, attempt_index, plan=plan)
         x0 = _extract_variable_vector(model, full_guess)
+        seeding_info = copy.deepcopy(getattr(model, "seed_debug", {}))
 
         def fun(x: np.ndarray) -> np.ndarray:
             vals, _, _ = _evaluate(model, x)
@@ -3288,9 +3296,43 @@ def solve(
                 f"solver relaxed success with residual {max_res:.3e} (tol {options.tol:.1e})"
             )
 
+        top_entries: List[Dict[str, Any]] = []
+        for spec, values in breakdown:
+            max_abs = float(np.max(np.abs(values))) if values.size else 0.0
+            if max_abs <= 0.0:
+                continue
+            top_entries.append(
+                {
+                    "key": spec.key,
+                    "kind": spec.kind,
+                    "max_abs": max_abs,
+                    "source_kind": spec.source.kind if spec.source else None,
+                }
+            )
+        top_entries.sort(key=lambda item: item["max_abs"], reverse=True)
+        if len(top_entries) > 5:
+            top_entries = top_entries[:5]
+
+        attempt_log: Dict[str, Any] = {
+            "attempt": attempt_index + 1,
+            "max_residual": max_res,
+            "converged": converged,
+            "residual_count": int(vals.size),
+            "seed": seeding_info,
+            "seed_strategy": seeding_info.get("strategy"),
+            "top_residuals": top_entries,
+            "guard_failures": [(str(p), str(reason)) for p, reason in guard_failures],
+            "nfev": int(getattr(result, "nfev", 0)) if hasattr(result, "nfev") else None,
+            "cost": float(getattr(result, "cost", 0.0)) if hasattr(result, "cost") else None,
+            "status": getattr(result, "status", None),
+            "message": getattr(result, "message", None),
+        }
+        attempt_logs.append(attempt_log)
+
         score = (0 if converged else 1, max_res)
         if best_result is None or score < best_result[0]:
             best_result = (score, max_res, vars_solution, breakdown, converged, guard_failures)
+            best_attempt_idx = attempt_index
 
         best_residual = min(best_residual, max_res)
         return max_res, converged
@@ -3323,6 +3365,9 @@ def solve(
 
     if best_result is None:
         raise RuntimeError("solver failed to evaluate residuals")
+
+    if best_attempt_idx is None:
+        best_attempt_idx = 0
 
     _, max_res, best_x, breakdown, converged, guard_failures = best_result
 
@@ -3409,6 +3454,27 @@ def solve(
                 relaxed_solution.warnings = combined_warnings
                 return relaxed_solution
 
+    best_attempt_log = (
+        attempt_logs[best_attempt_idx]
+        if 0 <= best_attempt_idx < len(attempt_logs)
+        else None
+    )
+
+    if (not converged or max_res > options.tol) and best_attempt_log:
+        strategy = best_attempt_log.get("seed_strategy")
+        attempt_no = best_attempt_log.get("attempt")
+        if strategy:
+            warnings.append(
+                f"best attempt #{attempt_no} used seed {strategy}"
+            )
+        top_hotspots = best_attempt_log.get("top_residuals") or []
+        if top_hotspots:
+            hotspot = ", ".join(
+                f"{entry['key']}={entry['max_abs']:.3e}"
+                for entry in top_hotspots[:3]
+            )
+            warnings.append(f"residual hotspots: {hotspot}")
+
     if not converged:
         warnings.append(
             f"solver did not converge within tolerance {options.tol:.1e}; max residual {max_res:.3e}"
@@ -3428,12 +3494,33 @@ def solve(
             }
         )
 
+    final_top = sorted(
+        (
+            {
+                "key": entry["key"],
+                "kind": entry["kind"],
+                "max_abs": entry["max_abs"],
+            }
+            for entry in breakdown_info
+        ),
+        key=lambda item: item["max_abs"],
+        reverse=True,
+    )[:5]
+
+    diagnostics = {
+        "attempts": attempt_logs,
+        "best_attempt_index": best_attempt_idx,
+        "best_attempt_number": best_attempt_idx + 1 if best_attempt_idx is not None else None,
+        "final_top_residuals": final_top,
+    }
+
     return Solution(
         point_coords=coords,
         success=converged,
         max_residual=max_res,
         residual_breakdown=breakdown_info,
         warnings=warnings,
+        diagnostics=diagnostics,
     )
 
 
