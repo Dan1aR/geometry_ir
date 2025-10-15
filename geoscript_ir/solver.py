@@ -4058,6 +4058,8 @@ def solve(
                     base_points=model.base_points,
                     ambiguous_points=model.ambiguous_points,
                     plan_notes=model.plan_notes,
+                    polygons=model.polygons,
+                    residual_config=model.residual_config,
                 )
                 relaxed_solution = solve(
                     relaxed_model,
