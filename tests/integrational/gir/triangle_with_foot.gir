@@ -1,0 +1,9 @@
+# Высота, проведённая к основанию равнобедренного треугольника, равна $7,6$ см, а боковая сторона треугольника равна $15,2$ см. Найдите углы этого треугольника.
+scene "Isosceles triangle with height to base"
+layout canonical=triangle_ABC scale=1.0
+points A, B, C, H
+triangle A-B-C
+equal-segments (A-B ; A-C)
+foot H from A to B-C
+segment A-H [length=7.6]
+segment A-B [length=15.2]
