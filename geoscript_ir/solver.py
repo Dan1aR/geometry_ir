@@ -1202,7 +1202,7 @@ class SolveOptions:
     tol: float = 1e-8
     reseed_attempts: int = 3
     random_seed: Optional[int] = 0
-    enable_loss_mode: bool = False
+    enable_loss_mode: bool = True
 
 
 @dataclass
@@ -3841,7 +3841,7 @@ def solve(
             return _solve_with_loss_mode(model, options, effective_loss_opts, plan=plan)
         except Exception:
             # Fall back to legacy solver path when loss-mode fails
-            pass
+            raise
 
     rng = np.random.default_rng(options.random_seed)
     warnings: List[str] = []
