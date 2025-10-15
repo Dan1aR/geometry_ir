@@ -1145,6 +1145,51 @@ class SolveOptions:
     tol: float = 1e-8
     reseed_attempts: int = 3
     random_seed: Optional[int] = 0
+    enable_loss_mode: bool = False
+
+
+@dataclass
+class LossModeOptions:
+    enabled: bool = True
+    autodiff: Literal["torch", "off"] = "torch"
+    sigmas: Optional[List[float]] = None
+    robust_losses: Optional[List[str]] = None
+    stages: Optional[List[str]] = None
+    restarts_per_sigma: Optional[List[int]] = None
+    multistart_cap: int = 8
+    adam_lr: float = 0.05
+    adam_steps: int = 800
+    adam_clip: float = 10.0
+    lbfgs_maxiter: int = 500
+    lbfgs_tol: float = 1e-9
+    lm_trf_max_nfev: int = 5000
+    early_stop_factor: float = 1e-6
+
+
+def _resolve_loss_schedule(model: Model, loss_opts: LossModeOptions) -> Tuple[List[float], List[str], List[str], List[int]]:
+    default_sigmas = [0.20, 0.10, 0.05, 0.02, 0.00]
+    default_robust = ["soft_l1", "huber", "huber", "linear", "linear"]
+    default_stages = ["adam", "adam", "lbfgs", "lbfgs", "lm"]
+    default_restarts = [1, 1, 1, 2, 2]
+
+    sigmas = list(loss_opts.sigmas or default_sigmas)
+    robusts = list(loss_opts.robust_losses or default_robust)
+    stages = list(loss_opts.stages or default_stages)
+    restarts = list(loss_opts.restarts_per_sigma or default_restarts)
+
+    if not (len(sigmas) == len(robusts) == len(stages)):
+        raise ValueError("loss-mode schedule lists must have equal length")
+    if len(restarts) < len(sigmas):
+        restarts.extend([restarts[-1] if restarts else 1] * (len(sigmas) - len(restarts)))
+    if len(restarts) > len(sigmas):
+        restarts = restarts[: len(sigmas)]
+
+    scale = max(float(model.scale or 1.0), 1.0)
+    sigmas = [max(0.0, s) * scale for s in sigmas]
+
+    capped_restarts = [min(loss_opts.multistart_cap, max(1, int(r))) for r in restarts]
+
+    return sigmas, robusts, stages, capped_restarts
 
 
 @dataclass
@@ -1348,6 +1393,139 @@ def _normalized_cross(a: np.ndarray, b: np.ndarray) -> float:
 def _smooth_hinge(value: float) -> float:
     # differentiable approx of max(0, value)
     return 0.5 * (value + math.sqrt(value * value + _HINGE_EPS * _HINGE_EPS))
+
+
+def _smooth_block(values: np.ndarray, sigma: float) -> np.ndarray:
+    if sigma <= 0.0:
+        return values
+    abs_vals = np.abs(values)
+    smoothed = np.sqrt(abs_vals * abs_vals + sigma * sigma) - sigma
+    return np.sign(values) * smoothed
+
+
+def _robust_scalar(values: np.ndarray, robust: str) -> float:
+    if robust == "linear":
+        return float(np.sum(values * values))
+    abs_vals = np.abs(values)
+    if robust == "soft_l1":
+        return float(np.sum(2.0 * (np.sqrt(1.0 + abs_vals * abs_vals) - 1.0)))
+    if robust == "huber":
+        mask = abs_vals <= 1.0
+        quad = 0.5 * np.sum(abs_vals[mask] * abs_vals[mask])
+        lin = np.sum(abs_vals[~mask] - 0.5)
+        return float(quad + lin)
+    raise ValueError(f"unsupported robust loss '{robust}'")
+
+
+def _solve_with_loss_mode(
+    model: Model,
+    options: SolveOptions,
+    loss_opts: LossModeOptions,
+    *,
+    plan: Optional[DerivationPlan] = None,
+) -> Solution:
+    rng = np.random.default_rng(options.random_seed)
+    warnings: List[str] = []
+
+    sigmas, robusts, stages, restarts = _resolve_loss_schedule(model, loss_opts)
+
+    incumbent: Optional[
+        Tuple[float, np.ndarray, List[Tuple[ResidualSpec, np.ndarray]], List[Tuple[PointName, str]], float, bool]
+    ] = None
+
+    seed_attempt = 0
+
+    for idx, sigma in enumerate(sigmas):
+        stage = stages[idx]
+        robust = robusts[idx]
+        attempts = restarts[idx]
+
+        for attempt in range(attempts):
+            if incumbent is not None and attempt == 0:
+                x0 = incumbent[1]
+            else:
+                full_guess = initial_guess(model, rng, seed_attempt, plan=plan)
+                seed_attempt += 1
+                x0 = _extract_variable_vector(model, full_guess)
+
+            if x0.size == 0:
+                vars_solution = np.zeros(0, dtype=float)
+                stage_vals = np.zeros(0, dtype=float)
+                stage_loss = 0.0
+                converged_stage = True
+            else:
+                def fun(vec: np.ndarray) -> np.ndarray:
+                    vals, _, _ = _evaluate(model, vec, sigma=sigma)
+                    return vals
+
+                method = "lm" if stage == "lm" else options.method
+                if stage == "lm" and robust != "linear":
+                    robust = "linear"
+                max_nfev = loss_opts.lm_trf_max_nfev if stage == "lm" else options.max_nfev
+                result = least_squares(
+                    fun,
+                    x0,
+                    method=method,
+                    loss=robust,
+                    max_nfev=max_nfev,
+                    ftol=options.tol,
+                    xtol=options.tol,
+                    gtol=options.tol,
+                )
+                vars_solution = result.x
+                stage_vals, _, _ = _evaluate(model, vars_solution, sigma=sigma)
+                stage_loss = _robust_scalar(stage_vals, robust)
+                converged_stage = bool(getattr(result, "success", True))
+
+            final_vals, breakdown, guard_failures = _evaluate(model, vars_solution, sigma=0.0)
+            max_res = float(np.max(np.abs(final_vals))) if final_vals.size else 0.0
+            converged = converged_stage and max_res <= options.tol
+
+            update = False
+            if incumbent is None:
+                update = True
+            else:
+                incumbent_loss = incumbent[0]
+                if stage_loss + loss_opts.early_stop_factor * max(1.0, incumbent_loss) < incumbent_loss:
+                    update = True
+
+            if update:
+                incumbent = (stage_loss, vars_solution, breakdown, guard_failures, max_res, converged)
+
+    if incumbent is None:
+        raise RuntimeError("loss-mode solver did not produce a solution")
+
+    _, best_vars, breakdown, guard_failures, max_res, converged = incumbent
+    for point, reason in guard_failures:
+        warnings.append(f"plan guard {point}: {reason}")
+
+    full_solution, _ = _assemble_full_vector(model, best_vars)
+    coords = _full_vector_to_point_coords(model, full_solution)
+
+    breakdown_info: List[Dict[str, object]] = []
+    for spec, values in breakdown:
+        breakdown_info.append(
+            {
+                "key": spec.key,
+                "kind": spec.kind,
+                "values": values.tolist(),
+                "max_abs": float(np.max(np.abs(values))) if values.size else 0.0,
+                "source_kind": spec.source.kind if spec.source else None,
+            }
+        )
+
+    if not converged:
+        warnings.append(
+            f"loss-mode solver did not meet tolerance {options.tol:.1e}; max residual {max_res:.3e}"
+        )
+
+    return Solution(
+        point_coords=coords,
+        success=converged,
+        max_residual=max_res,
+        residual_breakdown=breakdown_info,
+        warnings=warnings,
+    )
 
 
 def _circle_row(vec: np.ndarray) -> np.ndarray:
@@ -3877,7 +4055,7 @@ def _full_vector_to_point_coords(
 
 
 def _evaluate_full(
-    model: Model, x: np.ndarray
+    model: Model, x: np.ndarray, sigma: float = 0.0
 ) -> Tuple[np.ndarray, List[Tuple[ResidualSpec, np.ndarray]]]:
     blocks: List[np.ndarray] = []
     breakdown: List[Tuple[ResidualSpec, np.ndarray]] = []
@@ -3886,7 +4064,8 @@ def _evaluate_full(
         vals = np.atleast_1d(np.asarray(vals, dtype=float))
         if vals.shape[0] != spec.size:
             raise ValueError(f"Residual {spec.key} expected size {spec.size}, got {vals.shape[0]}")
-        blocks.append(vals)
+        smooth_vals = _smooth_block(vals, sigma)
+        blocks.append(smooth_vals)
         breakdown.append((spec, vals))
     if blocks:
         return np.concatenate(blocks), breakdown
@@ -3894,10 +4073,10 @@ def _evaluate_full(
 
 
 def _evaluate(
-    model: Model, variables: np.ndarray
+    model: Model, variables: np.ndarray, sigma: float = 0.0
 ) -> Tuple[np.ndarray, List[Tuple[ResidualSpec, np.ndarray]], List[Tuple[PointName, str]]]:
     full, failures = _assemble_full_vector(model, variables)
-    vals, breakdown = _evaluate_full(model, full)
+    vals, breakdown = _evaluate_full(model, full, sigma=sigma)
     return vals, breakdown, failures
 
 
@@ -3905,8 +4084,18 @@ def solve(
     model: Model,
     options: SolveOptions = SolveOptions(),
     *,
+    loss_opts: Optional[LossModeOptions] = None,
+    plan: Optional[DerivationPlan] = None,
     _allow_relaxation: bool = True,
 ) -> Solution:
+    effective_loss_opts = loss_opts or LossModeOptions()
+    if options.enable_loss_mode and effective_loss_opts.enabled:
+        try:
+            return _solve_with_loss_mode(model, options, effective_loss_opts, plan=plan)
+        except Exception:
+            # Fall back to legacy solver path when loss-mode fails
+            pass
+
     rng = np.random.default_rng(options.random_seed)
     warnings: List[str] = []
     best_result: Optional[
@@ -3930,7 +4119,7 @@ def solve(
     def run_attempt(attempt_index: int) -> Tuple[float, bool]:
         nonlocal best_result, best_residual
 
-        full_guess = initial_guess(model, rng, attempt_index)
+        full_guess = initial_guess(model, rng, attempt_index, plan=plan)
         x0 = _extract_variable_vector(model, full_guess)
 
         def fun(x: np.ndarray) -> np.ndarray:
