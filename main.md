@@ -2185,6 +2185,11 @@ score(a) =
 > 3. running a **stage pipeline**: *Adam* → *L‑BFGS* → *LM/TRF*, with **deterministic multistart** reseeds.
 >    The result still satisfies your solver contract (§13), works with DDC (§16), seeding (§18), and shape guards (§S).
 
+> **Implementation note:** The pipeline now executes genuine Adam and L‑BFGS stages. Adam leverages `torch.optim.Adam`
+> with central finite-difference gradients (step size `adam_fd_eps`), while the L‑BFGS stage calls `scipy.optimize.minimize`
+> (`method="L-BFGS-B"`) on the same smoothed scalar loss. Torch autodiff wiring for residuals remains future work; when
+> `autodiff="off"` the schedule falls back to the SciPy least-squares stages.
+
 ---
 
 ## T.1 Public API (non‑breaking additions)
@@ -2215,6 +2220,7 @@ class LossModeOptions:
     adam_lr: float = 0.05
     adam_steps: int = 800
     adam_clip: float = 10.0
+    adam_fd_eps: float = 1e-6
     # LBFGS
     lbfgs_maxiter: int = 500
     lbfgs_tol: float = 1e-9
@@ -2285,6 +2291,9 @@ Deterministic multistart: on each σ stage, do `restarts[k]` attempts using **§
 
 **Contract:** residual builder is **pure**, maps flat `x ∈ R^n` ↔ point coordinates via `model.index`, and accepts a `sigma` float.
 
+> **Status:** Numeric finite-difference gradients drive the Adam stage today. The scaffold below remains the roadmap for wiring
+> full Torch autodiff so stages can consume exact gradients/Jacobians when available.
+
 ```python
 # Set Torch defaults (double precision)
 import torch
@@ -2332,24 +2341,15 @@ Purpose: aggressive progress on smooth loss.
 - steps: loss_opts.adam_steps (≈800)
 - lr:    loss_opts.adam_lr
 - grad clipping: clip to ±loss_opts.adam_clip (∞-norm)
+- gradient: central finite differences over `_scalar_loss_numpy` (step `adam_fd_eps` scaled per variable)
 - stop early if relative improvement < early_stop_factor over 50 steps
 ```
 
-### T.5.2 L‑BFGS (Torch)
+### T.5.2 L‑BFGS (SciPy)
 
-Use `torch.optim.LBFGS` with a closure:
-
-```python
-opt = torch.optim.LBFGS([x], max_iter=lbfgs_maxiter, tolerance_grad=lbfgs_tol)
-def closure():
-    opt.zero_grad(set_to_none=True)
-    L = loss_torch(x, model, sigma, robust)
-    L.backward()
-    return L
-opt.step(closure)
-```
-
-* **Bounds:** do a projection (`x.data.clamp_`) inside closure after `backward()` but before returning `L`, or wrap each step.
+Use `scipy.optimize.minimize(..., method="L-BFGS-B")` on the same scalar loss (`_scalar_loss_numpy`). Pass `lbfgs_maxiter`
+and `lbfgs_tol` via the `options` dict; reuse the candidate even if the optimizer reports a soft failure, then optionally fall
+back to the SciPy least-squares stage.
 
 ### T.5.3 Final exact pass: SciPy LM/TRF (σ = 0)
 
