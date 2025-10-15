@@ -301,6 +301,19 @@ def build_seed_hints(program: Program, plan: Optional[DerivationPlan]) -> SeedHi
     diameter_opposites: Dict[Tuple[str, str], str] = {}
     diameter_segments: Dict[str, Set[Tuple[str, str]]] = defaultdict(set)
 
+    def _register_on_path(point: Optional[str], spec: Optional[PathSpec], payload: Optional[Dict[str, Any]] = None) -> None:
+        if not (_is_point_name(point) and isinstance(spec, Mapping)):
+            return
+        hint_payload = dict(payload or {})
+        hint: SeedHint = {
+            "kind": "on_path",
+            "point": str(point),
+            "path": spec,  # type: ignore[arg-type]
+            "payload": hint_payload,
+        }
+        by_point[str(point)].append(hint)
+        on_path_groups[str(point)].append(hint)
+
     for stmt in program.stmts:
         data = stmt.data
         opts = stmt.opts
@@ -366,14 +379,7 @@ def build_seed_hints(program: Program, plan: Optional[DerivationPlan]) -> SeedHi
                     segs = diameter_segments.get(point, set())
                     if segs and (points in segs):
                         payload.setdefault("midpoint_of", points)
-            hint: SeedHint = {
-                "kind": "on_path",
-                "point": str(point),
-                "path": spec,
-                "payload": payload,
-            }
-            by_point[str(point)].append(hint)
-            on_path_groups[str(point)].append(hint)
+            _register_on_path(str(point), spec, payload)
             continue
 
         if stmt.kind == "intersect":
@@ -392,6 +398,40 @@ def build_seed_hints(program: Program, plan: Optional[DerivationPlan]) -> SeedHi
                     "payload": dict(payload),
                 }
                 by_point[str(point)].append(hint)
+            continue
+
+        if stmt.kind in {"foot", "perpendicular_at"}:
+            foot_point = data.get("foot")
+            edge = data.get("edge") or data.get("to")
+            if (
+                _is_point_name(foot_point)
+                and isinstance(edge, (list, tuple))
+                and len(edge) == 2
+                and _is_point_name(edge[0])
+                and _is_point_name(edge[1])
+            ):
+                spec: PathSpec = {
+                    "kind": "segment",
+                    "points": (str(edge[0]), str(edge[1])),
+                }
+                payload = _normalize_hint_payload(opts)
+                payload.setdefault("clamp", True)
+                _register_on_path(str(foot_point), spec, payload)
+            continue
+
+        if stmt.kind == "right_angle_at":
+            pts = data.get("points")
+            if (
+                isinstance(pts, (list, tuple))
+                and len(pts) == 3
+                and all(_is_point_name(p) for p in pts)
+            ):
+                b, a, d = (str(pts[0]), str(pts[1]), str(pts[2]))
+                payload = _normalize_hint_payload(opts)
+                leg_spec = {"kind": "line", "points": (a, b)}
+                _register_on_path(b, leg_spec, payload)
+                perp_spec: PathSpec = {"kind": "perpendicular", "at": a, "to": (a, b)}
+                _register_on_path(d, perp_spec, payload)
             continue
 
         if stmt.kind == "segment":
@@ -1138,6 +1178,8 @@ class Model:
     polygons: List[Dict[str, object]] = field(default_factory=list)
     residual_config: ResidualBuilderConfig = field(default_factory=ResidualBuilderConfig)
     seed_debug: Dict[str, Any] = field(default_factory=dict)
+    seed_baseline: Optional[np.ndarray] = None
+    seed_jitter_history: List[float] = field(default_factory=list)
 
 
 @dataclass
@@ -3061,6 +3103,24 @@ def translate(program: Program) -> Model:
     return compile_with_plan(program, plan)
 
 
+def _record_seed_baseline(model: Model, guess: np.ndarray, attempt: int) -> None:
+    baseline = getattr(model, "seed_baseline", None)
+    if attempt == 0 or baseline is None:
+        model.seed_baseline = np.asarray(guess, dtype=float).copy()
+        baseline = model.seed_baseline
+    if baseline is None:
+        return
+    diff = np.asarray(guess, dtype=float) - baseline
+    jitter_norm = float(np.linalg.norm(diff))
+    history = getattr(model, "seed_jitter_history", None)
+    if history is None:
+        model.seed_jitter_history = [jitter_norm]
+    else:
+        history.append(jitter_norm)
+    model.seed_debug.setdefault("jitter_history", list(model.seed_jitter_history))
+    model.seed_debug["jitter_norm"] = jitter_norm
+
+
 def initial_guess(
     model: Model,
     rng: np.random.Generator,
@@ -3084,6 +3144,8 @@ def initial_guess(
     for seeder in order:
         result = seeder.seed(model, rng, attempt, plan=plan)
         if result is not None:
+            _record_seed_baseline(model, result, attempt)
+            model.seed_debug["jitter_history"] = list(model.seed_jitter_history)
             return result
 
     # Deterministic final fallback – Sobol with a slightly advanced attempt index.
@@ -3264,9 +3326,19 @@ def solve(
         full_guess = initial_guess(model, rng, attempt_index, plan=plan)
         x0 = _extract_variable_vector(model, full_guess)
         seeding_info = copy.deepcopy(getattr(model, "seed_debug", {}))
+        cfg_local = (
+            model.residual_config
+            if isinstance(model.residual_config, ResidualBuilderConfig)
+            else _RESIDUAL_CONFIG
+        )
+        scene_scale = max(float(model.scale or 1.0), 1.0)
+        sigma = 0.0
+        if attempt_index == 0:
+            sigma = 0.25 * cfg_local.min_separation_scale * scene_scale
+        seeding_info["sigma"] = sigma
 
         def fun(x: np.ndarray) -> np.ndarray:
-            vals, _, _ = _evaluate(model, x)
+            vals, _, _ = _evaluate(model, x, sigma=sigma)
             return vals
 
         if x0.size:
@@ -3287,7 +3359,7 @@ def solve(
                 success = True
 
             result = _Result()  # type: ignore[assignment]
-        vals, breakdown, guard_failures = _evaluate(model, vars_solution)
+        vals, breakdown, guard_failures = _evaluate(model, vars_solution, sigma=sigma)
         max_res = float(np.max(np.abs(vals))) if vals.size else 0.0
         relaxed_tol = max(options.tol, options.tol * 5.0)
         converged = bool(getattr(result, "success", True) and max_res <= relaxed_tol)

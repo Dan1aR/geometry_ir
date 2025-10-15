@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Sequence, Tuple, TYPE_CHECKING
 
 import numpy as np
@@ -122,6 +122,42 @@ class _LineLikeSpec:
 class _CircleSpec:
     center: Coord
     radius: float
+
+
+@dataclass
+class _HintContext:
+    """Shared state for applying global hints with displacement accounting."""
+
+    scale: float
+    alpha_numeric: float = 0.5
+    alpha_relational: float = 0.35
+    step_ratio: float = 0.5
+    total_ratio: float = 1.25
+    totals: Dict[str, float] = field(default_factory=dict)
+
+    def max_step(self, weight: float = 1.0) -> float:
+        base = max(self.scale, 1e-3)
+        return max(1e-3, self.step_ratio * base * max(0.1, float(weight)))
+
+    def max_total(self) -> float:
+        base = max(self.scale, 1e-3)
+        return max(5e-3, self.total_ratio * base)
+
+    def register_displacement(self, moves: Mapping[str, float]) -> bool:
+        if not moves:
+            return False
+        max_total = self.max_total()
+        for name, delta in moves.items():
+            if delta <= 1e-12:
+                continue
+            total = self.totals.get(name, 0.0) + float(delta)
+            if total > max_total:
+                return False
+        for name, delta in moves.items():
+            if delta <= 1e-12:
+                continue
+            self.totals[name] = self.totals.get(name, 0.0) + float(delta)
+        return True
 
 
 def _apply_projection_pass(
@@ -492,8 +528,14 @@ def _edge_length(coords: Mapping[PointName, Coord], edge: Tuple[str, str]) -> Op
 
 
 def _set_edge_length(
-    coords: Dict[PointName, Coord], edge: Tuple[str, str], target: float
-) -> Dict[str, float]:
+    coords: Dict[PointName, Coord],
+    edge: Tuple[str, str],
+    target: float,
+    *,
+    context: Optional[_HintContext] = None,
+    alpha: float = 0.5,
+    weight: float = 1.0,
+) -> Dict[str, Any]:
     if target <= 0.0:
         return {}
     a, b = edge
@@ -504,15 +546,44 @@ def _set_edge_length(
     dx, dy = bx - ax, by - ay
     norm = math.hypot(dx, dy)
     if norm <= 1e-9:
-        direction = (1.0, 0.0)
+        base_dir = (1.0, 0.0)
+        norm = 1.0
     else:
-        direction = (dx / norm, dy / norm)
-    new_b = (ax + direction[0] * target, ay + direction[1] * target)
+        base_dir = (dx / norm, dy / norm)
+
+    current = norm
+    desired = float(target)
+    delta = desired - current
+    if abs(delta) <= 1e-9:
+        return {}
+
+    step = alpha * delta
+    max_step = context.max_step(weight) if context is not None else abs(step)
+    limited = False
+    if abs(step) > max_step:
+        step = math.copysign(max_step, step)
+        limited = True
+
+    new_length = max(current + step, 1e-6)
+    new_b = (
+        ax + base_dir[0] * new_length,
+        ay + base_dir[1] * new_length,
+    )
     displacement = math.hypot(new_b[0] - bx, new_b[1] - by)
     if displacement <= 1e-12:
         return {}
+
+    if context is not None and not context.register_displacement({b: displacement}):
+        return {}
+
     coords[b] = (float(new_b[0]), float(new_b[1]))
-    return {b: displacement}
+    return {
+        "points": {b: displacement},
+        "limited": limited,
+        "delta_length": step,
+        "target": desired,
+        "edge": edge,
+    }
 
 
 def _fit_circle(coords_list: Sequence[Coord]) -> Optional[Tuple[np.ndarray, float]]:
@@ -541,7 +612,7 @@ def _fit_circle(coords_list: Sequence[Coord]) -> Optional[Tuple[np.ndarray, floa
 
 
 def _apply_length_hint(
-    coords: Dict[PointName, Coord], payload: Mapping[str, Any]
+    coords: Dict[PointName, Coord], payload: Mapping[str, Any], *, context: Optional[_HintContext]
 ) -> Optional[Dict[str, Any]]:
     edge = payload.get("edge")
     length = payload.get("length")
@@ -552,14 +623,27 @@ def _apply_length_hint(
         and length > 0
     ):
         return None
-    moved = _set_edge_length(coords, (str(edge[0]), str(edge[1])), float(length))
-    if not moved:
+    result = _set_edge_length(
+        coords,
+        (str(edge[0]), str(edge[1])),
+        float(length),
+        context=context,
+        alpha=(context.alpha_numeric if context else 0.5),
+        weight=1.0,
+    )
+    if not result:
         return None
-    return {"hint": "length", "edge": (str(edge[0]), str(edge[1])), "target": float(length), "moved": moved}
+    return {
+        "hint": "length",
+        "edge": (str(edge[0]), str(edge[1])),
+        "target": float(length),
+        "moved": result.get("points", {}),
+        "limited": bool(result.get("limited")),
+    }
 
 
 def _apply_equal_length_hint(
-    coords: Dict[PointName, Coord], payload: Mapping[str, Any]
+    coords: Dict[PointName, Coord], payload: Mapping[str, Any], *, context: Optional[_HintContext]
 ) -> Optional[Dict[str, Any]]:
     edges_raw = payload.get("edges")
     if not isinstance(edges_raw, (list, tuple)) or len(edges_raw) < 2:
@@ -574,17 +658,34 @@ def _apply_equal_length_hint(
     if ref_length is None or ref_length <= 1e-9:
         return None
     moved_total: Dict[str, float] = {}
+    limited = False
     for edge in edges[1:]:
-        moved = _set_edge_length(coords, edge, ref_length)
-        for key, value in moved.items():
-            moved_total[key] = max(moved_total.get(key, 0.0), value)
+        moved = _set_edge_length(
+            coords,
+            edge,
+            ref_length,
+            context=context,
+            alpha=(context.alpha_relational if context else 0.35),
+            weight=0.6,
+        )
+        if not moved:
+            continue
+        for key, value in moved.get("points", {}).items():
+            moved_total[key] = max(moved_total.get(key, 0.0), float(value))
+        limited = limited or bool(moved.get("limited"))
     if not moved_total:
         return None
-    return {"hint": "equal_length", "edges": edges, "target": ref_length, "moved": moved_total}
+    return {
+        "hint": "equal_length",
+        "edges": edges,
+        "target": ref_length,
+        "moved": moved_total,
+        "limited": limited,
+    }
 
 
 def _apply_ratio_hint(
-    coords: Dict[PointName, Coord], payload: Mapping[str, Any]
+    coords: Dict[PointName, Coord], payload: Mapping[str, Any], *, context: Optional[_HintContext]
 ) -> Optional[Dict[str, Any]]:
     edges_raw = payload.get("edges")
     ratio = payload.get("ratio")
@@ -610,7 +711,14 @@ def _apply_ratio_hint(
     if base_length is None or base_length <= 1e-9:
         return None
     target = base_length * (num_b / num_a)
-    moved = _set_edge_length(coords, edge_b, target)
+    moved = _set_edge_length(
+        coords,
+        edge_b,
+        target,
+        context=context,
+        alpha=(context.alpha_relational if context else 0.35),
+        weight=0.6,
+    )
     if not moved:
         return None
     return {
@@ -618,7 +726,8 @@ def _apply_ratio_hint(
         "edges": [edge_a, edge_b],
         "ratio": (num_a, num_b),
         "target": target,
-        "moved": moved,
+        "moved": moved.get("points", {}),
+        "limited": bool(moved.get("limited")),
     }
 
 
@@ -680,6 +789,8 @@ def _apply_global_hints(
     global_hints = hints.get("global_hints", [])
     if not isinstance(global_hints, Sequence):
         return []
+    scale = float(model.layout_scale or model.scale or 1.0)
+    context = _HintContext(scale=scale)
     events: List[Dict[str, Any]] = []
     for hint in global_hints:
         if not isinstance(hint, Mapping):
@@ -690,11 +801,11 @@ def _apply_global_hints(
             payload = {}
         event: Optional[Dict[str, Any]] = None
         if kind == "length":
-            event = _apply_length_hint(coords, payload)
+            event = _apply_length_hint(coords, payload, context=context)
         elif kind == "equal_length":
-            event = _apply_equal_length_hint(coords, payload)
+            event = _apply_equal_length_hint(coords, payload, context=context)
         elif kind == "ratio":
-            event = _apply_ratio_hint(coords, payload)
+            event = _apply_ratio_hint(coords, payload, context=context)
         elif kind == "concyclic":
             event = _apply_concyclic_hint(coords, payload)
         if event:
@@ -809,6 +920,15 @@ class GraphMDSSeeder:
         positive = evals[evals > 1e-12]
         if positive.size < 2:
             return None
+        cond = float(positive[0] / max(positive[-1], 1e-12))
+        if not np.isfinite(cond) or cond > 1e6:
+            model.seed_debug = {
+                "strategy": "GraphMDSSeeder",
+                "attempt": attempt,
+                "aborted": "ill_conditioned",
+                "condition_number": cond,
+            }
+            return None
         take = min(2, positive.size)
         evals = evals[:take]
         evecs = evecs[:, :take]
@@ -821,6 +941,8 @@ class GraphMDSSeeder:
         max_span = max(float(span[0]), float(span[1]), 1e-6)
         base = float(model.layout_scale or model.scale or 1.0)
         coords_array *= (0.75 * base) / max_span
+        clip_limit = 4.0 * max(base, 1e-3)
+        coords_array = np.clip(coords_array, -clip_limit, clip_limit)
 
         coords_map = {
             name: (float(coords_array[index[name], 0]), float(coords_array[index[name], 1]))
@@ -830,15 +952,15 @@ class GraphMDSSeeder:
         projection_events = _apply_projection_pass(model, coords_map)
         coords_map = align_gauge(coords_map, model)
 
+        global_hint_events = _apply_global_hints(model, coords_map)
+        if global_hint_events:
+            coords_map = align_gauge(coords_map, model)
+
         from . import solver as _solver  # Local import to avoid circular dependency.
 
         derived, guard_failures = _solver._evaluate_plan_coords(model, dict(coords_map))
         coords_map.update(derived)
         coords_map = align_gauge(coords_map, model)
-
-        global_hint_events = _apply_global_hints(model, coords_map)
-        if global_hint_events:
-            coords_map = align_gauge(coords_map, model)
 
         final_array = np.asarray(list(coords_map.values()), dtype=float)
         final_span = (
@@ -854,6 +976,7 @@ class GraphMDSSeeder:
             "derived_points": sorted(derived.keys()),
             "initial_span": float(max_span),
             "final_span": final_span,
+            "jitter_sigma": 0.0,
         }
 
         return pack_full_vector(model, coords_map)
@@ -906,8 +1029,9 @@ class SobolSeeder:
         unit = _sobol_sample(dim)
         flat = (unit * 2.0 - 1.0) * box
 
+        jitter_scale = 0.0
         if attempt > 0:
-            jitter_scale = 0.02 * box
+            jitter_scale = 0.02 * box * (attempt + 1)
             flat = flat + rng.normal(0.0, jitter_scale, size=dim)
 
         coords = {}
@@ -918,15 +1042,15 @@ class SobolSeeder:
         projection_events = _apply_projection_pass(model, coords)
         coords = align_gauge(coords, model)
 
+        global_hint_events = _apply_global_hints(model, coords)
+        if global_hint_events:
+            coords = align_gauge(coords, model)
+
         from . import solver as _solver  # Local import to avoid circular dependency.
 
         derived, guard_failures = _solver._evaluate_plan_coords(model, dict(coords))
         coords.update(derived)
         coords = align_gauge(coords, model)
-
-        global_hint_events = _apply_global_hints(model, coords)
-        if global_hint_events:
-            coords = align_gauge(coords, model)
 
         final_array = np.asarray(list(coords.values()), dtype=float)
         final_span = (
@@ -943,6 +1067,7 @@ class SobolSeeder:
             "initial_span": float(box),
             "final_span": final_span,
             "jitter": bool(attempt > 0),
+            "jitter_sigma": float(jitter_scale),
         }
 
         return pack_full_vector(model, coords)
