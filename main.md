@@ -1,6 +1,6 @@
 # GeoScript IR — Technical Specification (agent view)
 
-GeoScript IR is a compact DSL for 2D Euclidean scenes. The toolchain parses source text into an AST, validates intent, optionally desugars to canonical primitives, and compiles a nonlinear model solved with `scipy.optimize.least_squares`.
+GeoScript IR is a compact DSL for 2D Euclidean scenes. The toolchain parses source text into an AST, validates intent, optionally desugars to canonical primitives, and compiles a nonlinear model solved with ` `.
 
 ---
 
@@ -2167,3 +2167,335 @@ score(a) =
 * Ensure **no segment is re-drawn** in `fg` if already emitted in `main`.
 
 ---
+
+# T) Globalized Solver + Loss‑Mode (Torch‑first, drop‑in)
+
+> **Goal.** Make convergence **robust** (less sensitive to seeds and hinge kinks) by:
+>
+> 1. solving a **smoothed** version of the problem first (homotopy over σ),
+> 2. using **autodiff (PyTorch)** to get exact gradients/Jacobians, and
+> 3. running a **stage pipeline**: *Adam* → *L‑BFGS* → *LM/TRF*, with **deterministic multistart** reseeds.
+>    The result still satisfies your solver contract (§13), works with DDC (§16), seeding (§18), and shape guards (§S).
+
+---
+
+## T.1 Public API (non‑breaking additions)
+
+```python
+from dataclasses import dataclass, field
+from typing import List, Literal, Optional
+
+@dataclass
+class SolverOptions:
+    backend: Literal["scipy-trf","scipy-lm"] = "scipy-trf"
+    xtol: float = 1e-12; ftol: float = 1e-12; gtol: float = 1e-12
+    max_nfev: int = 5000
+
+@dataclass
+class LossModeOptions:
+    enabled: bool = True
+    autodiff: Literal["torch","off"] = "torch"   # Torch preferred
+    # Homotopy (smoothing) schedule — multiplied by scene scale
+    sigmas: Optional[List[float]] = None         # default [0.20, 0.10, 0.05, 0.02, 0.00]
+    robust_losses: Optional[List[str]] = None    # default ["soft_l1","huber","linear","linear","linear"]
+    # Stage per sigma (same length as sigmas)
+    stages: Optional[List[str]] = None           # default ["adam","adam","lbfgs","lbfgs","lm"]
+    # Deterministic reseeds per sigma
+    restarts_per_sigma: Optional[List[int]] = None   # default [1,1,1,2,2]
+    multistart_cap: int = 8
+    # Adam
+    adam_lr: float = 0.05
+    adam_steps: int = 800
+    adam_clip: float = 10.0
+    # LBFGS
+    lbfgs_maxiter: int = 500
+    lbfgs_tol: float = 1e-9
+    # Final SciPy pass
+    lm_trf_max_nfev: int = 5000
+    # Gates
+    early_stop_factor: float = 1e-6   # relative improvement threshold per sigma stage
+```
+
+Entry point (extends §13):
+
+```python
+def solve*(model_or_program, *, solver_opts: Optional[SolverOptions]=None,
+           loss_opts: Optional[LossModeOptions]=None, plan=None) -> Solution
+```
+
+If `loss_opts.enabled=False` or Torch is not available, fall back to the **SciPy‑only** path described in **T.8** (same σ schedule + restarts, no autodiff).
+
+---
+
+## T.2 Smoothing & robust aggregation (single scalar objective)
+
+We minimize a scalar **loss** (L_\sigma(x)) that matches your original least‑squares when (\sigma!=!0) and `"linear"` robust loss is used.
+
+**Smooth primitives** (use these everywhere you currently have hinges/clamps):
+
+* Hinge (h(t)=\max(0,t)) → **softplus**
+  (h_\sigma(t)=\sigma,\log(1+\exp(t/\sigma))) for (\sigma>0); exact hinge when (\sigma=0).
+* Absolute value (|t|) → **pseudo‑Huber**
+  (|t|_\sigma=\sqrt{t^2+\sigma^2}-\sigma) for (\sigma>0); exact (|t|) when (\sigma=0).
+
+**Robust per‑residual map** (\rho(u)):
+
+* `"soft_l1"`: (2(\sqrt{1+u^2}-1))
+* `"huber"`: (\tfrac12 u^2) if (|u|\le 1) else (|u|-\tfrac12)
+* `"linear"`: (\tfrac12 u^2)
+
+**Scalar objective**
+[
+L_\sigma(x)=\sum_{i=1}^{m}\rho!\big(r_i^{(\sigma)}(x)\big),
+]
+where each (r_i^{(\sigma)}) is built from your residual primitives with softplus/pseudo‑Huber.
+
+> **Important:** Shape guards (§S) **must** also use these smoothers, so one global `sigma` switch smooths the whole objective.
+
+---
+
+## T.3 Default schedules & stages
+
+Let `scene_scale = max(layout.scale, diag(seed_bbox))`.
+
+```
+sigmas        = [0.20, 0.10, 0.05, 0.02, 0.00] * scene_scale
+robust_losses = ["soft_l1","huber","huber","linear","linear"]
+stages        = ["adam",   "adam",  "lbfgs", "lbfgs", "lm"   ]
+restarts      = [1,        1,       1,       2,       2      ]
+```
+
+* **Adam (large σ)**: reach a good basin on a smooth landscape.
+* **L‑BFGS (mid σ)**: quasi‑Newton polish while still smoothed.
+* **LM/TRF (σ=0)**: finish on the **exact** least‑squares with a second‑order step.
+
+Deterministic multistart: on each σ stage, do `restarts[k]` attempts using **§18 seeding** (no random rotation when a **gauge edge** exists; escalate jitter per attempt). Keep the **best** by (total loss, then max residual, then DDC status).
+
+---
+
+## T.4 Torch autodiff integration
+
+**Contract:** residual builder is **pure**, maps flat `x ∈ R^n` ↔ point coordinates via `model.index`, and accepts a `sigma` float.
+
+```python
+# Set Torch defaults (double precision)
+import torch
+torch.set_default_dtype(torch.float64)
+
+def residuals_torch(x_tensor, model, sigma):
+    """
+    Pure function: 1) unpack x→coords, 2) compute residual groups,
+    3) use smooth 'hinge'/'abs' helpers when sigma>0, exact when sigma=0.
+    Returns a 1D tensor of shape (m,).
+    """
+    return r
+
+def loss_torch(x_tensor, model, sigma, robust: str):
+    r = residuals_torch(x_tensor, model, sigma)
+    u = robust_map(robust, r)      # elementwise map; see T.2
+    return u.sum()                 # scalar tensor
+
+def grad_torch(x_np, model, sigma, robust):
+    x = torch.tensor(x_np, requires_grad=True)
+    L = loss_torch(x, model, sigma, robust)
+    L.backward()
+    g = x.grad.detach().cpu().numpy()
+    return float(L.detach().cpu().numpy()), g
+
+def jacobian_torch(x_np, model, sigma):
+    # For LM/TRF final pass (σ=0). If too big, fall back to numeric (2-point).
+    x = torch.tensor(x_np, requires_grad=True)
+    def r_fn(y): return residuals_torch(y, model, sigma)
+    J = torch.autograd.functional.jacobian(r_fn, x)   # shape (m,n)
+    return J.detach().cpu().numpy()
+```
+
+**Bounds in Torch stages:** after each optimizer step, **project**: `x.clamp_(low, high)`.
+
+---
+
+## T.5 Optimizer backends
+
+### T.5.1 Adam (Torch)
+
+Purpose: aggressive progress on smooth loss.
+
+```
+- steps: loss_opts.adam_steps (≈800)
+- lr:    loss_opts.adam_lr
+- grad clipping: clip to ±loss_opts.adam_clip (∞-norm)
+- stop early if relative improvement < early_stop_factor over 50 steps
+```
+
+### T.5.2 L‑BFGS (Torch)
+
+Use `torch.optim.LBFGS` with a closure:
+
+```python
+opt = torch.optim.LBFGS([x], max_iter=lbfgs_maxiter, tolerance_grad=lbfgs_tol)
+def closure():
+    opt.zero_grad(set_to_none=True)
+    L = loss_torch(x, model, sigma, robust)
+    L.backward()
+    return L
+opt.step(closure)
+```
+
+* **Bounds:** do a projection (`x.data.clamp_`) inside closure after `backward()` but before returning `L`, or wrap each step.
+
+### T.5.3 Final exact pass: SciPy LM/TRF (σ = 0)
+
+Use `scipy.optimize.least_squares` with **analytic Jacobian** if feasible:
+
+```python
+from scipy.optimize import least_squares
+
+def run_final_trf(model, x0, bounds, max_nfev):
+    def r_np(x): return residuals_torch(torch.tensor(x), model, sigma=0.0).detach().cpu().numpy()
+    def j_np(x): return jacobian_torch(x, model, sigma=0.0)
+    res = least_squares(r_np, x0, jac=j_np, bounds=bounds,
+                        method="trf", xtol=1e-12, ftol=1e-12, gtol=1e-12,
+                        max_nfev=max_nfev, loss="linear")
+    return res
+```
+
+If Jacobian is too costly (very large `m×n`), set `jac=None` (SciPy uses 2‑point FD).
+
+> Optionally, if no bounds are active, allow one **LM** polish: `method="lm"`.
+
+---
+
+## T.6 Stage orchestrator (homotopy + multistart)
+
+```python
+def solve_globalized(model, x0, solver_opts: SolverOptions, loss_opts: LossModeOptions, plan=None):
+    # Defaults
+    sigmas  = loss_opts.sigmas or [0.20, 0.10, 0.05, 0.02, 0.00]
+    robusts = loss_opts.robust_losses or ["soft_l1","huber","huber","linear","linear"]
+    stages  = loss_opts.stages or ["adam","adam","lbfgs","lbfgs","lm"]
+    restarts= loss_opts.restarts_per_sigma or [1,1,1,2,2]
+
+    scale = max(model.scale, 1.0)
+    sigmas = [s*scale for s in sigmas]
+
+    incumbent = (float("inf"), x0)  # (loss, x)
+
+    for k, sigma in enumerate(sigmas):
+        stage, robust = stages[k], robusts[k]
+        attempts = max(1, restarts[k])
+
+        for a in range(attempts):
+            x_start = incumbent[1] if a == 0 else initial_guess(model, rng, attempt=a, plan=plan)  # §18 (no rotation if gauge)
+            x = torch.tensor(x_start, requires_grad=True)
+
+            if stage == "adam":
+                x = run_adam_torch(x, model, sigma, robust, loss_opts, model.bounds)
+            elif stage == "lbfgs":
+                x = run_lbfgs_torch(x, model, sigma, robust, loss_opts, model.bounds)
+            else:  # "lm" final pass (σ=0)
+                res = run_final_trf(model, x.detach().cpu().numpy(), model.bounds, loss_opts.lm_trf_max_nfev)
+                x_np = res.x; L = float((res.fun**2).sum())
+                if L < incumbent[0]: incumbent = (L, x_np)
+                # DDC final gate
+                return package_solution(model, incumbent[1], res)
+
+            # Evaluate scalar Torch loss for incumbent update
+            L_val = float(loss_torch(x, model, sigma, robust).detach().cpu().numpy())
+            if L_val + loss_opts.early_stop_factor * max(1.0, incumbent[0]) < incumbent[0]:
+                incumbent = (L_val, x.detach().cpu().numpy())
+
+        # Optional quick DDC‑gate at each σ: accept incumbent unless DDC "mismatch"
+        if not ddc_ok(program=model.program, x=incumbent[1], tol=None):
+            # one extra restart at this σ
+            x_extra = initial_guess(model, rng, attempt=attempts+1, plan=plan)
+            # rerun current stage once; keep the better of {incumbent, extra}
+            # (omitted for brevity)
+
+    # Safety: if loop exits without LM/TRF (shouldn't), do final TRF at σ=0
+    res = run_final_trf(model, incumbent[1], model.bounds, loss_opts.lm_trf_max_nfev)
+    return package_solution(model, res.x, res)
+```
+
+**Notes**
+
+* `package_solution(...)` builds your standard `Solution` with `point_coords`, `success`, `max_residual`, and breakdown.
+* Use a single RNG seeded from program hash; **never** random‑rotate when a gauge edge exists (§7/§18.3).
+* After each stage (and finally), run **DDC‑Check** (§16). Accept only if `status in {"ok","partial"}` (or `"ambiguous"` when allowed).
+
+---
+
+## T.7 Residual builder hooks (single switch)
+
+Add **two helpers** and thread a `sigma` float through all residual primitives:
+
+```python
+def hinge(t, sigma):
+    if sigma == 0.0: return torch.clamp(t, min=0.0)
+    z = t / sigma
+    # numerically stable softplus
+    return sigma * torch.nn.functional.softplus(z)
+
+def abs_smooth(t, sigma):
+    if sigma == 0.0: return torch.abs(t)
+    return torch.sqrt(t*t + sigma*sigma) - sigma
+```
+
+Use them for:
+
+* ray/segment clamping hinges,
+* min‑separation floors,
+* **shape guards** (§S: height/angle/area floors),
+* any other `max(0,·)` or `|·|`‑based term.
+
+---
+
+## T.8 Fallback (no Torch or disabled Loss‑mode)
+
+When `loss_opts.enabled=False` or Torch is unavailable:
+
+1. Run **the same σ schedule** and **robust loss schedule** (T.3).
+2. At each σ stage, call **SciPy `least_squares`** (`method="trf"`, same tolerances), with:
+
+   * `loss` set to `"soft_l1"`/`"huber"`/`"linear"` per stage,
+   * deterministic reseeds exactly as in §18 (no random rotations).
+3. Carry forward the **best incumbent** by total cost, then max residual, then DDC status.
+4. Final stage at `σ=0`, `loss="linear"`, exact least‑squares.
+
+This gives you a robust path even without autodiff.
+
+---
+
+## T.9 Quality & scaling
+
+* Use **float64** throughout Torch and SciPy.
+* **Scale** decision variables by scene scale to balance Jacobian columns; unscale on I/O.
+* **Gradient clipping** protects Adam early; keep `adam_clip` conservative (≈10).
+* For very large `m×n`, consider numeric Jacobian (`jac=None`) in final TRF; or compute J only on active groups.
+
+---
+
+## T.10 Tests (must‑pass)
+
+1. **Cold‑start robustness**
+   On a hinge‑heavy parallelogram/trapezoid, 10 random attempts → **≥9/10** success with this pipeline; plain TRF single‑start may fail.
+2. **Homotopy benefit**
+   With `σ=0` only, at least one seed fails; with schedule, all succeed.
+3. **DDC consistency**
+   Final `Solution` yields `DDC status in {"ok","partial"}` (or `"ambiguous"` if allowed).
+4. **Equivalence on easy scenes**
+   For well‑posed triangles, final targets match direct TRF within `1e-9`.
+5. **Determinism**
+   Fixed seed + same program → identical numeric output.
+
+---
+
+## T.11 Implementation checklist
+
+* [ ] Add `SolverOptions`, `LossModeOptions`.
+* [ ] Implement `hinge` / `abs_smooth` and thread `sigma` through all residual primitives (including §S guards).
+* [ ] Torch functions: `residuals_torch`, `loss_torch`, `grad_torch`, `jacobian_torch`.
+* [ ] Optimizers: `run_adam_torch` (with projection), `run_lbfgs_torch` (closure + projection), `run_final_trf`.
+* [ ] Stage orchestrator `solve_globalized(...)` with schedules from T.3 and DDC gates.
+* [ ] Respect §18 seeding rules (gauge endpoints never rotated/jittered).
+* [ ] Wire into your existing `solve*` entry point; preserve the `Solution` shape.
+* [ ] Add tests from T.10 to CI.
