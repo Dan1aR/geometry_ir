@@ -1160,7 +1160,7 @@ Use `force_parallel=True` to seed an almost-parallel `line A-B` and `line C-D`; 
 2. Use **deterministic derivations** (from **DDC-Plan**) to seed any single-valued points exactly; do **not** optimize what we can compute.
 3. Handle common authoring patterns: `point … on <Path>`, `intersect(Path, Path)`, tangency, equal lengths/ratios, parallels, perpendiculars, rays/segments clamping.
 4. Be **robust**: cheap O(n)–O(n log n) scans, no brittle branching on AST strings; work from normalized **PathSpec** and typed hints.
-5. Keep the **primary gauge edge fixed** across attempts; jitter others modestly; escalate jitter per attempt without random global rotations (when a gauge is present).
+5. Keep the **primary gauge edge fixed** across attempts; freeze the attempt-0 gauge alignment as the baseline, and record cumulative jitter norms so each reseed increases the Sobol σ monotonically (no random global rotations when a gauge is present).
 
 ### 18.1 Data sources
 
@@ -1187,6 +1187,8 @@ Let `base = max(layout.scale, 1e-3)`. Let `(G1,G2)` be endpoints of the primary 
 * Place `(G1,G2)` at canonical positions: `G1=(0,0)`, `G2=(base,0)`. If a third canonical vertex exists in the selected `layout` (e.g., `triangle_*`), place it above the base. Scatter other points on a small circle of radius `≈0.5·base` with blue-noise jitter (no global rotation).
 * Mark `G1,G2` **protected**: they must not be moved or jittered by later stages or reseeds.
 
+> **GraphMDS safety valve.** After classical MDS we rescale to `≈0.75·base`, clip coordinates to `±4·base`, and abort the MDS seed entirely when the positive eigenspectrum is too ill-conditioned (`cond > 1e6`), falling back to Sobol.
+
 **Stage B — Deterministic derivations (Plan).**
 
 * For every `P ∈ plan.derived_points`, evaluate its rule (guarded). If the guard fails at the seed, skip here (the compiler will demote once per §13). Otherwise **write** `P`’s coordinates and (if `P` is still a variable in the model) use them as the starting guess.
@@ -1194,7 +1196,7 @@ Let `base = max(layout.scale, 1e-3)`. Let `(G1,G2)` be endpoints of the primary 
 **Stage C — Path adherence for `on_path`.**
 For each variable point `P` with `on_path` hints:
 
-* **Line/Ray/Segment**: orthogonally project the current `P` onto the carrier line; for **Ray** clamp `t≥0`, for **Segment** clamp `t∈[0,1]`.
+* **Line/Ray/Segment**: orthogonally project the current `P` onto the carrier line; for **Ray** clamp `t≥0`, for **Segment** clamp `t∈[0,1]`. Feet (`foot`, `perpendicular_at`) and right-angle anchors register the same projections so they always take part in this sweep.
 * **Circle(O; r)**: if `O` and a radius witness exist, place `P = O + r·û` where `û` is chosen by:
 
   * soft selectors (`choose=…` with `anchor`/`ref`),
@@ -1211,24 +1213,30 @@ For each `intersect(Path1, Path2) at P` (including **On∩On** syntheses):
 
 **Stage E — Metric nudges (length/equal/ratio).**
 
-* **Length** `‖AB‖=L`: if one endpoint is protected or already placed with high confidence, move the other endpoint onto the ray from the anchor by `L` (no movement if both endpoints protected).
-* **Equal-length** groups: pick a reference edge with non-zero current length; for each other edge, if one endpoint is “anchored” (protected or appears in multiple hints), place the free endpoint to match the reference length, with direction taken from:
+* **Length** `‖AB‖=L`: apply a **step-limited nudge** toward the target length (`Δ=α·(L-‖AB‖)` with `α≈0.5`) and clamp the absolute step by `κ·scale` so hints never blow up the seed. Displacement per point accrues against a running cap; once a point travels `>κ_total·scale` we stop honoring further hard-length nudges in that cycle.
+* **Equal-length** groups: pick a reference edge with non-zero current length; for each other edge, nudge along its current direction toward the target using the same capped step policy (with a softer `α`). If one endpoint is “anchored” (protected or appears in multiple hints), prefer moving the other endpoint; otherwise split the displacement conservatively. Directions are chosen from:
 
   * the averaged directions of any intersection/`on_path` targets involving that edge’s line-like carriers (if any),
   * otherwise the current edge direction,
   * otherwise the reference edge direction.
-* **Ratio** `AB:CD = p:q`: when three endpoints are reasonably positioned, place the fourth along its current direction to satisfy the ratio approximately.
+* **Ratio** `AB:CD = p:q`: when three endpoints are reasonably positioned, nudge the fourth along its current direction to satisfy the ratio under the same capped-step policy (so chains of ratios cannot eject points).
 
 **Stage F — Parallels / Perpendiculars / Tangency.**
 
 * If edges `AB ∥ CD` and `CD` has a stable direction, rotate `AB`’s direction to match; nudge the non-anchored endpoint.
 * For `AB ⟂ CD`, rotate `AB` to the perpendicular of `CD`.
-* For known tangent line `X–Y` to circle center `O` at `T`, seed `T` as the foot of the orthogonal projection of `O` onto line `XY` (validated by `|‖OT‖−r| ≤ ε_tan`).
+* For known tangent line `X–Y` to circle center `O` at `T`, seed `T` as the foot of the orthogonal projection of `O` onto line `XY` (validated by `|‖OT‖−r| ≤ ε_tan`) and retain the branch tags (`choose=left|right|cw|ccw`) in the hint payload so later nudges keep the intended tangent.
 
 **Stage G — Safety pass.**
 
 # NEW
-* Enforce **min-separation** and polygon **edge/area floors** at the seed by spreading any colliding points slightly along existing directions (without moving `G1,G2`).
+* Enforce **min-separation** and polygon **edge/area floors** at the seed by spreading any colliding points slightly along existing directions (without moving `G1,G2`). During the very first solve attempt we smooth these guard residuals (`σ ≈ 0.25·min_sep`) so inequality walls do not dominate before other constraints engage.
+
+**Stage H — Projection warm-start (POCS).**
+
+* Build typed projection operators for every supported constraint (`point_on` carriers, `foot`/`perpendicular_at`, `parallel_edges`, `angle`/`right-angle`, `ratio`, `equal_segments`, `concyclic`, circle incidences). Each operator touches only the points involved in that statement.
+* Run 3 alternating-projection sweeps with a conservative blend (`α≈0.45`). Updates are capped to the affected points, then the model realigns gauges and re-evaluates deterministic derivations so derived points stay coherent.
+* Diagnostics capture how many times each constraint kind fired, the cumulative displacement magnitudes, and any guard failures observed during the warm-start so downstream logging pinpoints stubborn facts.
 
 > **Parallelogram seed (new).** If a `parallelogram A-B-C-D` has no numeric angle/length fixing its shape, seed a comfortable slant to avoid needle starts:
 >
@@ -2177,6 +2185,11 @@ score(a) =
 > 3. running a **stage pipeline**: *Adam* → *L‑BFGS* → *LM/TRF*, with **deterministic multistart** reseeds.
 >    The result still satisfies your solver contract (§13), works with DDC (§16), seeding (§18), and shape guards (§S).
 
+> **Implementation note:** The pipeline now executes genuine Adam and L‑BFGS stages. Adam leverages `torch.optim.Adam`
+> with central finite-difference gradients (step size `adam_fd_eps`), while the L‑BFGS stage calls `scipy.optimize.minimize`
+> (`method="L-BFGS-B"`) on the same smoothed scalar loss. Torch autodiff wiring for residuals remains future work; when
+> `autodiff="off"` the schedule falls back to the SciPy least-squares stages.
+
 ---
 
 ## T.1 Public API (non‑breaking additions)
@@ -2207,6 +2220,7 @@ class LossModeOptions:
     adam_lr: float = 0.05
     adam_steps: int = 800
     adam_clip: float = 10.0
+    adam_fd_eps: float = 1e-6
     # LBFGS
     lbfgs_maxiter: int = 500
     lbfgs_tol: float = 1e-9
@@ -2277,6 +2291,9 @@ Deterministic multistart: on each σ stage, do `restarts[k]` attempts using **§
 
 **Contract:** residual builder is **pure**, maps flat `x ∈ R^n` ↔ point coordinates via `model.index`, and accepts a `sigma` float.
 
+> **Status:** Numeric finite-difference gradients drive the Adam stage today. The scaffold below remains the roadmap for wiring
+> full Torch autodiff so stages can consume exact gradients/Jacobians when available.
+
 ```python
 # Set Torch defaults (double precision)
 import torch
@@ -2324,24 +2341,15 @@ Purpose: aggressive progress on smooth loss.
 - steps: loss_opts.adam_steps (≈800)
 - lr:    loss_opts.adam_lr
 - grad clipping: clip to ±loss_opts.adam_clip (∞-norm)
+- gradient: central finite differences over `_scalar_loss_numpy` (step `adam_fd_eps` scaled per variable)
 - stop early if relative improvement < early_stop_factor over 50 steps
 ```
 
-### T.5.2 L‑BFGS (Torch)
+### T.5.2 L‑BFGS (SciPy)
 
-Use `torch.optim.LBFGS` with a closure:
-
-```python
-opt = torch.optim.LBFGS([x], max_iter=lbfgs_maxiter, tolerance_grad=lbfgs_tol)
-def closure():
-    opt.zero_grad(set_to_none=True)
-    L = loss_torch(x, model, sigma, robust)
-    L.backward()
-    return L
-opt.step(closure)
-```
-
-* **Bounds:** do a projection (`x.data.clamp_`) inside closure after `backward()` but before returning `L`, or wrap each step.
+Use `scipy.optimize.minimize(..., method="L-BFGS-B")` on the same scalar loss (`_scalar_loss_numpy`). Pass `lbfgs_maxiter`
+and `lbfgs_tol` via the `options` dict; reuse the candidate even if the optimizer reports a soft failure, then optionally fall
+back to the SciPy least-squares stage.
 
 ### T.5.3 Final exact pass: SciPy LM/TRF (σ = 0)
 

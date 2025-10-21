@@ -1,0 +1,33 @@
+# В параллелограмме $ABCD$ через точку пересечения диагоналей проведена прямая, которая отсекает на сторонах $BC$ и $AD$ отрезки $BE = 2$ м и $AF = 2,8$ м. Найдите стороны $BC$ и $AD$.
+scene "Parallelogram ABCD with transversal through diagonal intersection"
+layout canonical=generic scale=1.0
+points A, B, C, D, O, E, F
+parallelogram A-B-C-D
+segment A-B
+segment B-C
+segment C-D
+segment D-A
+parallel-edges (A-B ; C-D)
+parallel-edges (B-C ; D-A)
+equal-segments (A-B ; C-D)
+equal-segments (B-C ; D-A)
+segment A-C
+segment B-D
+intersect (segment A-C) with (segment B-D) at O
+point O on segment A-C
+point O on segment B-D
+point E on segment B-C
+segment B-E [length=2]
+point F on segment A-D
+segment A-F [length=2.8]
+collinear (E, O, F)
+target length A-D
+target length B-C
+segment A-B
+segment B-C
+segment C-D
+segment D-A
+segment A-B
+segment C-D
+segment B-C
+segment D-A

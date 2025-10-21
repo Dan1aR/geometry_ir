@@ -1,5 +1,6 @@
 .DS_Store
 # Yandex build + infra
+.DS_Store
 lib*a
 test-results
 tests/*dSYM

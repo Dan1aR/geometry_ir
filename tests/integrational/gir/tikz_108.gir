@@ -1,0 +1,12 @@
+# Хорды $AB$ и $CD$ пересекаются в точке $Е$. Найдите $ED$, если: а) $АЕ = 5$, $BE = 2$, $CE = 2,5$;
+scene "Intersecting chords AB and CD at E"
+layout canonical=generic_auto scale=1.0
+points A, B, C, D, E
+segment A-E [length=5]
+segment E-B [length=2]
+collinear (A, E, B)
+segment C-D
+point E on segment C-D
+segment C-E [length=2.5]
+concyclic (A, B, C, D)
+target length E-D

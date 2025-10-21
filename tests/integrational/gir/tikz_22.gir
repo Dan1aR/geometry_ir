@@ -1,0 +1,18 @@
+# В равнобедренном треугольнике $ABC$ с основанием $АС$ проведены биссектриса $AF$ и высота $АН$. Найдите углы треугольника $AHF$, если $\angle B = 112^\circ$.
+scene "Isosceles triangle ABC with base AC, bisector AF, and altitude AH"
+layout canonical=generic_auto scale=1.0
+points A, B, C, F, H
+triangle A-B-C
+segment A-B
+segment B-C
+segment C-A
+equal-segments (A-B ; B-C)
+angle A-B-C [degrees=112]
+intersect (angle-bisector B-A-C) with (segment B-C) at F [choose=between]
+point F on angle-bisector B-A-C
+point F on segment B-C
+segment A-F
+foot H from A to B-C
+target angle F-A-H
+target angle A-H-F
+target angle H-F-A

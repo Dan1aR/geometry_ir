@@ -1,0 +1,19 @@
+# В равностороннем треугольнике $ABC$ проведена биссектриса $AD$. Расстояние от точки $D$ до прямой $АС$ равно 6 см. Найдите расстояние от вершины $А$ до прямой $ВС$.
+scene "Equilateral triangle ABC with bisector AD"
+layout canonical=triangle_ABC scale=1.0
+points A, B, C, D, H, K
+triangle A-B-C [equilateral=true]
+segment A-B
+segment B-C
+segment C-A
+intersect (angle-bisector B-A-C) with (segment B-C) at D [anchor=B choose=near]
+point D on angle-bisector B-A-C
+point D on segment B-C
+segment A-D
+foot H from D to A-C
+segment D-H [length=6]
+foot K from A to B-C
+target length A-K
+segment A-B
+segment B-C
+segment C-A
