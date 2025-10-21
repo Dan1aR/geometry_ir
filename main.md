@@ -146,6 +146,7 @@ Branch choices act as soft hinges to resolve two-root ambiguities without brittl
 * `equal-segments (...) [label="..."]`
 * `parallel-edges (...)`
 * `polygon/triangle/... [isosceles=atA|atB|atC]`
+* `triangle ... [right=atA|atB|atC]`
 * `trapezoid [...] [bases=A-D]`
 * `trapezoid [isosceles=true|false]`
 
@@ -156,7 +157,7 @@ Branch choices act as soft hinges to resolve two-root ambiguities without brittl
 ### Incidence groups
 
 * `collinear(A,B,C,...)` with ≥3 points.
-* `concyclic(A,B,C,D,...)` with ≥3 points.
+* `concyclic(A,B,C,D,...)` with ≥4 distinct points.
 
 ### Circles & tangency
 
@@ -338,7 +339,7 @@ The solver’s initial-guess routine **must not** disturb the primary orientatio
 * **Arity & distinctness**
 
   * `triangle`: exactly three distinct points; quads/special quads: four distinct points; `polygon`: ≥3 distinct points.
-  * `collinear`: ≥3 points; `concyclic`: ≥3 points.
+  * `collinear`: ≥3 points; `concyclic`: ≥4 distinct points.
   * `equal-angles`: both lists non-empty; all angle vertices distinct from their endpoints.
   * `circle through (...)`: ≥3 distinct points.
 * **Options**
