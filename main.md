@@ -378,27 +378,60 @@ norm. Residuals are assembled by `geoscript_ir.solver.translate`.
 
 ## 7. Solver Pipeline (`geoscript_ir.solver`)
 
-### 7.1 Translation & Residual Assembly
+### 7.1 Derivation Planning
 
-* `translate(program)` walks the (optionally desugared) `Program`, creates solver
-  variables per point, and emits residual blocks grouped by statement.
-* Residuals are weighted: hard constraints use weight 1; structural guards use a
-  small `w_shape` (see §7.3).
-* Additional helper gauges stabilize under-constrained scenes: orientation
-  anchors, min-separation hinges, and edge-length floors on carrier edges.
+* `plan_derive(program)` inspects every statement to register deterministic
+  constructions (midpoints, feet, diameters, tangents, line intersections) and
+  to flag ambiguous points introduced by `choose=` options or circle
+  intersections.【F:geoscript_ir/solver.py†L963-L1028】
+* When multiple `point ... on ...` statements reference the same point without a
+  branch selector, the planner synthesizes an intersection rule so the solver can
+  derive that point instead of treating it as a variable.【F:geoscript_ir/solver.py†L1030-L1044】
+* The resulting `DerivationPlan` separates `base_points`, automatically derived
+  points, ambiguous points, and logs human-readable `notes` used for later
+  reporting.【F:geoscript_ir/solver.py†L1046-L1074】
 
-### 7.2 Seeding & Numerical Solve
+### 7.2 Model Compilation & Residual Assembly
 
-* Seed hints gather constraints from placements (`on`, `intersect`, `tangent`),
-  metric statements, ratios, parallels, perpendiculars, and concyclicity.
-* `_collect_point_order` ensures deterministic variable ordering based on source
-  statements (`points` list first, then traversal of statements/options).
-* `solve(program, *, initial_guess=None, max_iter=100)` uses SciPy’s
-  `least_squares` with analytic Jacobians supplied by residual functions.
-* `Solution` objects capture point coordinates, derivation plan metadata, and
-  residual diagnostics. Orientation gauges ensure consistent global rotation.
+* `compile_with_plan(program, plan)` applies the plan while building a numeric
+  `Model`. It fixes point ordering, gathers polygon metadata, tracks carrier
+  edges for guards, records layout hints, and picks an orientation gauge edge so
+  subsequent solves are stable.【F:geoscript_ir/solver.py†L2465-L2537】
+* `build_seed_hints` annotates the model with per-point and global hints for the
+  initializer (circle radius fallbacks, tangent mirrors, diameter partners,
+  concyclicity groups, etc.), which are later consumed by `initial_guess`.【F:geoscript_ir/solver.py†L294-L515】
+* After the first seed, plan guards are evaluated; any derived point that
+  violates incidence bounds is promoted back to a variable and tagged in the plan
+  notes so the caller understands the relaxation.【F:geoscript_ir/solver.py†L3007-L3047】
+* `Model` instances retain layout metadata (`layout_canonical`,
+  `layout_scale`), plan notes, seed hints, polygon descriptors, and a copy of the
+  residual configuration for later inspection.【F:geoscript_ir/solver.py†L2994-L3023】
+* `ResidualBuilderConfig` exposes solver tunables (min-separation scale, edge
+  floors, shape weights, etc.) and can be inspected or replaced via
+  `get_residual_builder_config` / `set_residual_builder_config`. Residual
+  builders raise `ResidualBuilderError` when rejecting unsupported statements.【F:geoscript_ir/solver.py†L1089-L1254】
+* `translate(program)` is a thin wrapper that runs `plan_derive` followed by
+  `compile_with_plan` on the validated program.【F:geoscript_ir/solver.py†L3052-L3056】
 
-### 7.3 Structural Guards (#NEW)
+### 7.3 Seeding, Loss Modes & Solve Loop
+
+* `initial_guess(model, rng, attempt, plan=...)` uses the stored seed hints and
+  layout scale to place points, respecting tangency externals, median directions,
+  and previously derived coordinates while reseeding each attempt.【F:geoscript_ir/solver.py†L3059-L3269】
+* `SolveOptions` configure the base SciPy `least_squares` call. When
+  `enable_loss_mode` is true, `_solve_with_loss_mode` executes a staged schedule
+  of sigma-smoothing and robust losses (Soft L1, Huber, Levenberg–Marquardt) with
+  multistart restarts before falling back to the classic solver path on
+  failure.【F:geoscript_ir/solver.py†L1104-L1519】【F:geoscript_ir/solver.py†L4156-L4173】
+* The standard solver performs multiple reseeds, automatically extends the
+  attempt budget when all runs miss the tolerance, and optionally relaxes a small
+  set of min-separation guards to salvage near-coincident configurations while
+  recording warnings.【F:geoscript_ir/solver.py†L4180-L4344】
+* `Solution` objects expose the solved coordinates, residual breakdown, warning
+  log, and helpers like `normalized_point_coords`, which delegates to
+  `normalize_point_coords` for deterministic scaling.【F:geoscript_ir/solver.py†L1195-L1269】
+
+### 7.4 Structural Guards (#NEW)
 
 The appendix formerly labelled §6.5/S.* is integrated here to prevent valid but
 "squished" shapes. All guards are **soft, scale-aware hinge residuals** activated
@@ -413,7 +446,8 @@ s_min   = 0.10    # min |sin(angle)| cushion between adjacent edges (~5.7°)
 w_shape = 0.05    # small weight for all "shape" residuals (≪ 1.0 for hard facts)
 ```
 
-Implement these in the residual builder configuration; expose as tunables.
+Implement these in the residual builder configuration; expose as tunables (see
+§7.2).
 
 #### S.2 Height Floor (Altitude Hinge)
 
@@ -466,6 +500,16 @@ residuals += w_shape * [
 These guards **do not** participate in DDC (§8); they are aesthetic stabilizers
 only.
 
+### 7.5 Variant Utilities
+
+* `score_solution` ranks solutions by convergence success and residual magnitude
+  so CLI tools can pick the strongest candidate.【F:geoscript_ir/solver.py†L1231-L1234】
+* `solve_best_model(models, options)` solves each compiled variant and returns
+  the best-performing index + solution tuple, while `solve_with_desugar_variants`
+  integrates desugaring, translation, and selection into one helper returning a
+  `VariantSolveResult`.【F:geoscript_ir/solver.py†L4378-L4412】
+
+
 ---
 
 ## 8. Deterministic Derivation & Cross-Check (DDC) (`geoscript_ir.ddc`)
@@ -504,12 +548,31 @@ only.
 * Loads bundled GeoScript scenes for demos/tests. Offers quick inspection via
   `python -m geoscript_ir.demo`.
 
+### 9.4 Orientation & Coordinate Normalization
+
+* `apply_orientation(program, point_coords)` reorients solved coordinates for
+  display. It prefers source `trapezoid` declarations (especially those with an
+  explicit `bases=` option), falling back to isosceles triangles inferred from
+  options or equal-segment groups; otherwise it returns the original coordinates
+  with an identity transform.【F:geoscript_ir/orientation.py†L42-L239】
+* Trapezoid candidates are rotated so the averaged base direction becomes
+  horizontal and reflected, if necessary, to keep the shorter base above the
+  longer one. The routine records the applied matrix, translation, pivot, and the
+  figure that triggered the transform inside an `OrientationResult`.【F:geoscript_ir/orientation.py†L240-L336】
+* `normalize_point_coords` (and `Solution.normalized_point_coords`) are exposed at
+  the package level for deterministic min/max scaling when rendering or printing
+  coordinates outside the CLI.【F:geoscript_ir/solver.py†L1195-L1269】
+
 ---
 
 ## 10. Command-Line Interfaces & Tooling
 
 * `python -m geoscript_ir` exposes a CLI that tokenizes, parses, validates, and
-  solves scenes. Flags enable printing ASTs, running DDC, and exporting TikZ.
+  solves scenes. Runtime flags cover logging level, solver seed, reseed attempt
+  budget, and optional TikZ export path for the best-scoring variant.【F:geoscript_ir/__main__.py†L31-L57】
+* Each run logs desugared variants, consistency hot-fixes, solver statistics, and
+  chooses the winner via `score_solution`, printing both raw and normalized point
+  coordinates before optionally writing a standalone TikZ document.【F:geoscript_ir/__main__.py†L79-L173】
 * `geoscript_ir.demo` launches an interactive prompt that lets users inspect
   bundled scenes.
 * `.github/prompts/compile.prompt.md` enumerates required CI steps: install with
