@@ -48,7 +48,7 @@ source text ──▶ lexer ──▶ parser ──▶ AST ──▶ validator �
 | Numeric helpers | `geoscript_ir.numbers`, `geoscript_ir.orientation` | Symbolic numbers with numeric payloads, orientation utilities. |
 | Validation | `geoscript_ir.validate`, `geoscript_ir.consistency` | Structural checks, option validation, solver dry-run, and missing-support warnings with auto hot-fixes. |
 | Desugaring | `geoscript_ir.desugar` | Expands polygons/traits into primitive facts; produces program variants. |
-| Residual builder & solver | `geoscript_ir.solver` | Translates validated programs into least-squares residuals and solves them with SciPy. |
+| Residual builder & solver | `geoscript_ir.solver` package (`plan`, `builder`, `solver_core`, `model`) | Translates validated programs into least-squares residuals and solves them with SciPy. |
 | Deterministic derivation & cross-check | `geoscript_ir.ddc` | Recomputes derivable points from explicit rules and compares against the numeric solution. |
 | Rendering & exports | `geoscript_ir.printer`, `geoscript_ir.reference`, `geoscript_ir.reference_tikz`, `geoscript_ir.tikz_codegen` | Pretty-printing, example gallery, TikZ export helpers. |
 | Tests & prompts | `tests/`, `.github/prompts/*.prompt.md` | Regression suite and alignment prompts (`compile`, `lint`). |
@@ -383,53 +383,53 @@ norm. Residuals are assembled by `geoscript_ir.solver.translate`.
 * `plan_derive(program)` inspects every statement to register deterministic
   constructions (midpoints, feet, diameters, tangents, line intersections) and
   to flag ambiguous points introduced by `choose=` options or circle
-  intersections.【F:geoscript_ir/solver.py†L963-L1028】
+  intersections.【F:geoscript_ir/solver/plan.py†L343-L408】
 * When multiple `point ... on ...` statements reference the same point without a
   branch selector, the planner synthesizes an intersection rule so the solver can
-  derive that point instead of treating it as a variable.【F:geoscript_ir/solver.py†L1030-L1044】
+  derive that point instead of treating it as a variable.【F:geoscript_ir/solver/plan.py†L410-L424】
 * The resulting `DerivationPlan` separates `base_points`, automatically derived
   points, ambiguous points, and logs human-readable `notes` used for later
-  reporting.【F:geoscript_ir/solver.py†L1046-L1074】
+  reporting.【F:geoscript_ir/solver/plan.py†L426-L454】
 
 ### 7.2 Model Compilation & Residual Assembly
 
 * `compile_with_plan(program, plan)` applies the plan while building a numeric
   `Model`. It fixes point ordering, gathers polygon metadata, tracks carrier
   edges for guards, records layout hints, and picks an orientation gauge edge so
-  subsequent solves are stable.【F:geoscript_ir/solver.py†L2465-L2537】
+  subsequent solves are stable.【F:geoscript_ir/solver/builder.py†L1500-L1568】
 * `build_seed_hints` annotates the model with per-point and global hints for the
   initializer (circle radius fallbacks, tangent mirrors, diameter partners,
-  concyclicity groups, etc.), which are later consumed by `initial_guess`.【F:geoscript_ir/solver.py†L294-L515】
+  concyclicity groups, etc.), which are later consumed by `initial_guess`.【F:geoscript_ir/solver/seed.py†L144-L231】
 * After the first seed, plan guards are evaluated; any derived point that
   violates incidence bounds is promoted back to a variable and tagged in the plan
-  notes so the caller understands the relaxation.【F:geoscript_ir/solver.py†L3007-L3047】
+  notes so the caller understands the relaxation.【F:geoscript_ir/solver/builder.py†L1572-L1614】
 * `Model` instances retain layout metadata (`layout_canonical`,
   `layout_scale`), plan notes, seed hints, polygon descriptors, and a copy of the
-  residual configuration for later inspection.【F:geoscript_ir/solver.py†L2994-L3023】
+  residual configuration for later inspection.【F:geoscript_ir/solver/builder.py†L1551-L1568】
 * `ResidualBuilderConfig` exposes solver tunables (min-separation scale, edge
   floors, shape weights, etc.) and can be inspected or replaced via
   `get_residual_builder_config` / `set_residual_builder_config`. Residual
-  builders raise `ResidualBuilderError` when rejecting unsupported statements.【F:geoscript_ir/solver.py†L1089-L1254】
+  builders raise `ResidualBuilderError` when rejecting unsupported statements.【F:geoscript_ir/solver/builder.py†L1118-L1377】
 * `translate(program)` is a thin wrapper that runs `plan_derive` followed by
-  `compile_with_plan` on the validated program.【F:geoscript_ir/solver.py†L3052-L3056】
+  `compile_with_plan` on the validated program.【F:geoscript_ir/solver/builder.py†L1617-L1621】
 
 ### 7.3 Seeding, Loss Modes & Solve Loop
 
 * `initial_guess(model, rng, attempt, plan=...)` uses the stored seed hints and
   layout scale to place points, respecting tangency externals, median directions,
-  and previously derived coordinates while reseeding each attempt.【F:geoscript_ir/solver.py†L3059-L3269】
+  and previously derived coordinates while reseeding each attempt.【F:geoscript_ir/solver/initial_guess.py†L31-L422】
 * `SolveOptions` configure the base SciPy `least_squares` call. When
   `enable_loss_mode` is true, `_solve_with_loss_mode` executes a staged schedule
   of sigma-smoothing and robust losses (Soft L1, Huber, Levenberg–Marquardt) with
   multistart restarts before falling back to the classic solver path on
-  failure.【F:geoscript_ir/solver.py†L1104-L1519】【F:geoscript_ir/solver.py†L4156-L4173】
+  failure.【F:geoscript_ir/solver/solver_core.py†L31-L178】【F:geoscript_ir/solver/solver_core.py†L182-L351】
 * The standard solver performs multiple reseeds, automatically extends the
   attempt budget when all runs miss the tolerance, and optionally relaxes a small
   set of min-separation guards to salvage near-coincident configurations while
-  recording warnings.【F:geoscript_ir/solver.py†L4180-L4344】
+  recording warnings.【F:geoscript_ir/solver/solver_core.py†L182-L351】
 * `Solution` objects expose the solved coordinates, residual breakdown, warning
   log, and helpers like `normalized_point_coords`, which delegates to
-  `normalize_point_coords` for deterministic scaling.【F:geoscript_ir/solver.py†L1195-L1269】
+  `normalize_point_coords` for deterministic scaling.【F:geoscript_ir/solver/model.py†L52-L123】
 
 ### 7.4 Structural Guards (#NEW)
 
@@ -503,11 +503,11 @@ only.
 ### 7.5 Variant Utilities
 
 * `score_solution` ranks solutions by convergence success and residual magnitude
-  so CLI tools can pick the strongest candidate.【F:geoscript_ir/solver.py†L1231-L1234】
+  so CLI tools can pick the strongest candidate.【F:geoscript_ir/solver/model.py†L119-L123】
 * `solve_best_model(models, options)` solves each compiled variant and returns
   the best-performing index + solution tuple, while `solve_with_desugar_variants`
   integrates desugaring, translation, and selection into one helper returning a
-  `VariantSolveResult`.【F:geoscript_ir/solver.py†L4378-L4412】
+  `VariantSolveResult`.【F:geoscript_ir/solver/solver_core.py†L353-L384】
 
 
 ---
@@ -561,7 +561,7 @@ only.
   figure that triggered the transform inside an `OrientationResult`.【F:geoscript_ir/orientation.py†L240-L336】
 * `normalize_point_coords` (and `Solution.normalized_point_coords`) are exposed at
   the package level for deterministic min/max scaling when rendering or printing
-  coordinates outside the CLI.【F:geoscript_ir/solver.py†L1195-L1269】
+  coordinates outside the CLI.【F:geoscript_ir/solver/model.py†L95-L123】
 
 ---
 
