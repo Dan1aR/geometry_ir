@@ -1145,13 +1145,13 @@ class SolveOptions:
     tol: float = 1e-8
     reseed_attempts: int = 3
     random_seed: Optional[int] = 0
-    enable_loss_mode: bool = False
+    enable_loss_mode: bool = True
 
 
 @dataclass
 class LossModeOptions:
     enabled: bool = True
-    autodiff: Literal["torch", "off"] = "torch"
+    autodiff: Literal["torch", "off"] = "off"
     sigmas: Optional[List[float]] = None
     robust_losses: Optional[List[str]] = None
     stages: Optional[List[str]] = None
@@ -1403,6 +1403,104 @@ def _smooth_block(values: np.ndarray, sigma: float) -> np.ndarray:
     return np.sign(values) * smoothed
 
 
+def _scalar_loss(model: Model, x: np.ndarray, *, sigma: float, robust: str) -> Tuple[float, np.ndarray]:
+    """Compute scalar loss from residuals via `_evaluate` with smoothing.
+    Returns (loss, residual_vector)."""
+    vals, _, _ = _evaluate(model, x, sigma=sigma)
+    loss = _robust_scalar(vals, robust)
+    return loss, vals
+
+
+def _finite_diff_grad(
+    model: Model,
+    x: np.ndarray,
+    *,
+    sigma: float,
+    robust: str,
+    eps: float = 1e-6,
+    use_central: bool = True,
+) -> Tuple[np.ndarray, float]:
+    """Approximate gradient of scalar robust loss wrt x by finite differences.
+    Returns (grad, fval)."""
+    x = np.asarray(x, dtype=float)
+    f0, _ = _scalar_loss(model, x, sigma=sigma, robust=robust)
+    n = x.size
+    grad = np.zeros_like(x)
+    for i in range(n):
+        step = eps * max(1.0, abs(x[i]))
+        if use_central:
+            x[i] += step
+            f_plus, _ = _scalar_loss(model, x, sigma=sigma, robust=robust)
+            x[i] -= 2.0 * step
+            f_minus, _ = _scalar_loss(model, x, sigma=sigma, robust=robust)
+            x[i] += step  # restore
+            grad[i] = (f_plus - f_minus) / (2.0 * step)
+        else:
+            x[i] += step
+            f_plus, _ = _scalar_loss(model, x, sigma=sigma, robust=robust)
+            x[i] -= step  # restore
+            grad[i] = (f_plus - f0) / step
+    return grad, f0
+
+def _adam_optimize(
+    model: Model,
+    x0: np.ndarray,
+    *,
+    sigma: float,
+    robust: str,
+    lr: float = 0.05,
+    steps: int = 800,
+    clip: float = 10.0,
+    beta1: float = 0.9,
+    beta2: float = 0.999,
+    eps: float = 1e-8,
+    early_stop_factor: float = 1e-6,
+) -> Tuple[np.ndarray, float]:
+    """Run a simple Adam optimizer on the scalar robust loss produced by residuals.
+    Uses finite-difference gradients (central differences) for generality.
+    Returns (best_params, best_loss)."""
+    x = np.array(x0, dtype=float, copy=True)
+    m = np.zeros_like(x)
+    v = np.zeros_like(x)
+    best_x = x.copy()
+    best_loss, _ = _scalar_loss(model, x, sigma=sigma, robust=robust)
+    prev_loss = best_loss
+    no_improve = 0
+
+    for t in range(1, steps + 1):
+        g, fval = _finite_diff_grad(model, x, sigma=sigma, robust=robust)
+        # Gradient clipping
+        if clip is not None and clip > 0:
+            g_norm = float(np.linalg.norm(g))
+            if g_norm > clip:
+                g = (clip / (g_norm + 1e-12)) * g
+
+        # Adam update
+        m = beta1 * m + (1.0 - beta1) * g
+        v = beta2 * v + (1.0 - beta2) * (g * g)
+        m_hat = m / (1.0 - beta1 ** t)
+        v_hat = v / (1.0 - beta2 ** t)
+        step = lr * m_hat / (np.sqrt(v_hat) + eps)
+        x = x - step
+
+        # Track best
+        if fval < best_loss:
+            best_loss = fval
+            best_x = x.copy()
+
+        # Early stopping on plateau
+        rel_impr = (prev_loss - fval) / max(1.0, abs(prev_loss))
+        if rel_impr < early_stop_factor:
+            no_improve += 1
+        else:
+            no_improve = 0
+        prev_loss = fval
+
+        if no_improve >= 10:
+            break
+
+    return best_x, best_loss
+
 def _robust_scalar(values: np.ndarray, robust: str) -> float:
     if robust == "linear":
         return float(np.sum(values * values))
@@ -1429,6 +1527,7 @@ def _solve_with_loss_mode(
 
     sigmas, robusts, stages, restarts = _resolve_loss_schedule(model, loss_opts)
 
+    # incumbent tracks: (stage_loss, vars_solution, breakdown, guard_failures, max_res, converged)
     incumbent: Optional[
         Tuple[float, np.ndarray, List[Tuple[ResidualSpec, np.ndarray]], List[Tuple[PointName, str]], float, bool]
     ] = None
@@ -1441,6 +1540,7 @@ def _solve_with_loss_mode(
         attempts = restarts[idx]
 
         for attempt in range(attempts):
+            # Try to carry forward the previous-best parameters at the first attempt for this stage.
             if incumbent is not None and attempt == 0:
                 x0 = incumbent[1]
             else:
@@ -1449,6 +1549,7 @@ def _solve_with_loss_mode(
                 x0 = _extract_variable_vector(model, full_guess)
 
             if x0.size == 0:
+                # Nothing to optimize.
                 vars_solution = np.zeros(0, dtype=float)
                 stage_vals = np.zeros(0, dtype=float)
                 stage_loss = 0.0
@@ -1458,29 +1559,48 @@ def _solve_with_loss_mode(
                     vals, _, _ = _evaluate(model, vec, sigma=sigma)
                     return vals
 
-                method = "lm" if stage == "lm" else options.method
-                if stage == "lm" and robust != "linear":
-                    robust = "linear"
-                max_nfev = loss_opts.lm_trf_max_nfev if stage == "lm" else options.max_nfev
-                result = least_squares(
-                    fun,
-                    x0,
-                    method=method,
-                    loss=robust,
-                    max_nfev=max_nfev,
-                    ftol=options.tol,
-                    xtol=options.tol,
-                    gtol=options.tol,
-                )
-                vars_solution = result.x
-                stage_vals, _, _ = _evaluate(model, vars_solution, sigma=sigma)
-                stage_loss = _robust_scalar(stage_vals, robust)
-                converged_stage = bool(getattr(result, "success", True))
+                if stage == "adam":
+                    # Gradient-based exploration of the scalar robust loss on variables only.
+                    vars_solution, _ = _adam_optimize(
+                        model,
+                        x0,
+                        sigma=sigma,
+                        robust=robust,
+                        lr=loss_opts.adam_lr,
+                        steps=loss_opts.adam_steps,
+                        clip=loss_opts.adam_clip,
+                        early_stop_factor=loss_opts.early_stop_factor,
+                    )
+                    stage_vals, _, _ = _evaluate(model, vars_solution, sigma=sigma)
+                    stage_loss = _robust_scalar(stage_vals, robust)
+                    converged_stage = True
+                else:
+                    # SciPy least_squares polish (TRF/dogbox) or final LM.
+                    method = "lm" if stage == "lm" else options.method
+                    if stage == "lm" and robust != "linear":
+                        robust = "linear"
+                    max_nfev = loss_opts.lm_trf_max_nfev if stage == "lm" else options.max_nfev
+                    result = least_squares(
+                        fun,
+                        x0,
+                        method=method,
+                        loss=robust,
+                        max_nfev=max_nfev,
+                        ftol=options.tol,
+                        xtol=options.tol,
+                        gtol=options.tol,
+                    )
+                    vars_solution = result.x
+                    stage_vals, _, _ = _evaluate(model, vars_solution, sigma=sigma)
+                    stage_loss = _robust_scalar(stage_vals, robust)
+                    converged_stage = bool(getattr(result, "success", True))
 
+            # Always assess true residuals at sigma=0 for convergence.
             final_vals, breakdown, guard_failures = _evaluate(model, vars_solution, sigma=0.0)
             max_res = float(np.max(np.abs(final_vals))) if final_vals.size else 0.0
             converged = converged_stage and max_res <= options.tol
 
+            # Update incumbent if improved by a small margin.
             update = False
             if incumbent is None:
                 update = True
@@ -4159,11 +4279,7 @@ def solve(
 ) -> Solution:
     effective_loss_opts = loss_opts or LossModeOptions()
     if options.enable_loss_mode and effective_loss_opts.enabled:
-        try:
-            return _solve_with_loss_mode(model, options, effective_loss_opts, plan=plan)
-        except Exception:
-            # Fall back to legacy solver path when loss-mode fails
-            pass
+        return _solve_with_loss_mode(model, options, effective_loss_opts, plan=plan)
 
     rng = np.random.default_rng(options.random_seed)
     warnings: List[str] = []

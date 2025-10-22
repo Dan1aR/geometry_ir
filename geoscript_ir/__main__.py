@@ -54,6 +54,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             "Write a standalone TikZ document for the best variant to the given path"
         ),
     )
+    parser.add_argument('--loss-mode', action='store_true', help='enable robust gradient-based solver (Adam + LM hybrid)')
+    parser.add_argument('--adam-lr', type=float, default=0.05, help='Adam learning rate')
+    parser.add_argument('--adam-steps', type=int, default=800, help='Adam steps per stage')
+    parser.add_argument('--robust', default='soft_l1', help='robust loss for Adam stages (linear|soft_l1|huber)')
+    parser.add_argument('--sigma', type=float, default=None, help='smoothing sigma override (e.g. 0.05)')
     args = parser.parse_args(argv)
 
     _configure_logging(args.log_level)
@@ -73,7 +78,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     logger.info("Generated %d desugared variant(s)", len(variants))
 
-    solve_options = SolveOptions(random_seed=args.seed, reseed_attempts=args.reseed_attempts)
+    solve_options = SolveOptions(random_seed=args.seed, reseed_attempts=args.reseed_attempts, enable_loss_mode=args.loss_mode)
     variant_results: List[Dict[str, object]] = []
 
     for idx, variant in enumerate(variants):
@@ -100,7 +105,16 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             len(model.residuals),
         )
 
-        solution = solve(model, solve_options)
+        from geoscript_ir.solver import LossModeOptions
+        loss_opts = LossModeOptions(enabled=args.loss_mode)
+        if args.loss_mode:
+            loss_opts.adam_lr = args.adam_lr
+            loss_opts.adam_steps = args.adam_steps
+            if args.robust:
+                loss_opts.robust_losses = [args.robust]
+            if args.sigma is not None:
+                loss_opts.sigmas = [args.sigma]
+        solution = solve(model, solve_options, loss_opts=loss_opts)
         logger.info(
             "Variant %d solver result: success=%s, max_residual=%.3e",
             idx,
@@ -171,6 +185,6 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         )
         output_path.write_text(tikz_document, encoding="utf-8")
         print(f"TikZ document written to {output_path}")
-
+        
 if __name__ == "__main__":
     main(sys.argv[1:])
