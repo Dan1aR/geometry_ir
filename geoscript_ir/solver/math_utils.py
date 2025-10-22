@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -7,6 +8,10 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 
 from .types import Edge, FunctionalRuleError, PointName, is_point_name
+from ..logging_utils import apply_debug_logging
+
+
+logger = logging.getLogger(__name__)
 
 
 def _vec2(a: Tuple[float, float], b: Tuple[float, float]) -> Tuple[float, float]:
@@ -234,6 +239,9 @@ def _quadrilateral_convexity_residuals(edges: Sequence[np.ndarray]) -> np.ndarra
 
 _TURN_MARGIN = math.sin(math.radians(1.0))
 _TURN_SIGN_MARGIN = 0.5 * (_TURN_MARGIN ** 2)
+
+
+apply_debug_logging(globals(), logger=logger)
 
 
 __all__ = [

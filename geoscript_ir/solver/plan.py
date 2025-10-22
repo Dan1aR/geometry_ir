@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from .math_utils import (
@@ -22,6 +23,10 @@ from .types import (
     is_point_name,
 )
 from ..ast import Program, Stmt
+from ..logging_utils import apply_debug_logging
+
+
+logger = logging.getLogger(__name__)
 
 
 def _register_point_name(order: List[PointName], seen: Set[PointName], name: PointName) -> None:
@@ -341,6 +346,7 @@ def _line_tangent_rule(stmt: Stmt) -> Optional[Tuple[PointName, FunctionalRule]]
 
 
 def plan_derive(program: Program) -> DerivationPlan:
+    logger.debug("plan_derive: analyzing program with %d statement(s)", len(program.stmts))
     point_order = _collect_point_order(program)
     candidates: Dict[PointName, List[FunctionalRule]] = {}
     ambiguous: Set[PointName] = set()
@@ -446,12 +452,22 @@ def plan_derive(program: Program) -> DerivationPlan:
     ambiguous_points = [p for p in point_order if p in ambiguous and p not in derived_names]
     base_points = [p for p in point_order if p not in derived_names and p not in ambiguous]
 
-    return DerivationPlan(
+    plan = DerivationPlan(
         base_points=base_points,
         derived_points=derived_points,
         ambiguous_points=ambiguous_points,
         notes=notes,
     )
+    logger.debug(
+        "plan_derive: produced plan with base=%d derived=%d ambiguous=%d",
+        len(plan.get("base_points", [])),
+        len(plan.get("derived_points", {})),
+        len(plan.get("ambiguous_points", [])),
+    )
+    return plan
+
+
+apply_debug_logging(globals(), logger=logger)
 
 
 __all__ = [

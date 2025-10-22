@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import logging
 import math
 import numbers
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -29,6 +30,10 @@ from .types import (
     SeedHints,
     is_point_name,
 )
+from ..logging_utils import apply_debug_logging, debug_log_call
+
+
+logger = logging.getLogger(__name__)
 
 
 def initial_guess(
@@ -43,6 +48,7 @@ def initial_guess(
     n = len(model.points)
     guess = np.zeros(2 * n)
     if n == 0:
+        logger.debug("initial_guess attempt=%d -> empty model (no points)", attempt)
         return guess
 
     hints = model.seed_hints or SeedHints(by_point={}, global_hints=[])
@@ -51,6 +57,17 @@ def initial_guess(
 
     layout_scale = model.layout_scale if model.layout_scale is not None else model.scale
     base_scale = max(float(layout_scale or 1.0), 1e-3)
+    function_logger = logger.getChild("initial_guess")
+    function_logger.debug(
+        "Preparing initial guess attempt=%d for %d point(s) with base_scale=%.6g (layout_scale=%s)",
+        attempt,
+        n,
+        base_scale,
+        layout_scale,
+    )
+    function_logger.debug(
+        "Seed hint summary: %d by-point entries, %d global hints", len(by_point), len(global_hints)
+    )
 
     tangent_externals: Set[str] = set()
     for hint in global_hints:
@@ -73,25 +90,42 @@ def initial_guess(
             tangent_externals.add(e1)
         elif point_str == e1:
             tangent_externals.add(e0)
+    if tangent_externals:
+        function_logger.debug(
+            "Tangent external anchors identified: %s", sorted(tangent_externals)
+        )
+    else:
+        function_logger.debug("No tangent external anchors identified")
 
     coords: Dict[PointName, Tuple[float, float]] = {}
     protected: Set[PointName] = set()
 
+    def _wrap(name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        return debug_log_call(function_logger, name=f"initial_guess.{name}")
+
+    @_wrap("set_coord")
     def set_coord(name: PointName, value: Tuple[float, float]) -> None:
         coords[name] = (float(value[0]), float(value[1]))
+        function_logger.debug(
+            "Coordinate assigned: %s -> (%.6g, %.6g)", name, coords[name][0], coords[name][1]
+        )
 
+    @_wrap("get_coord")
     def get_coord(name: PointName) -> Tuple[float, float]:
         return coords.get(name, (0.0, 0.0))
 
+    @_wrap("ensure_coord")
     def ensure_coord(name: PointName) -> None:
         coords.setdefault(name, (0.0, 0.0))
 
+    @_wrap("normalize_vec")
     def normalize_vec(vec: Tuple[float, float]) -> Optional[Tuple[float, float]]:
         norm = math.hypot(vec[0], vec[1])
         if norm <= 1e-12:
             return None
         return vec[0] / norm, vec[1] / norm
 
+    @_wrap("line_spec_from_path")
     def line_spec_from_path(path: Optional[PathSpec]) -> Optional[_LineLikeSpec]:
         if not path:
             return None
@@ -170,6 +204,7 @@ def initial_guess(
             return _LineLikeSpec(anchor=get_coord(v), direction=direction, kind="line")
         return None
 
+    @_wrap("circle_from_path")
     def circle_from_path(
         path: Optional[PathSpec],
         payload: Optional[Dict[str, Any]] = None,
@@ -202,6 +237,7 @@ def initial_guess(
             radius = max(base_scale, 1.0)
         return center, radius
 
+    @_wrap("project_to_line")
     def project_to_line(spec: _LineLikeSpec, point: Tuple[float, float]) -> Tuple[float, float]:
         anchor = spec.anchor
         direction = spec.direction
@@ -216,6 +252,7 @@ def initial_guess(
             t = max(t, 0.0)
         return (anchor[0] + t * direction[0], anchor[1] + t * direction[1])
 
+    @_wrap("circle_direction")
     def circle_direction(path: PathSpec, payload: Dict[str, Any], point: PointName) -> Tuple[float, float]:
         center_name = path.get("center")
         center = get_coord(center_name) if center_name else (0.0, 0.0)
@@ -232,6 +269,7 @@ def initial_guess(
             return _vec2(center, get_coord(radius_point))
         return (1.0, 0.0)
 
+    @_wrap("apply_on_path")
     def apply_on_path(point: PointName, hint: SeedHint) -> None:
         if point in protected:
             return
@@ -288,7 +326,10 @@ def initial_guess(
         projected = project_to_line(line_spec, current)
         set_coord(point, projected)
 
-    def line_circle_intersections(line_spec: _LineLikeSpec, circle: Tuple[Tuple[float, float], float]) -> List[Tuple[Tuple[float, float], float]]:
+    @_wrap("line_circle_intersections")
+    def line_circle_intersections(
+        line_spec: _LineLikeSpec, circle: Tuple[Tuple[float, float], float]
+    ) -> List[Tuple[Tuple[float, float], float]]:
         center, radius = circle
         p = line_spec.anchor
         d = line_spec.direction
@@ -313,6 +354,7 @@ def initial_guess(
             ((p[0] + t2 * d[0], p[1] + t2 * d[1]), t2),
         ]
 
+    @_wrap("circle_circle_intersections")
     def circle_circle_intersections(
         circle_a: Tuple[Tuple[float, float], float],
         circle_b: Tuple[Tuple[float, float], float],
@@ -341,6 +383,7 @@ def initial_guess(
             ((xm - rx, ym - ry), 0.0, 0.0),
         ]
 
+    @_wrap("membership_ok")
     def membership_ok(line_spec: _LineLikeSpec, t: float) -> bool:
         if line_spec.kind == "segment":
             return -1e-9 <= t <= 1.0 + 1e-9
@@ -348,6 +391,7 @@ def initial_guess(
             return t >= -1e-9
         return True
 
+    @_wrap("select_candidate")
     def select_candidate(
         point: PointName,
         candidates: List[Tuple[float, float]],
@@ -415,6 +459,7 @@ def initial_guess(
         )
         return candidates[0]
 
+    @_wrap("apply_intersection")
     def apply_intersection(point: PointName, hint: SeedHint) -> None:
         if point in protected:
             return
@@ -451,11 +496,13 @@ def initial_guess(
         if chosen:
             set_coord(point, chosen)
 
+    @_wrap("distance")
     def distance(a: PointName, b: PointName) -> float:
         if a not in coords or b not in coords:
             return 0.0
         return _norm2(_vec2(get_coord(a), get_coord(b)))
 
+    @_wrap("choose_anchor")
     def choose_anchor(edge: Tuple[str, str], hint_counts: Dict[str, int]) -> Tuple[str, str]:
         a, b = edge
         if a in protected and b not in protected:
@@ -468,6 +515,7 @@ def initial_guess(
             return a, b
         return b, a
 
+    @_wrap("move_point_along")
     def move_point_along(edge: Tuple[str, str], length: float, hint_counts: Dict[str, int]) -> None:
         a, b = choose_anchor(edge, hint_counts)
         if b in protected:
@@ -487,6 +535,7 @@ def initial_guess(
         new_pos = (anchor[0] + normed[0] * length, anchor[1] + normed[1] * length)
         set_coord(b, new_pos)
 
+    @_wrap("apply_equal_lengths")
     def apply_equal_lengths(edges: List[Tuple[str, str]], hint_counts: Dict[str, int]) -> None:
         if len(edges) < 2:
             return
@@ -497,7 +546,10 @@ def initial_guess(
         for edge in edges[1:]:
             move_point_along(edge, ref_len, hint_counts)
 
-    def apply_ratio(edges: List[Tuple[str, str]], ratio: Tuple[float, float], hint_counts: Dict[str, int]) -> None:
+    @_wrap("apply_ratio")
+    def apply_ratio(
+        edges: List[Tuple[str, str]], ratio: Tuple[float, float], hint_counts: Dict[str, int]
+    ) -> None:
         if len(edges) != 2:
             return
         edge_a, edge_b = edges
@@ -521,6 +573,7 @@ def initial_guess(
             target = len_b * p / q
             move_point_along(edge_a, target, hint_counts)
 
+    @_wrap("apply_parallel")
     def apply_parallel(edges: List[Tuple[str, str]], hint_counts: Dict[str, int]) -> None:
         if len(edges) < 2:
             return
@@ -542,6 +595,7 @@ def initial_guess(
             new_pos = (anchor[0] + normed[0] * length, anchor[1] + normed[1] * length)
             set_coord(b, new_pos)
 
+    @_wrap("apply_perpendicular")
     def apply_perpendicular(edges: List[Tuple[str, str]], hint_counts: Dict[str, int]) -> None:
         if len(edges) < 2:
             return
@@ -564,6 +618,7 @@ def initial_guess(
             new_pos = (anchor[0] + perp[0] * length, anchor[1] + perp[1] * length)
             set_coord(b, new_pos)
 
+    @_wrap("apply_tangent")
     def apply_tangent(payload: Dict[str, Any]) -> None:
         center = payload.get("center")
         point = payload.get("point")
@@ -646,6 +701,7 @@ def initial_guess(
                     proj = project_to_line(line_spec, get_coord(center))
                     set_coord(point, proj)
 
+    @_wrap("fit_circle")
     def fit_circle(points: List[Tuple[float, float]]) -> Optional[Tuple[Tuple[float, float], float]]:
         if not points:
             return None
@@ -690,6 +746,7 @@ def initial_guess(
         radius = math.sqrt(radius_sq)
         return (cx, cy), max(radius, 1e-3)
 
+    @_wrap("apply_concyclic")
     def apply_concyclic(payload: Dict[str, Any]) -> None:
         names = payload.get("points")
         if not isinstance(names, list):
@@ -714,6 +771,7 @@ def initial_guess(
             new_pos = (center[0] + normed[0] * radius, center[1] + normed[1] * radius)
             set_coord(name, new_pos)
 
+    @_wrap("safety_pass")
     def safety_pass() -> None:
         cfg_local = (
             model.residual_config
@@ -976,8 +1034,14 @@ def initial_guess(
             guess[2 * idx + 1] = coords[name][1]
 
     protected_indices = {model.index[name] for name in protected if name in model.index}
+    function_logger.debug(
+        "Initial guess populated with %d coordinate(s); protected points=%s",
+        len(coords),
+        sorted(protected),
+    )
 
     if attempt == 0:
+        function_logger.debug("Returning initial guess without jitter for attempt 0")
         return guess
 
     sigma_attempt = min(0.2, 0.05 * (1 + attempt)) * base_scale
@@ -985,6 +1049,12 @@ def initial_guess(
     for idx in protected_indices:
         jitter[2 * idx : 2 * idx + 2] = 0.0
     guess += jitter
+    function_logger.debug(
+        "Applied jitter with sigma=%.6g on attempt %d; protected indices=%s",
+        sigma_attempt,
+        attempt,
+        sorted(protected_indices),
+    )
     if model.derived:
         updated_coords = {
             name: (guess[2 * idx], guess[2 * idx + 1])
@@ -998,6 +1068,7 @@ def initial_guess(
             base = idx * 2
             guess[base] = value[0]
             guess[base + 1] = value[1]
+    function_logger.debug("Initial guess ready for attempt %d", attempt)
     return guess
 
 
@@ -1066,6 +1137,6 @@ def _evaluate_plan_coords(
     return derived_coords, failures
 
 
-
+apply_debug_logging(globals(), logger=logger)
 
 __all__ = ["initial_guess"]

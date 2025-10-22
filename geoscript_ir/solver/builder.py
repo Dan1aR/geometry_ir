@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import copy
+import logging
 import math
 import numbers
 from collections import defaultdict
 from itertools import combinations
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
@@ -51,6 +52,10 @@ from .types import (
 )
 from ..ast import Program, Stmt
 from .initial_guess import _evaluate_plan_coords, _extract_variable_vector, initial_guess
+from ..logging_utils import apply_debug_logging, debug_log_call
+
+
+logger = logging.getLogger(__name__)
 
 
 _CANONICAL_BASE_EDGE_MAP: Dict[str, Edge] = {
@@ -1049,6 +1054,16 @@ _RESIDUAL_BUILDERS: Dict[str, Callable[[Stmt, Dict[PointName, int]], List[Residu
 def _compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
     """Translate a validated GeometryIR program using a fixed derivation plan."""
 
+    compile_logger = logger.getChild("_compile_with_plan")
+    compile_logger.debug(
+        "Compiling program with %d statement(s); plan keys=%s",
+        len(program.stmts),
+        sorted(plan.keys()) if isinstance(plan, dict) else [],
+    )
+
+    def _wrap(name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        return debug_log_call(compile_logger, name=f"_compile_with_plan.{name}")
+
     plan_derived: Dict[PointName, FunctionalRule] = dict(plan.get("derived_points", {}) or {})
     plan_base: List[PointName] = list(plan.get("base_points", []) or [])
     plan_amb: List[PointName] = list(plan.get("ambiguous_points", []) or [])
@@ -1074,6 +1089,7 @@ def _compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
         if is_point_name(name):
             _register_point(order, seen, name)
 
+    @_wrap("register_scale")
     def register_scale(value: object) -> None:
         try:
             if value is None:
@@ -1084,6 +1100,7 @@ def _compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
         except (TypeError, ValueError):
             return
 
+    @_wrap("mark_distinct")
     def mark_distinct(a: PointName, b: PointName, reason: str = "") -> None:
         if a == b:
             return
@@ -1093,6 +1110,7 @@ def _compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
         if reason:
             distinct_pairs[pair].add(reason)
 
+    @_wrap("handle_edge")
     def handle_edge(edge: Sequence[str]) -> None:
         nonlocal orientation_edge
         a, b = edge[0], edge[1]
@@ -1105,6 +1123,7 @@ def _compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
         if a != b:
             carrier_edges.add((a, b))
 
+    @_wrap("handle_path")
     def handle_path(path_value: object) -> None:
         if not isinstance(path_value, (list, tuple)) or len(path_value) != 2:
             return
@@ -1567,6 +1586,14 @@ def _compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
 
     model_layout_scale = layout_scale_value if layout_scale_value is not None else scene_scale
 
+    compile_logger.debug(
+        "Model assembled: points=%d, residuals=%d, gauges=%s, variables=%d",
+        len(order),
+        len(residuals),
+        gauges,
+        len(variable_points),
+    )
+
     return Model(
         points=order,
         index=index,
@@ -1597,6 +1624,12 @@ def compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
         "ambiguous_points": list(plan.get("ambiguous_points", []) or []),
         "notes": list(plan.get("notes", []) or []),
     }
+    logger.debug(
+        "compile_with_plan initial plan stats: base=%d derived=%d ambiguous=%d",
+        len(working_plan.get("base_points", [])),
+        len(working_plan.get("derived_points", {})),
+        len(working_plan.get("ambiguous_points", [])),
+    )
 
     model = _compile_with_plan(program, working_plan)
 
@@ -1606,6 +1639,7 @@ def compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
     initial_vars = _extract_variable_vector(model, initial_full)
     _, guard_failures = _assemble_full_vector(model, initial_vars)
     if guard_failures:
+        logger.debug("compile_with_plan guard failures: %s", guard_failures)
         derived = dict(working_plan.get("derived_points", {}))
         ambiguous = list(working_plan.get("ambiguous_points", []))
         notes = list(working_plan.get("notes", []))
@@ -1622,6 +1656,12 @@ def compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
                 notes.append(f"plan degradation: promoted {point} ({reason})")
                 changed = True
         if changed:
+            logger.debug(
+                "Plan adjusted after guard failures: now base=%d derived=%d ambiguous=%d",
+                len(working_plan.get("base_points", [])),
+                len(derived),
+                len(ambiguous),
+            )
             working_plan = {
                 "base_points": list(working_plan.get("base_points", [])),
                 "derived_points": derived,
@@ -1629,6 +1669,8 @@ def compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
                 "notes": notes,
             }
             model = _compile_with_plan(program, working_plan)
+    else:
+        logger.debug("compile_with_plan: no guard failures detected")
 
     return model
 
@@ -1636,7 +1678,14 @@ def compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
 def translate(program: Program) -> Model:
     """Translate a validated GeometryIR program into a numeric model."""
 
+    logger.debug("translate: deriving plan for program with %d statement(s)", len(program.stmts))
     plan = plan_derive(program)
+    logger.debug(
+        "translate: obtained plan with base=%d derived=%d ambiguous=%d",
+        len(plan.get("base_points", []) or []),
+        len(plan.get("derived_points", {}) or {}),
+        len(plan.get("ambiguous_points", []) or []),
+    )
     return compile_with_plan(program, plan)
 
 
@@ -1692,7 +1741,11 @@ def _evaluate_full(
         blocks.append(smooth_vals)
         breakdown.append((spec, vals))
     if blocks:
+        logger.debug(
+            "Evaluated %d residual block(s) with sigma=%.6g", len(blocks), sigma
+        )
         return np.concatenate(blocks), breakdown
+    logger.debug("No residual blocks evaluated; returning empty vector")
     return np.zeros(0, dtype=float), breakdown
 
 
@@ -1701,9 +1754,16 @@ def _evaluate(
 ) -> Tuple[np.ndarray, List[Tuple[ResidualSpec, np.ndarray]], List[Tuple[PointName, str]]]:
     full, failures = _assemble_full_vector(model, variables)
     vals, breakdown = _evaluate_full(model, full, sigma=sigma)
+    logger.debug(
+        "Evaluation complete: %d residuals, %d failure(s), sigma=%.6g",
+        len(breakdown),
+        len(failures),
+        sigma,
+    )
     return vals, breakdown, failures
 
 
+apply_debug_logging(globals(), logger=logger)
 
 __all__ = [
     "translate",

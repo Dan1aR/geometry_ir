@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 from typing import List, Optional, Sequence, Tuple
 
@@ -26,6 +27,10 @@ from .model import (
 from .types import DerivationPlan, PointName
 from ..desugar import desugar_variants
 from .math_utils import _norm_sq
+from ..logging_utils import apply_debug_logging, debug_log_call
+
+
+logger = logging.getLogger(__name__)
 
 def _resolve_loss_schedule(model: Model, loss_opts: LossModeOptions) -> Tuple[List[float], List[str], List[str], List[int]]:
     default_sigmas = [0.20, 0.10, 0.05, 0.02, 0.00]
@@ -38,6 +43,14 @@ def _resolve_loss_schedule(model: Model, loss_opts: LossModeOptions) -> Tuple[Li
     stages = list(loss_opts.stages or default_stages)
     restarts = list(loss_opts.restarts_per_sigma or default_restarts)
 
+    logger.debug(
+        "_resolve_loss_schedule: start with sigmas=%s robust=%s stages=%s restarts=%s",
+        sigmas,
+        robusts,
+        stages,
+        restarts,
+    )
+
     if not (len(sigmas) == len(robusts) == len(stages)):
         raise ValueError("loss-mode schedule lists must have equal length")
     if len(restarts) < len(sigmas):
@@ -49,6 +62,13 @@ def _resolve_loss_schedule(model: Model, loss_opts: LossModeOptions) -> Tuple[Li
     sigmas = [max(0.0, s) * scale for s in sigmas]
 
     capped_restarts = [min(loss_opts.multistart_cap, max(1, int(r))) for r in restarts]
+
+    logger.debug(
+        "_resolve_loss_schedule: resolved schedule with sigmas=%s stages=%s restarts=%s",
+        sigmas,
+        stages,
+        capped_restarts,
+    )
 
     return sigmas, robusts, stages, capped_restarts
 
@@ -76,6 +96,9 @@ def _solve_with_loss_mode(
     warnings: List[str] = []
 
     sigmas, robusts, stages, restarts = _resolve_loss_schedule(model, loss_opts)
+    logger.debug(
+        "_solve_with_loss_mode: schedule=%s", list(zip(sigmas, stages, robusts, restarts))
+    )
 
     incumbent: Optional[
         Tuple[float, np.ndarray, List[Tuple[ResidualSpec, np.ndarray]], List[Tuple[PointName, str]], float, bool]
@@ -87,6 +110,14 @@ def _solve_with_loss_mode(
         stage = stages[idx]
         robust = robusts[idx]
         attempts = restarts[idx]
+        logger.debug(
+            "_solve_with_loss_mode: stage=%d sigma=%.6g method=%s robust=%s attempts=%d",
+            idx,
+            sigma,
+            stage,
+            robust,
+            attempts,
+        )
 
         for attempt in range(attempts):
             if incumbent is not None and attempt == 0:
@@ -95,6 +126,13 @@ def _solve_with_loss_mode(
                 full_guess = initial_guess(model, rng, seed_attempt, plan=plan)
                 seed_attempt += 1
                 x0 = _extract_variable_vector(model, full_guess)
+            logger.debug(
+                "_solve_with_loss_mode: stage=%d attempt=%d seed=%d initial_size=%d",
+                idx,
+                attempt,
+                seed_attempt,
+                x0.size,
+            )
 
             if x0.size == 0:
                 vars_solution = np.zeros(0, dtype=float)
@@ -128,6 +166,14 @@ def _solve_with_loss_mode(
             final_vals, breakdown, guard_failures = _evaluate(model, vars_solution, sigma=0.0)
             max_res = float(np.max(np.abs(final_vals))) if final_vals.size else 0.0
             converged = converged_stage and max_res <= options.tol
+            logger.debug(
+                "_solve_with_loss_mode: stage=%d attempt=%d loss=%.6g max_res=%.6g converged=%s", 
+                idx,
+                attempt,
+                stage_loss,
+                max_res,
+                converged,
+            )
 
             update = False
             if incumbent is None:
@@ -138,6 +184,11 @@ def _solve_with_loss_mode(
                     update = True
 
             if update:
+                logger.debug(
+                    "_solve_with_loss_mode: updating incumbent at stage=%d attempt=%d",
+                    idx,
+                    attempt,
+                )
                 incumbent = (stage_loss, vars_solution, breakdown, guard_failures, max_res, converged)
 
     if incumbent is None:
@@ -146,6 +197,8 @@ def _solve_with_loss_mode(
     _, best_vars, breakdown, guard_failures, max_res, converged = incumbent
     for point, reason in guard_failures:
         warnings.append(f"plan guard {point}: {reason}")
+    if guard_failures:
+        logger.debug("_solve_with_loss_mode: guard failures=%s", guard_failures)
 
     full_solution, _ = _assemble_full_vector(model, best_vars)
     coords = _full_vector_to_point_coords(model, full_solution)
@@ -166,6 +219,12 @@ def _solve_with_loss_mode(
         warnings.append(
             f"loss-mode solver did not meet tolerance {options.tol:.1e}; max residual {max_res:.3e}"
         )
+    logger.debug(
+        "_solve_with_loss_mode: final status converged=%s max_res=%.6g warnings=%d",
+        converged,
+        max_res,
+        len(warnings),
+    )
 
     return Solution(
         point_coords=coords,
@@ -186,6 +245,9 @@ def solve(
     plan: Optional[DerivationPlan] = None,
     _allow_relaxation: bool = True,
 ) -> Solution:
+    logger.debug(
+        "solve: starting with options=%s loss_enabled=%s", options, bool(loss_opts)
+    )
     effective_loss_opts = loss_opts or LossModeOptions()
     if options.enable_loss_mode and effective_loss_opts.enabled:
         try:
@@ -219,6 +281,9 @@ def solve(
 
         full_guess = initial_guess(model, rng, attempt_index, plan=plan)
         x0 = _extract_variable_vector(model, full_guess)
+        logger.debug(
+            "solve: attempt=%d initial_guess_size=%d", attempt_index, x0.size
+        )
 
         def fun(x: np.ndarray) -> np.ndarray:
             vals, _, _ = _evaluate(model, x)
@@ -256,6 +321,9 @@ def solve(
             best_result = (score, max_res, vars_solution, breakdown, converged, guard_failures)
 
         best_residual = min(best_residual, max_res)
+        logger.debug(
+            "solve: attempt=%d max_res=%.6g converged=%s", attempt_index, max_res, converged
+        )
         return max_res, converged
 
     any_converged = False
@@ -289,6 +357,8 @@ def solve(
 
     _, max_res, best_x, breakdown, converged, guard_failures = best_result
 
+    if guard_failures:
+        logger.debug("solve: guard failures=%s", guard_failures)
     for point, reason in guard_failures:
         warnings.append(f"plan guard {point}: {reason}")
 
@@ -391,6 +461,13 @@ def solve(
             }
         )
 
+    logger.debug(
+        "solve: finished with converged=%s max_res=%.6g warnings=%d",
+        converged,
+        max_res,
+        len(warnings),
+    )
+
     return Solution(
         point_coords=coords,
         success=converged,
@@ -407,12 +484,14 @@ def solve_best_model(models: Sequence[Model], options: SolveOptions = SolveOptio
     best_solution: Optional[Solution] = None
 
     for idx, model in enumerate(models):
+        logger.debug("solve_best_model: solving model %d/%d", idx + 1, len(models))
         candidate = solve(model, options)
         if best_solution is None or _solution_score(candidate) < _solution_score(best_solution):
             best_idx = idx
             best_solution = candidate
 
     assert best_solution is not None  # for type checkers
+    logger.debug("solve_best_model: selected model index %d", best_idx)
     return best_idx, best_solution
 
 def solve_with_desugar_variants(
@@ -423,6 +502,7 @@ def solve_with_desugar_variants(
         raise ValueError("desugar produced no variants")
 
     models: List[Model] = [translate(variant) for variant in variants]
+    logger.debug("solve_with_desugar_variants: generated %d variant(s)", len(models))
     best_idx, best_solution = solve_best_model(models, options)
 
     return VariantSolveResult(
@@ -431,6 +511,10 @@ def solve_with_desugar_variants(
         model=models[best_idx],
         solution=best_solution,
     )
+
+
+apply_debug_logging(globals(), logger=logger)
+
 
 __all__ = [
     "solve",

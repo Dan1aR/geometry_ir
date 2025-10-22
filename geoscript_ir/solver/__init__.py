@@ -1,3 +1,6 @@
+import logging
+
+from ..logging_utils import apply_debug_logging
 from .model import (
     Model,
     Solution,
@@ -16,6 +19,8 @@ from .plan import plan_derive
 from .builder import translate, compile_with_plan
 from .initial_guess import initial_guess
 from .solver_core import solve, solve_best_model, solve_with_desugar_variants
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "Model",
@@ -38,3 +43,8 @@ __all__ = [
     "solve_best_model",
     "solve_with_desugar_variants",
 ]
+
+if logger.isEnabledFor(logging.DEBUG):
+    logger.debug("solver package imported with entry points: %s", __all__)
+
+apply_debug_logging(globals(), logger=logger, wrap_methods=False)

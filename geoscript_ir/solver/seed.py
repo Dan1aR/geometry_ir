@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from itertools import combinations
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
@@ -15,6 +16,11 @@ from .types import (
 
 if TYPE_CHECKING:
     from ..ast import Program
+
+from ..logging_utils import apply_debug_logging
+
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_ref_value(value: object) -> Optional[Tuple[str, str]]:
@@ -144,6 +150,11 @@ def _normalize_hint_payload(opts: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 def build_seed_hints(program: "Program", plan: Optional[DerivationPlan]) -> SeedHints:
     """Construct per-point and global hints for the solver seed."""
 
+    logger.debug(
+        "build_seed_hints: processing %d statement(s); plan provided=%s",
+        len(program.stmts),
+        plan is not None,
+    )
     by_point: Dict[str, List[SeedHint]] = defaultdict(list)
     global_hints: List[SeedHint] = []
     on_path_groups: Dict[str, List[SeedHint]] = defaultdict(list)
@@ -385,7 +396,15 @@ def build_seed_hints(program: "Program", plan: Optional[DerivationPlan]) -> Seed
             }
             by_point[point].append(inter_hint)
 
+    logger.debug(
+        "build_seed_hints: generated %d by-point hint group(s) and %d global hint(s)",
+        len(by_point),
+        len(global_hints),
+    )
     return SeedHints(by_point=dict(by_point), global_hints=global_hints)
+
+
+apply_debug_logging(globals(), logger=logger)
 
 
 __all__ = [

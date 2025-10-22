@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict
 from typing import Literal
 
 import numpy as np
+
+from ..logging_utils import apply_debug_logging
+
+
+logger = logging.getLogger(__name__)
 
 PointName = str
 Edge = Tuple[str, str]
@@ -110,6 +116,9 @@ def is_edge_tuple(value: object) -> bool:
         and len(value) == 2
         and all(is_point_name(v) for v in value)
     )
+
+
+apply_debug_logging(globals(), logger=logger)
 
 
 __all__ = [

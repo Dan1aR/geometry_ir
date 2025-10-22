@@ -16,6 +16,7 @@ branches early.
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from itertools import combinations
@@ -24,6 +25,10 @@ from typing import Callable, Dict, Iterable, List, Literal, Optional, Sequence, 
 
 from .ast import Program, Stmt
 from .solver import Solution
+from .logging_utils import apply_debug_logging, debug_log_call
+
+
+logger = logging.getLogger(__name__)
 
 Point = Tuple[float, float]
 PointName = str
@@ -115,6 +120,14 @@ class Rule:
     opts: Dict[str, object]
     fact_id: str
     soft_selectors: Set[str]
+
+    def __post_init__(self) -> None:
+        if callable(self.solver):
+            solver_logger = logger.getChild(f"Rule[{self.name}]")
+            self.solver = debug_log_call(solver_logger, name=f"{self.name}.solver")(self.solver)
+            solver_logger.debug(
+                "Initialized rule for point %s with inputs=%s", self.point, sorted(self.inputs)
+            )
 
 
 @dataclass
@@ -1106,6 +1119,7 @@ def _collect_circles(program: Program) -> Dict[str, CircleInfo]:
             through = stmt.data.get("through")
             if isinstance(center, str) and isinstance(through, str):
                 circles[center] = CircleInfo(center=center, through=through, stmt=stmt)
+    logger.debug("_collect_circles: found %d circle(s)", len(circles))
     return circles
 
 
@@ -1142,6 +1156,7 @@ def _collect_rules(program: Program, circles: Dict[str, CircleInfo]) -> List[Rul
             rules.extend(_make_line_tangent_rules(stmt, circles))
 
     rules.extend(_synth_on_on_rules(point_on_map, tangent_map, circles))
+    logger.debug("_collect_rules: generated %d rule(s)", len(rules))
     return rules
 
 
@@ -1169,6 +1184,9 @@ def _topological_sort(points: Set[str], rules: List[Rule]) -> Tuple[List[str], L
     for node in points:
         if node not in seen:
             topo.append(node)
+    logger.debug(
+        "_topological_sort: topo_order=%d edges=%d", len(topo), len(edges)
+    )
     return topo, edges
 
 
@@ -1198,6 +1216,11 @@ def derive_and_check(
 ) -> DerivationReport:
     circles = _collect_circles(program)
     rules = _collect_rules(program, circles)
+    logger.debug(
+        "derive_and_check: starting with %d base point(s) and %d rule(s)",
+        len(solution.point_coords),
+        len(rules),
+    )
     base_coords = dict(solution.point_coords)
     derived_coords: Dict[str, Point] = {}
     reports: Dict[str, DerivedPointReport] = {}
@@ -1295,6 +1318,10 @@ def derive_and_check(
         graph_points.update(rule.inputs)
     topo_order, edges = _topological_sort(graph_points, rules)
 
+    logger.debug(
+        "derive_and_check: completed with status=%s summary=%s", status, summary
+    )
+
     return DerivationReport(
         status=status,
         summary=summary,
@@ -1320,6 +1347,12 @@ def evaluate_ddc(
     status = report.get("status", "partial")
     summary = report.get("summary", "")
     points = report.get("points", {}) or {}
+    logger.debug(
+        "evaluate_ddc: status=%s allow_ambiguous=%s points=%d",
+        status,
+        allow_ambiguous,
+        len(points),
+    )
 
     def _copy_reports(names: Iterable[str]) -> Dict[str, DerivedPointReport]:
         return {name: dict(points[name]) for name in names}
@@ -1386,7 +1419,7 @@ def evaluate_ddc(
         message_parts.append(" | ".join(details))
     message = " | ".join(message_parts)
 
-    return DDCCheckResult(
+    result = DDCCheckResult(
         status=status,
         severity=severity,
         message=message,
@@ -1395,3 +1428,10 @@ def evaluate_ddc(
         partial_points=partial_points,
         allow_ambiguous=allow_ambiguous,
     )
+    logger.debug(
+        "evaluate_ddc: severity=%s message=%s", result.severity, result.message
+    )
+    return result
+
+
+apply_debug_logging(globals(), logger=logger)

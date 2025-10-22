@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -15,6 +16,11 @@ from .types import (
     SeedHints,
 )
 from ..ast import Program, Stmt
+from ..logging_utils import apply_debug_logging, debug_log_call
+
+
+logger = logging.getLogger(__name__)
+residual_logger = logger.getChild("ResidualSpec")
 
 
 @dataclass
@@ -25,6 +31,14 @@ class ResidualSpec:
     kind: str
     source: Optional[Stmt] = None
     meta: Optional[Dict[str, object]] = None
+
+    def __post_init__(self) -> None:
+        if callable(self.func):
+            func_name = f"{self.key}.func"
+            self.func = debug_log_call(residual_logger, name=func_name)(self.func)
+            residual_logger.debug(
+                "Initialized residual %s (size=%d, kind=%s)", self.key, self.size, self.kind
+            )
 
 
 @dataclass
@@ -57,6 +71,7 @@ def set_residual_builder_config(config: ResidualBuilderConfig) -> None:
         raise TypeError("config must be a ResidualBuilderConfig instance")
     global _RESIDUAL_CONFIG
     _RESIDUAL_CONFIG = copy.deepcopy(config)
+    logger.debug("Residual builder configuration updated: %s", _RESIDUAL_CONFIG)
 
 
 @dataclass
@@ -162,6 +177,15 @@ def normalize_point_coords(
     max_y = max(ys)
 
     span = max(max_x - min_x, max_y - min_y, _DENOM_EPS)
+    logger.debug(
+        "Normalizing %d point(s) with bounds x=[%.6g, %.6g], y=[%.6g, %.6g], span=%.6g",
+        len(point_coords),
+        min_x,
+        max_x,
+        min_y,
+        max_y,
+        span,
+    )
 
     normalized: Dict[PointName, Tuple[float, float]] = {}
     for name, (x, y) in point_coords.items():
@@ -170,6 +194,9 @@ def normalize_point_coords(
         normalized[name] = (norm_x, norm_y)
 
     return normalized
+
+
+apply_debug_logging(globals(), logger=logger)
 
 
 __all__ = [
