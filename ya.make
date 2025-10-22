@@ -19,7 +19,15 @@ PY_SRCS(
     geoscript_ir/printer.py
     geoscript_ir/reference.py
     geoscript_ir/reference_tikz.py
-    geoscript_ir/solver.py
+    geoscript_ir/solver/__init__.py
+    geoscript_ir/solver/types.py
+    geoscript_ir/solver/math_utils.py
+    geoscript_ir/solver/seed.py
+    geoscript_ir/solver/plan.py
+    geoscript_ir/solver/model.py
+    geoscript_ir/solver/builder.py
+    geoscript_ir/solver/initial_guess.py
+    geoscript_ir/solver/solver_core.py
     geoscript_ir/validate.py
     geoscript_ir/numbers.py
     geoscript_ir/orientation.py
