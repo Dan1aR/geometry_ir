@@ -237,7 +237,7 @@ Let `v(P)` be the 2D variable of point `P`; `AB := v(B)−v(A)`, `×` = 2D cross
 * `line X-Y tangent ... at T` → `X,Y,T` collinear and `OT ⟂ XY`.
 * `diameter A-B to circle center O` → `O,A,B` collinear and `‖OA‖ = ‖OB‖`.
 
-### #NEW 6.5 Polygons & structural guards
+### 6.5 Polygons & structural guards
 
 > This appendix **revises §6.5** (Polygons & structural guards) and **extends §18** (Seeding) to prevent “valid but squished” shapes (e.g., near-zero height parallelograms / trapezoids). All guards are **soft, scale-aware hinge residuals** that only act when a scene is under-constrained.
 * **Polygons & structural guards.** Every declared polygon receives:
@@ -376,7 +376,6 @@ The validator runs a dry translation to ensure the residual builder can accept t
   * TikZ helpers, prompts `BNF`, `LLM_PROMPT`.
 
 ```python
-# NEW types (public sketch)
 class FunctionalRule(TypedDict):
     name: str
     inputs: List[str]               # point ids needed
@@ -391,7 +390,6 @@ class DerivationPlan(TypedDict):
 ```
 
 ```python
-# NEW: Seeding (initial guess) API
 class SeedHint(TypedDict):
     kind: Literal[
         "on_path",          # point constrained to a Path
@@ -1227,7 +1225,6 @@ For each `intersect(Path1, Path2) at P` (including **On∩On** syntheses):
 
 **Stage G — Safety pass.**
 
-# NEW
 * Enforce **min-separation** and polygon **edge/area floors** at the seed by spreading any colliding points slightly along existing directions (without moving `G1,G2`).
 
 > **Parallelogram seed (new).** If a `parallelogram A-B-C-D` has no numeric angle/length fixing its shape, seed a comfortable slant to avoid needle starts:

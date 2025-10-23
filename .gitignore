@@ -1,3 +1,4 @@
+.DS_Store
 # Yandex build + infra
 lib*a
 test-results
