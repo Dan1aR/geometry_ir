@@ -24,6 +24,8 @@ import numpy as np
 from scipy.optimize import least_squares
 
 from .ast import Program, Stmt
+from .cad import AdapterFail, AdapterOK, SlvsAdapter, SlvsAdapterOptions
+from .polish import PolishOptions, polish_scene
 
 PointName = str
 Edge = Tuple[str, str]
@@ -4146,4 +4148,104 @@ def solve_with_desugar_variants(
         program=variants[best_idx],
         model=models[best_idx],
         solution=best_solution,
+    )
+
+
+@dataclass
+class SolveSceneOptions:
+    """Options for the high-level CAD→polish solver pipeline."""
+
+    cad_solver: str = "slvs"
+    cad_seed: int = 0
+    gauge: Optional[Tuple[str, str, Optional[str]]] = None
+    polish: PolishOptions = field(default_factory=PolishOptions)
+
+
+@dataclass
+class SolveResult:
+    coords: Dict[str, Tuple[float, float]]
+    cad_status: Dict[str, object]
+    polish_report: Dict[str, object]
+    beauty_score: float
+    ddc_report: Dict[str, object]
+
+
+def solve_scene(program: Program, options: Optional[SolveSceneOptions] = None) -> SolveResult:
+    """Solve a GeoScript scene using the CAD adapter followed by polishing."""
+
+    if options is None:
+        options = SolveSceneOptions()
+
+    if options.cad_solver != "slvs":
+        raise ValueError(f"unsupported CAD solver: {options.cad_solver}")
+
+    adapter = SlvsAdapter()
+    cad_options = SlvsAdapterOptions(
+        gauge=options.gauge,
+        random_seed=options.cad_seed,
+    )
+    adapter_result = adapter.solve_equalities(program, cad_options)
+
+    if isinstance(adapter_result, AdapterFail):
+        return SolveResult(
+            coords={},
+            cad_status={
+                "ok": False,
+                "dof": adapter_result.dof,
+                "failures": list(adapter_result.failures),
+            },
+            polish_report={"enabled": False},
+            beauty_score=0.0,
+            ddc_report={"status": "not-run", "passed": False},
+        )
+
+    coords = dict(adapter_result.coords)
+
+    if not options.polish.enable:
+        polish_summary = {"enabled": False}
+        beauty_score = 1.0
+        polished_coords = coords
+    else:
+        polish_result = polish_scene(program, coords, options.polish)
+        polished_coords = polish_result.coords
+        beauty_score = polish_result.beauty_score
+        polish_summary = {
+            "enabled": True,
+            "success": polish_result.success,
+            "iterations": polish_result.iterations,
+            "residuals": dict(polish_result.residuals),
+            "notes": list(polish_result.notes),
+        }
+
+    solution = Solution(
+        point_coords=polished_coords,
+        success=True,
+        max_residual=0.0,
+        residual_breakdown=[],
+        warnings=[],
+    )
+
+    from .ddc import derive_and_check, evaluate_ddc
+
+    ddc_raw = derive_and_check(program, solution)
+    ddc_eval = evaluate_ddc(ddc_raw)
+
+    cad_status = {
+        "ok": True,
+        "dof": adapter_result.dof,
+        "failures": [],
+    }
+
+    return SolveResult(
+        coords=polished_coords,
+        cad_status=cad_status,
+        polish_report=polish_summary,
+        beauty_score=beauty_score,
+        ddc_report={
+            "status": ddc_eval.status,
+            "severity": ddc_eval.severity,
+            "message": ddc_eval.message,
+            "passed": ddc_eval.passed,
+            "report": ddc_raw,
+        },
     )
