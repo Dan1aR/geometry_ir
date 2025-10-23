@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import math
+import multiprocessing
 import random
+import traceback
 from dataclasses import dataclass
 from typing import Dict, Iterable, Iterator, List, Mapping, Optional, Tuple, Union
 
@@ -61,7 +63,7 @@ class AdapterOK:
 
     coords: Dict[PointName, Point2D]
     dof: int
-    system: slvs.SolverSystem
+    system: Optional[slvs.SolverSystem] = None
 
 
 @dataclass
@@ -70,6 +72,7 @@ class AdapterFail:
 
     failures: List[int]
     dof: int
+    message: Optional[str] = None
 
 
 AdapterResult = Union[AdapterOK, AdapterFail]
@@ -486,3 +489,100 @@ class SlvsAdapter:
 
         coords = _apply_gauge(coords, options.gauge)
         return AdapterOK(coords=coords, dof=max(system.dof() - 3, 0), system=system)
+
+
+def _adapter_worker(conn, program: Program, options: SlvsAdapterOptions) -> None:
+    try:
+        adapter = SlvsAdapter()
+        result = adapter.solve_equalities(program, options)
+        if isinstance(result, AdapterFail):
+            conn.send(
+                (
+                    "fail",
+                    {
+                        "failures": list(result.failures),
+                        "dof": result.dof,
+                        "message": result.message,
+                    },
+                )
+            )
+        else:
+            conn.send(
+                (
+                    "ok",
+                    {
+                        "coords": dict(result.coords),
+                        "dof": result.dof,
+                    },
+                )
+            )
+    except BaseException as exc:  # pragma: no cover - defensive guard
+        conn.send(
+            (
+                "error",
+                {
+                    "message": repr(exc),
+                    "traceback": traceback.format_exc(),
+                },
+            )
+        )
+    finally:
+        conn.close()
+
+
+def solve_equalities_safe(
+    program: Program,
+    options: SlvsAdapterOptions,
+    *,
+    timeout: float = 15.0,
+) -> AdapterResult:
+    """Run ``solve_equalities`` in a worker process to guard against native aborts."""
+
+    ctx = multiprocessing.get_context("spawn")
+    parent_conn, child_conn = ctx.Pipe(duplex=False)
+    process = ctx.Process(target=_adapter_worker, args=(child_conn, program, options))
+    process.start()
+    child_conn.close()
+
+    status: Optional[str]
+    payload: Optional[dict]
+    status = None
+    payload = None
+    try:
+        if parent_conn.poll(timeout):
+            status, payload = parent_conn.recv()
+        else:
+            status, payload = "error", {"message": "timeout"}
+    except EOFError:
+        status, payload = "error", {"message": "worker terminated unexpectedly"}
+    finally:
+        parent_conn.close()
+        process.join(timeout=0)
+        if process.is_alive():
+            process.terminate()
+            process.join()
+
+    if status == "ok" and isinstance(payload, dict):
+        return AdapterOK(coords=payload.get("coords", {}), dof=int(payload.get("dof", 0)))
+
+    if status == "fail" and isinstance(payload, dict):
+        return AdapterFail(
+            list(payload.get("failures", [])),
+            int(payload.get("dof", 0)),
+            message=payload.get("message"),
+        )
+
+    message_parts: List[str] = []
+    if isinstance(payload, dict):
+        msg = payload.get("message")
+        if msg:
+            message_parts.append(str(msg))
+        tb = payload.get("traceback")
+        if tb:
+            message_parts.append(str(tb))
+    exit_code = process.exitcode
+    if exit_code not in (0, None):
+        message_parts.append(f"exitcode={exit_code}")
+
+    message = "\n".join(part for part in message_parts if part)
+    return AdapterFail([-1], 0, message=message or None)

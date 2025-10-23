@@ -8,6 +8,7 @@ from .slvs_adapter import (
     SlvsAdapter,
     SlvsAdapterOptions,
     CAD_MAPPING_TABLE,
+    solve_equalities_safe,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "SlvsAdapter",
     "SlvsAdapterOptions",
     "CAD_MAPPING_TABLE",
+    "solve_equalities_safe",
 ]
