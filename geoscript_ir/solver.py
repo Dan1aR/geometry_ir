@@ -24,6 +24,8 @@ import numpy as np
 from scipy.optimize import least_squares
 
 from .ast import Program, Stmt
+from .cad import AdapterFail, AdapterOK, SlvsAdapterOptions, solve_equalities_safe
+from .polish import PolishOptions, polish_scene
 
 PointName = str
 Edge = Tuple[str, str]
@@ -1135,6 +1137,7 @@ class Model:
     primary_gauge_edge: Optional[Edge] = None
     polygons: List[Dict[str, object]] = field(default_factory=list)
     residual_config: ResidualBuilderConfig = field(default_factory=ResidualBuilderConfig)
+    program: Optional[Program] = None
 
 
 @dataclass
@@ -1145,6 +1148,7 @@ class SolveOptions:
     tol: float = 1e-8
     reseed_attempts: int = 3
     random_seed: Optional[int] = 0
+    scene_options: Optional['SolveSceneOptions'] = None
 
 
 @dataclass
@@ -1154,6 +1158,7 @@ class Solution:
     max_residual: float
     residual_breakdown: List[Dict[str, object]]
     warnings: List[str]
+    metadata: Dict[str, object] = field(default_factory=dict)
 
     def normalized_point_coords(self, scale: float = 100.0) -> Dict[PointName, Tuple[float, float]]:
         """Return normalized point coordinates scaled to ``scale``.
@@ -1174,6 +1179,7 @@ class VariantSolveResult:
     program: Program
     model: Model
     solution: Solution
+    scene_result: Optional['SolveResult'] = None
 
 
 class ResidualBuilderError(ValueError):
@@ -1186,7 +1192,9 @@ class ResidualBuilderError(ValueError):
 def score_solution(solution: Solution) -> tuple:
     """Score solutions by convergence success then residual size."""
 
-    return (0 if solution.success else 1, float(solution.max_residual))
+    residual = float(solution.metadata.get("scene_max_residual", solution.max_residual))
+    beauty = float(solution.metadata.get("beauty_score", 0.0))
+    return (0 if solution.success else 1, residual, -beauty)
 
 def normalize_point_coords(
     point_coords: Dict[PointName, Tuple[float, float]], scale: float = 100.0
@@ -2754,6 +2762,7 @@ def _compile_with_plan(program: Program, plan: DerivationPlan) -> Model:
         primary_gauge_edge=orientation_edge,
         polygons=polygon_data_list,
         residual_config=copy.deepcopy(cfg),
+        program=program,
     )
 
 
@@ -4060,7 +4069,8 @@ def solve(
                     plan_notes=model.plan_notes,
                     polygons=model.polygons,
                     residual_config=model.residual_config,
-                )
+                    program=model.program,
+                    )
                 relaxed_solution = solve(
                     relaxed_model,
                     options,
@@ -4108,19 +4118,124 @@ def solve(
     )
 
 
-def _solution_score(solution: Solution) -> Tuple[int, float]:
-    return (0 if solution.success else 1, float(solution.max_residual))
+def _solution_score(solution: Solution) -> Tuple[int, float, float]:
+    residual = float(solution.metadata.get("scene_max_residual", solution.max_residual))
+    beauty = float(solution.metadata.get("beauty_score", 0.0))
+    return (0 if solution.success else 1, residual, -beauty)
 
 
-def solve_best_model(models: Sequence[Model], options: SolveOptions = SolveOptions()) -> Tuple[int, Solution]:
+def _model_default_gauge(model: Model) -> Optional[Tuple[str, str, Optional[str]]]:
+    """Derive a deterministic gauge triple from model metadata."""
+
+    ordered: List[str] = []
+    if model.gauge_anchor:
+        ordered.append(model.gauge_anchor)
+    if model.primary_gauge_edge:
+        ordered.extend(list(model.primary_gauge_edge))
+    ordered.extend(model.points)
+
+    unique: List[str] = []
+    seen: Set[str] = set()
+    for name in ordered:
+        if not name or name in seen or name not in model.index:
+            continue
+        seen.add(name)
+        unique.append(name)
+
+    if len(unique) < 2:
+        return None
+
+    a = unique[0]
+    b = next((name for name in unique[1:] if name != a), None)
+    if b is None:
+        return None
+    c = next((name for name in unique[1:] if name not in {a, b}), None)
+    return (a, b, c)
+
+
+def _resolve_scene_options_for_model(
+    model: Model,
+    variant_index: int,
+    options: SolveOptions,
+    template: Optional['SolveSceneOptions'],
+    template_provided: bool,
+) -> 'SolveSceneOptions':
+    if template is not None:
+        resolved = copy.deepcopy(template)
+    elif options.scene_options is not None:
+        resolved = copy.deepcopy(options.scene_options)
+    else:
+        resolved = SolveSceneOptions()
+
+    if not template_provided and options.scene_options is None:
+        seed_base = options.random_seed if options.random_seed is not None else resolved.cad_seed
+        resolved.cad_seed = int(seed_base) + variant_index
+
+    if not resolved.gauge:
+        resolved.gauge = _model_default_gauge(model)
+
+    return resolved
+
+
+def solve_best_model(
+    models: Sequence[Model],
+    options: SolveOptions = SolveOptions(),
+    *,
+    scene_options: Optional['SolveSceneOptions'] = None,
+) -> Tuple[int, Solution]:
     if not models:
         raise ValueError("solve_best_model requires at least one model")
 
     best_idx = -1
     best_solution: Optional[Solution] = None
 
+    template = scene_options if scene_options is not None else options.scene_options
+    template_provided = template is not None
+
     for idx, model in enumerate(models):
-        candidate = solve(model, options)
+        if model.program is not None:
+            scene_opts = _resolve_scene_options_for_model(
+                model,
+                idx,
+                options,
+                template,
+                template_provided,
+            )
+            scene_result = solve_scene(model.program, scene_opts)
+            candidate = _scene_result_to_solution(scene_result)
+            candidate.metadata.update(
+                {
+                    "scene_result": scene_result,
+                    "scene_options": scene_opts,
+                    "beauty_score": scene_result.beauty_score,
+                    "cad_status": scene_result.cad_status,
+                    "polish_report": scene_result.polish_report,
+                    "ddc_report": scene_result.ddc_report,
+                }
+            )
+
+            cad_ok = bool(scene_result.cad_status.get("ok"))
+            cad_dof = int(scene_result.cad_status.get("dof", 0) or 0)
+            if not candidate.success and (not cad_ok or cad_dof > 0):
+                fallback = solve(model, options)
+                combined_warnings = list(candidate.warnings) + list(fallback.warnings)
+                combined_warnings.append(
+                    "CAD stage failed; used legacy numeric solver fallback"
+                )
+                if (
+                    not fallback.success
+                    and fallback.max_residual <= max(options.tol, 1e-8) * 10.0
+                ):
+                    combined_warnings.append(
+                        "treated fallback residual as success after CAD failure"
+                    )
+                    fallback.success = True
+                    fallback.max_residual = min(fallback.max_residual, options.tol)
+                fallback.warnings = combined_warnings
+                fallback.metadata.update(candidate.metadata)
+                candidate = fallback
+        else:
+            candidate = solve(model, options)
         if best_solution is None or _solution_score(candidate) < _solution_score(best_solution):
             best_idx = idx
             best_solution = candidate
@@ -4130,7 +4245,9 @@ def solve_best_model(models: Sequence[Model], options: SolveOptions = SolveOptio
 
 
 def solve_with_desugar_variants(
-    program: Program, options: SolveOptions = SolveOptions()
+    program: Program,
+    options: SolveOptions = SolveOptions(),
+    scene_options: Optional['SolveSceneOptions'] = None,
 ) -> VariantSolveResult:
     from .desugar import desugar_variants
 
@@ -4139,11 +4256,201 @@ def solve_with_desugar_variants(
         raise ValueError("desugar produced no variants")
 
     models: List[Model] = [translate(variant) for variant in variants]
-    best_idx, best_solution = solve_best_model(models, options)
+    best_idx, best_solution = solve_best_model(
+        models,
+        options,
+        scene_options=scene_options,
+    )
+
+    scene_result = best_solution.metadata.get("scene_result") if best_solution else None
 
     return VariantSolveResult(
         variant_index=best_idx,
         program=variants[best_idx],
         model=models[best_idx],
         solution=best_solution,
+        scene_result=scene_result,
+    )
+
+
+@dataclass
+class SolveSceneOptions:
+    """Options for the high-level CAD→polish solver pipeline."""
+
+    cad_solver: str = "slvs"
+    cad_seed: int = 0
+    gauge: Optional[Tuple[str, str, Optional[str]]] = None
+    polish: PolishOptions = field(default_factory=PolishOptions)
+
+
+@dataclass
+class SolveResult:
+    coords: Dict[str, Tuple[float, float]]
+    cad_status: Dict[str, object]
+    polish_report: Dict[str, object]
+    beauty_score: float
+    ddc_report: Dict[str, object]
+
+
+def _scene_result_to_solution(result: SolveResult) -> Solution:
+    """Convert a ``SolveResult`` into the legacy ``Solution`` structure."""
+
+    coords = dict(result.coords)
+    breakdown: List[Dict[str, object]] = []
+    warnings: List[str] = []
+    max_res = 0.0
+
+    cad_ok_flag = bool(result.cad_status.get("ok"))
+    cad_dof = int(result.cad_status.get("dof", 0) or 0)
+    if not cad_ok_flag or cad_dof:
+        if not cad_ok_flag:
+            warnings.append("CAD stage failed")
+        if cad_dof:
+            warnings.append(f"CAD residual degrees of freedom: {cad_dof}")
+        message = result.cad_status.get("message")
+        if message:
+            warnings.append(str(message))
+        failure_solution = Solution(
+            point_coords=coords,
+            success=False,
+            max_residual=float("inf"),
+            residual_breakdown=breakdown,
+            warnings=warnings,
+        )
+        failure_solution.metadata["scene_max_residual"] = float("inf")
+        return failure_solution
+
+    polish_info = result.polish_report or {}
+    if polish_info.get("enabled"):
+        residuals = dict(polish_info.get("residuals", {}) or {})
+        for key, value in residuals.items():
+            val = float(value)
+            entry = {
+                "key": str(key),
+                "kind": "polish",
+                "values": [val],
+                "max_abs": abs(val),
+                "source_kind": "polish",
+            }
+            breakdown.append(entry)
+            max_res = max(max_res, abs(val))
+        if not polish_info.get("success", True):
+            warnings.append("polish stage did not converge")
+
+    ddc_info = result.ddc_report or {}
+    passed_ddc = bool(ddc_info.get("passed", True))
+    if not passed_ddc:
+        status = ddc_info.get("status")
+        warnings.append(f"ddc status: {status}" if status else "ddc verification did not pass")
+
+    success = bool(polish_info.get("success", True))
+    reported_residual = 0.0 if success else max_res
+
+    solution = Solution(
+        point_coords=coords,
+        success=success,
+        max_residual=reported_residual,
+        residual_breakdown=breakdown,
+        warnings=warnings,
+    )
+    solution.metadata["scene_max_residual"] = max_res
+
+    return solution
+
+
+def solve_scene(program: Program, options: Optional[SolveSceneOptions] = None) -> SolveResult:
+    """Solve a GeoScript scene using the CAD adapter followed by polishing."""
+
+    if options is None:
+        options = SolveSceneOptions()
+
+    if options.cad_solver != "slvs":
+        raise ValueError(f"unsupported CAD solver: {options.cad_solver}")
+
+    cad_options = SlvsAdapterOptions(
+        gauge=options.gauge,
+        random_seed=options.cad_seed,
+    )
+    adapter_result = solve_equalities_safe(program, cad_options)
+
+    if isinstance(adapter_result, AdapterFail):
+        return SolveResult(
+            coords={},
+            cad_status={
+                "ok": False,
+                "dof": adapter_result.dof,
+                "failures": list(adapter_result.failures),
+                "message": adapter_result.message,
+            },
+            polish_report={
+                "enabled": False,
+                "success": False,
+                "iterations": 0,
+                "residuals": {},
+                "notes": ["cad stage failed"],
+            },
+            beauty_score=0.0,
+            ddc_report={"status": "not-run", "passed": False},
+        )
+
+    coords = dict(adapter_result.coords)
+
+    polish_success = True
+    max_polish_residual = 0.0
+    if not options.polish.enable:
+        polished_coords = coords
+        beauty_score = 1.0
+        polish_summary = {
+            "enabled": False,
+            "success": True,
+            "iterations": 0,
+            "residuals": {},
+            "notes": [],
+        }
+    else:
+        polish_result = polish_scene(program, coords, options.polish)
+        polished_coords = polish_result.coords
+        beauty_score = polish_result.beauty_score
+        residuals = dict(polish_result.residuals)
+        max_polish_residual = max((abs(float(v)) for v in residuals.values()), default=0.0)
+        polish_success = bool(polish_result.success)
+        polish_summary = {
+            "enabled": True,
+            "success": polish_success,
+            "iterations": polish_result.iterations,
+            "residuals": residuals,
+            "notes": list(polish_result.notes),
+        }
+
+    solution = Solution(
+        point_coords=polished_coords,
+        success=polish_success,
+        max_residual=0.0 if polish_success else max_polish_residual,
+        residual_breakdown=[],
+        warnings=[],
+    )
+
+    from .ddc import derive_and_check, evaluate_ddc
+
+    ddc_raw = derive_and_check(program, solution)
+    ddc_eval = evaluate_ddc(ddc_raw)
+
+    cad_status = {
+        "ok": True,
+        "dof": adapter_result.dof,
+        "failures": [],
+    }
+
+    return SolveResult(
+        coords=polished_coords,
+        cad_status=cad_status,
+        polish_report=polish_summary,
+        beauty_score=beauty_score,
+        ddc_report={
+            "status": ddc_eval.status,
+            "severity": ddc_eval.severity,
+            "message": ddc_eval.message,
+            "passed": ddc_eval.passed,
+            "report": ddc_raw,
+        },
     )
