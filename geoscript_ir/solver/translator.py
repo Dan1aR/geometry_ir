@@ -1,4 +1,16 @@
-"""Translation of GeometryIR programs into python-solvespace models."""
+"""Translation of GeoScript IR programs into python-solvespace models.
+
+Target state:
+- Hard *equalities* are encoded with libslvs via python-solvespace.
+- Inequalities (segment/ray ranges) and aesthetics are handled later in the
+  polish step, so here we only emit *carrier* incidences and CAD-grade equalities.
+- This file focuses on choosing numerically robust primitives in libslvs:
+  * distances via `distance`
+  * equal lengths via `ratio(..., 1.0)` (preferred over length-diff=0)
+  * radii equality via `distance(center, point, R)` or `ratio(center–anchor, center–point, 1.0)`
+  * angles via `angle` / `right-angle` / `equal_angle`
+  * parallel/perpendicular with correct anchoring (avoid forcing unrelated points)
+"""
 
 from __future__ import annotations
 
@@ -11,8 +23,8 @@ from ..ast import Program, Stmt
 from .model import CadConstraint, CircleSpec, Model, PointName
 from .utils import collect_point_order, coerce_float, edge_key, is_point_name
 
-
 logger = logging.getLogger(__name__)
+
 
 class _CadBuilder:
     """Internal helper that materializes a python-solvespace system."""
@@ -37,8 +49,12 @@ class _CadBuilder:
         self.gauge_points: List[Tuple[PointName, Optional[str]]] = []
         self.metadata: Dict[str, Any] = {}
         self.unsupported: List[Stmt] = []
+
+        # Local (human-friendly) ids for reporting; the lib's failure ids are separate.
         self._next_constraint_id = 0
-        self._constraint_index: Dict[Tuple[str, Tuple[str, ...], Optional[float]], CadConstraint] = {}
+        self._constraint_index: Dict[
+            Tuple[str, Tuple[str, ...], Optional[float]], CadConstraint
+        ] = {}
 
     # ------------------------------------------------------------------
     # Basic entity helpers
@@ -47,6 +63,7 @@ class _CadBuilder:
         return self.points[name]
 
     def ensure_line(self, a: PointName, b: PointName) -> Entity:
+        """Create or reuse *carrier* line through A,B (infinite)."""
         key = edge_key(a, b)
         if key not in self.lines:
             self.lines[key] = self.system.add_line_2d(
@@ -60,6 +77,15 @@ class _CadBuilder:
             spec = CircleSpec(center=center)
             self.circles[center] = spec
         return spec
+
+    def _new_aux_point(self) -> Entity:
+        """Create a free auxiliary point with a non-degenerate seed.
+        We avoid reusing existing named points to prevent unintended constraints.
+        """
+        i = self._next_constraint_id + 1
+        dx = 0.173 * ((i % 7) + 1)
+        dy = 0.131 * ((i % 5) + 1)
+        return self.system.add_point_2d(dx, dy, self.workplane)
 
     def _reserve_constraint_id(self) -> int:
         self._next_constraint_id += 1
@@ -88,6 +114,7 @@ class _CadBuilder:
         note: Optional[str] = None,
         apply: Optional[Callable[[], None]] = None,
     ) -> None:
+        """De-duplicate by (kind, entities, value); record human-friendly id; call into CAD."""
         key = self._constraint_key(kind, entities, value)
         existing = self._constraint_index.get(key)
         if existing is not None:
@@ -127,34 +154,43 @@ class _CadBuilder:
     # Circle helpers
 
     def add_point_on_circle(self, center: PointName, point: PointName, stmt: Stmt) -> None:
+        """Enforce 'point on circle (center)'.
+        Preferred encodings:
+          - If numeric radius is known: distance(center, point) = R.
+          - Else if a radius anchor is known: ratio(center–anchor, center–point) = 1.0.
+          - Else: set this point as the anchor (no CAD constraint yet).
+        """
         spec = self.ensure_circle(center)
         spec.register_point(point)
 
+        # numeric radius
         if spec.radius_value is not None:
+            R = float(spec.radius_value)
             self._apply_constraint(
                 "point_on_circle",
                 (point, center),
-                value=spec.radius_value,
+                value=R,
                 stmt=stmt,
                 apply=lambda: self.system.distance(
                     self.point_entity(point),
                     self.point_entity(center),
-                    spec.radius_value,
+                    R,
                     self.workplane,
                 ),
             )
             return
 
+        # radius equality via anchor point
         if spec.radius_point and spec.radius_point != point:
             ref_line = self.ensure_line(center, spec.radius_point)
             point_line = self.ensure_line(center, point)
             self._apply_constraint(
-                "point_on_circle",
+                "point_on_circle_eq",
                 (point, center, spec.radius_point),
-                value=0.0,
+                value=1.0,
                 stmt=stmt,
-                apply=lambda: self.system.length_diff(
-                    ref_line, point_line, 0.0, self.workplane
+                apply=lambda: self.system.ratio(
+                    ref_line, point_line, 1.0, self.workplane
                 ),
             )
             return
@@ -174,9 +210,16 @@ class _CadBuilder:
 
     def build(self) -> Model:
         logger.info(
-            "Building CAD model: %d points, %d statements", len(self.point_order), len(self.program.stmts)
+            "Building CAD model: %d points, %d statements",
+            len(self.point_order),
+            len(self.program.stmts),
         )
+
+        # Plan + apply a tiny numerical gauge (two dragged anchors).
         self._plan_default_gauge()
+        self._apply_default_gauge_constraints()
+
+        # Emit constraints by dispatch
         for stmt in self.program.stmts:
             self._dispatch(stmt)
 
@@ -213,8 +256,7 @@ class _CadBuilder:
         elif kind == "layout":
             self.metadata.setdefault("layouts", []).append(stmt.data)
         elif kind == "points":
-            # Points are already registered when constructing the model.
-            return
+            return  # already registered
         elif kind in {"triangle", "quadrilateral", "trapezoid"}:
             ids = stmt.data.get("ids", [])
             if isinstance(ids, (list, tuple)):
@@ -266,7 +308,6 @@ class _CadBuilder:
         elif kind == "ratio":
             self._handle_ratio(stmt)
         elif kind == "target_length":
-            # Target lengths are post-solution diagnostics and do not add CAD constraints.
             return
         else:
             self.unsupported.append(stmt)
@@ -276,6 +317,7 @@ class _CadBuilder:
     # Gauge helpers
 
     def _plan_default_gauge(self) -> None:
+        """Plan a simple similarity gauge: first point as origin; second as baseline anchor."""
         if not self.point_order:
             return
         first = self.point_order[0]
@@ -289,8 +331,18 @@ class _CadBuilder:
             third = self.point_order[2]
             self.gauges.append(f"orientation={first}-{second}-{third}")
 
+    def _apply_default_gauge_constraints(self) -> None:
+        """Actually apply the minimal gauge: drag first two named points."""
+        if not self.point_order:
+            return
+        first = self.point_order[0]
+        self.system.dragged(self.point_entity(first), self.workplane)
+        if len(self.point_order) >= 2:
+            second = self.point_order[1]
+            self.system.dragged(self.point_entity(second), self.workplane)
+
     # ------------------------------------------------------------------
-    # Individual statement handlers (port from legacy implementation)
+    # Individual statement handlers
 
     def _handle_polygon(self, ids: Sequence[str]) -> None:
         if len(ids) < 2:
@@ -306,6 +358,8 @@ class _CadBuilder:
             return
         a, b = str(edge[0]), str(edge[1])
         self.ensure_line(a, b)
+
+        # Optional fixed length for the carrier endpoints.
         length = None
         for key in ("length", "distance", "value"):
             if key in stmt.opts:
@@ -313,15 +367,16 @@ class _CadBuilder:
                 if length is not None:
                     break
         if length is not None:
+            L = float(length)
             self._apply_constraint(
                 "segment_length",
                 (f"{a}-{b}",),
-                value=length,
+                value=L,
                 stmt=stmt,
                 apply=lambda: self.system.distance(
                     self.point_entity(a),
                     self.point_entity(b),
-                    length,
+                    L,
                     self.workplane,
                 ),
             )
@@ -353,13 +408,16 @@ class _CadBuilder:
                     self.point_entity(point_name), line, self.workplane
                 ),
             )
+
         elif path_kind == "circle" and is_point_name(payload):
             center = str(payload)
             self.add_point_on_circle(center, point_name, stmt)
+
         elif path_kind == "angle-bisector" and isinstance(payload, dict):
             pts = payload.get("points")
             if isinstance(pts, (list, tuple)) and len(pts) == 3:
                 a, vertex, c = map(str, pts)
+                # bisector line goes through (vertex, point)
                 bisector = self.ensure_line(vertex, point_name)
                 line1 = self.ensure_line(vertex, a)
                 line2 = self.ensure_line(vertex, c)
@@ -372,23 +430,39 @@ class _CadBuilder:
                         line1, bisector, bisector, line2, self.workplane
                     ),
                 )
+
         elif path_kind == "perpendicular" and isinstance(payload, dict):
+            # Path = line through 'at' that is ⟂ to base(A,B)
             at = payload.get("at")
             to = payload.get("to")
             if is_point_name(at) and isinstance(to, (list, tuple)) and len(to) == 2:
                 at_name = str(at)
                 base_a, base_b = map(str, to)
-                line_ap = self.ensure_line(at_name, point_name)
                 base_line = self.ensure_line(base_a, base_b)
+                # IMPORTANT: create a line through 'at' using a free auxiliary point (not base_a),
+                # then make it ⟂ to base_line. This avoids forcing at/base_a collinearity.
+                aux = self._new_aux_point()
+                perp_line = self.system.add_line_2d(self.point_entity(at_name), aux, self.workplane)
+                self._apply_constraint(
+                    "point_on_perpendicular_path",
+                    (at_name, base_a, base_b),
+                    value=None,
+                    stmt=stmt,
+                    apply=lambda: self.system.perpendicular(
+                        perp_line, base_line, self.workplane
+                    ),
+                )
+                # place the target point onto that perpendicular carrier
                 self._apply_constraint(
                     "point_on_perpendicular",
                     (point_name, at_name, base_a, base_b),
                     value=None,
                     stmt=stmt,
-                    apply=lambda: self.system.perpendicular(
-                        line_ap, base_line, self.workplane
+                    apply=lambda: self.system.coincident(
+                        self.point_entity(point_name), perp_line, self.workplane
                     ),
                 )
+
         else:
             self.unsupported.append(stmt)
 
@@ -437,10 +511,10 @@ class _CadBuilder:
             self._apply_constraint(
                 "equal_segments",
                 (f"{ref_edge[0]}-{ref_edge[1]}", f"{edge[0]}-{edge[1]}"),
-                value=0.0,
+                value=1.0,
                 stmt=stmt,
-                apply=lambda line=line: self.system.length_diff(
-                    ref_line, line, 0.0, self.workplane
+                apply=lambda line=line: self.system.ratio(
+                    ref_line, line, 1.0, self.workplane
                 ),
             )
 
@@ -469,7 +543,9 @@ class _CadBuilder:
 
     def _handle_parallel_edges(self, stmt: Stmt) -> None:
         edges = stmt.data.get("edges") or []
-        edge_list = [tuple(map(str, edge)) for edge in edges if isinstance(edge, (list, tuple)) and len(edge) == 2]
+        edge_list = [
+            tuple(map(str, edge)) for edge in edges if isinstance(edge, (list, tuple)) and len(edge) == 2
+        ]
         if len(edge_list) <= 1:
             return
         ref_line = self.ensure_line(*edge_list[0])
@@ -513,16 +589,17 @@ class _CadBuilder:
         a, vertex, c = map(str, pts)
         line1 = self.ensure_line(vertex, a)
         line2 = self.ensure_line(vertex, c)
+        val = float(value)
         self._apply_constraint(
             "angle",
             (a, vertex, c),
-            value=value,
+            value=val,
             stmt=stmt,
-            apply=lambda: self.system.angle(line1, line2, value, self.workplane),
+            apply=lambda: self.system.angle(line1, line2, val, self.workplane),
         )
 
     def _handle_equal_angles(self, stmt: Stmt) -> None:
-        triples = []
+        triples: List[Tuple[str, str, str]] = []
         for group_key in ("lhs", "rhs"):
             group = stmt.data.get(group_key) or []
             for triple in group:
@@ -585,12 +662,12 @@ class _CadBuilder:
         line_am = self.ensure_line(a, m)
         line_mb = self.ensure_line(m, b)
         self._apply_constraint(
-            "midpoint",
+            "midpoint_equal_segments",
             (a, m, b),
-            value=0.0,
+            value=1.0,
             stmt=stmt,
-            apply=lambda: self.system.length_diff(
-                line_am, line_mb, 0.0, self.workplane
+            apply=lambda: self.system.ratio(
+                line_am, line_mb, 1.0, self.workplane
             ),
         )
 
@@ -712,11 +789,16 @@ class _CadBuilder:
         for point in ids:
             if is_point_name(point):
                 self.add_point_on_circle(center_name, str(point), stmt)
-        if spec.radius_point is None:
-            # Use the first point as a radius anchor if none was chosen.
+        if spec.radius_point is None and is_point_name(ids[0]):
+            # Use the first listed point as a radius anchor if none was chosen.
             spec.radius_point = str(ids[0])
 
     def _handle_parallel(self, stmt: Stmt) -> None:
+        """Path: 'parallel through P to (A-B)' — create a line through P, parallel to carrier AB.
+
+        IMPORTANT: do *not* use line(P, A) and set it parallel to AB — that would force P onto AB.
+        Instead, create a free auxiliary point H and use line(P, H) as the parallel carrier.
+        """
         through = stmt.data.get("through")
         to = stmt.data.get("to")
         if not (is_point_name(through) and isinstance(to, (list, tuple)) and len(to) == 2):
@@ -724,9 +806,12 @@ class _CadBuilder:
         through_name = str(through)
         base_a, base_b = map(str, to)
         base_line = self.ensure_line(base_a, base_b)
-        through_line = self.ensure_line(through_name, base_a)
+
+        aux = self._new_aux_point()
+        through_line = self.system.add_line_2d(self.point_entity(through_name), aux, self.workplane)
+
         self._apply_constraint(
-            "parallel",
+            "parallel_through",
             (through_name, f"{base_a}-{base_b}"),
             value=None,
             stmt=stmt,
@@ -736,6 +821,7 @@ class _CadBuilder:
         )
 
     def _handle_perpendicular(self, stmt: Stmt) -> None:
+        """Path: 'perpendicular at P to (A-B)' — create a line through P, ⟂ AB."""
         at = stmt.data.get("at")
         to = stmt.data.get("to")
         if not (is_point_name(at) and isinstance(to, (list, tuple)) and len(to) == 2):
@@ -743,10 +829,13 @@ class _CadBuilder:
         at_name = str(at)
         base_a, base_b = map(str, to)
         base_line = self.ensure_line(base_a, base_b)
-        perp_line = self.ensure_line(at_name, base_a)
+
+        aux = self._new_aux_point()
+        perp_line = self.system.add_line_2d(self.point_entity(at_name), aux, self.workplane)
+
         self._apply_constraint(
-            "perpendicular",
-            (at_name, base_a, base_b),
+            "perpendicular_at",
+            (at_name, f"{base_a}-{base_b}"),
             value=None,
             stmt=stmt,
             apply=lambda: self.system.perpendicular(
@@ -782,6 +871,9 @@ class _CadBuilder:
         )
 
     def _handle_diameter(self, stmt: Stmt) -> None:
+        """Enforce AB is a diameter of circle centered at O:
+           (1) A,B on the circle  (2) O ∈ line(AB)
+        """
         edge = stmt.data.get("edge")
         center = stmt.data.get("center")
         if not (
@@ -837,7 +929,7 @@ class _CadBuilder:
 
 
 def translate(program: Program) -> Model:
-    """Translate a validated GeometryIR program into a numeric model."""
+    """Translate a validated GeoScript IR program into a CAD model."""
 
     logger.info("Translating program with %d statements", len(program.stmts))
     point_order = collect_point_order(program)
@@ -845,9 +937,18 @@ def translate(program: Program) -> Model:
     system = SolverSystem()
     workplane = system.create_2d_base()
 
+    # Provide non-degenerate seeds for the first few named points (helps the solver).
     points: Dict[PointName, Entity] = {}
-    for name in point_order:
-        points[name] = system.add_point_2d(0.0, 0.0, workplane)
+    for i, name in enumerate(point_order):
+        if i == 0:
+            x, y = 0.0, 0.0
+        elif i == 1:
+            x, y = 1.0, 0.0
+        elif i == 2:
+            x, y = 0.4, 0.6
+        else:
+            x, y = 0.2 * (i + 1), 0.15 * (i % 5 + 1)
+        points[name] = system.add_point_2d(x, y, workplane)
 
     builder = _CadBuilder(program, system, workplane, point_order, points)
     model = builder.build()
