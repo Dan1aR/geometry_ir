@@ -990,12 +990,33 @@ def _seed_coarse_layout(
         baseline = anchor.baseline if anchor.baseline in members else None
         if origin not in seeded:
             seeded[origin] = (0.0, 0.0)
+            logger.debug(
+                "coarse-layout: component=%s point=%s -> (%.3f, %.3f) [origin]",
+                component,
+                origin,
+                0.0,
+                0.0,
+            )
         component_positions = _component_point_positions(seeded, component, scene_graph)
         if origin not in component_positions:
             component_positions.append(seeded[origin])
         if baseline and baseline != origin:
             seeded[baseline] = (scale, 0.0)
             component_positions.append(seeded[baseline])
+            logger.debug(
+                "coarse-layout: component=%s point=%s -> (%.3f, %.3f) [baseline]",
+                component,
+                baseline,
+                scale,
+                0.0,
+            )
+        logger.info(
+            "coarse-layout: component=%s members=%d origin=%s baseline=%s",
+            component,
+            len(members),
+            origin,
+            baseline,
+        )
         center_x = sum(pt[0] for pt in component_positions) / len(component_positions)
         center_y = sum(pt[1] for pt in component_positions) / len(component_positions)
         center = (center_x, center_y)
@@ -1011,6 +1032,14 @@ def _seed_coarse_layout(
             candidate = _ensure_spacing(candidate, component_positions, min_spacing)
             seeded[name] = candidate
             component_positions.append(candidate)
+            logger.debug(
+                "coarse-layout: component=%s point=%s -> (%.3f, %.3f) [spiral idx=%d]",
+                component,
+                name,
+                candidate[0],
+                candidate[1],
+                idx,
+            )
 
     for component, members in scene_graph.components.items():
         if component in covered_components:
@@ -1021,9 +1050,22 @@ def _seed_coarse_layout(
         origin = ordered[0]
         if origin not in seeded:
             seeded[origin] = (0.0, 0.0)
+            logger.debug(
+                "coarse-layout: component=%s point=%s -> (%.3f, %.3f) [origin-fallback]",
+                component,
+                origin,
+                0.0,
+                0.0,
+            )
         component_positions = _component_point_positions(seeded, component, scene_graph)
         if origin not in component_positions:
             component_positions.append(seeded[origin])
+        logger.info(
+            "coarse-layout: component=%s members=%d origin=%s baseline=None",
+            component,
+            len(members),
+            origin,
+        )
         for idx, name in enumerate(ordered[1:], start=1):
             if name in seeded:
                 continue
@@ -1037,6 +1079,14 @@ def _seed_coarse_layout(
             candidate = _ensure_spacing(candidate, component_positions, min_spacing)
             seeded[name] = candidate
             component_positions.append(candidate)
+            logger.debug(
+                "coarse-layout: component=%s point=%s -> (%.3f, %.3f) [spiral idx=%d fallback]",
+                component,
+                name,
+                candidate[0],
+                candidate[1],
+                idx,
+            )
 
     return seeded
 
@@ -1133,6 +1183,14 @@ def _choose_gauge_plan(scene_graph: SceneGraph) -> GaugePlan:
             forbidden_edges=set(component_forbidden),
         )
         plan.anchors.append(anchor)
+        logger.info(
+            "gauge-plan: component=%s origin=%s baseline=%s reason=%s forbidden_edges=%d",
+            component,
+            origin,
+            baseline,
+            reason,
+            len(component_forbidden),
+        )
 
     return plan
 
@@ -2044,6 +2102,11 @@ def initial_guess(program: Program, desugared: Program, opts: Dict[str, Any]) ->
     """Entry point for the upcoming similarity-gauge aware initial seed."""
 
     scene_graph = build_scene_graph(desugared)
+    logger.info(
+        "initial-guess: start points=%d components=%d",
+        len(scene_graph.points),
+        len(scene_graph.components),
+    )
     seed = InitialSeed()
     seed.gauge_plan = _choose_gauge_plan(scene_graph)
     scale, delta, epsilon_ang, epsilon_deg, epsilon_off = _compute_scale_constants(
@@ -2082,6 +2145,23 @@ def initial_guess(program: Program, desugared: Program, opts: Dict[str, Any]) ->
             f"gauge[{anchor.component}]: origin={anchor.origin} baseline={anchor.baseline} reason={anchor.reason}"
         )
     seed.notes.append("degeneracy-guards applied")
+    for note in seed.notes:
+        logger.debug("initial-guess-note: %s", note)
+    for name in scene_graph.point_order:
+        position = seed.points.get(name, (0.0, 0.0))
+        component = scene_graph.point_component.get(name)
+        logger.debug(
+            "initial-guess-point: %s component=%s -> (%.4f, %.4f)",
+            name,
+            component,
+            position[0],
+            position[1],
+        )
+    logger.info(
+        "initial-guess: completed with %d seeded points and %d notes",
+        len(seed.points),
+        len(seed.notes),
+    )
     return seed
 
 
@@ -2098,6 +2178,7 @@ def apply_drag_policy(
         return
 
     dragged: Set[str] = set()
+    planned_all: Set[str] = set()
     for anchor in seed.gauge_plan.anchors:
         planned: List[str] = []
         if anchor.origin:
@@ -2109,6 +2190,7 @@ def apply_drag_policy(
             continue
         applied: List[str] = []
         for name in planned:
+            planned_all.add(name)
             if name in dragged:
                 applied.append(name)
                 continue
@@ -2127,6 +2209,22 @@ def apply_drag_policy(
             seed.notes.append(
                 f"drag[{anchor.component}] -> {', '.join(applied)}"
             )
+            logger.info(
+                "drag-policy: component=%s dragged=%s",
+                anchor.component,
+                ", ".join(applied),
+            )
+        else:
+            logger.info(
+                "drag-policy: component=%s planned=%s but no points were dragged",
+                anchor.component,
+                ", ".join(planned),
+            )
+    missing = sorted(planned_all - dragged)
+    if missing:
+        logger.info("drag-policy: skipped points=%s", ", ".join(missing))
+    else:
+        logger.info("drag-policy: all planned points dragged")
 
 
 def _collect_length_hints(model: Model) -> Dict[Tuple[str, str], float]:
@@ -2252,6 +2350,14 @@ def _base_positions(model: Model) -> Dict[PointName, Tuple[float, float]]:
     if origin is None:
         origin = order[0]
     positions[origin] = (0.0, 0.0)
+    logger.info(
+        "model-initial-guess: origin=%s baseline=%s gauge-length=%s hints=%d scale=%.3f",
+        origin,
+        baseline,
+        f"{gauge_length:.6f}" if gauge_length is not None else None,
+        len(hints),
+        scale,
+    )
 
     baseline_length = scale
     if baseline and baseline != origin:
@@ -2261,6 +2367,13 @@ def _base_positions(model: Model) -> Dict[PointName, Tuple[float, float]]:
         if length_hint is not None:
             baseline_length = float(length_hint)
         positions[baseline] = (baseline_length, 0.0)
+        logger.debug(
+            "model-initial-guess: baseline %s -> (%.3f, %.3f) [length=%.3f]",
+            baseline,
+            baseline_length,
+            0.0,
+            baseline_length,
+        )
     else:
         baseline = None
 
@@ -2289,6 +2402,14 @@ def _base_positions(model: Model) -> Dict[PointName, Tuple[float, float]]:
             scale,
         )
         positions[third] = (x, y)
+        logger.debug(
+            "model-initial-guess: third %s -> (%.3f, %.3f) [anchor=%s baseline_hint=%s]",
+            third,
+            x,
+            y,
+            f"{anchor_length:.3f}" if anchor_length is not None else None,
+            f"{baseline_length_hint:.3f}" if baseline_length_hint is not None else None,
+        )
 
     total = len(order)
     fallback_idx = 3
@@ -2297,6 +2418,13 @@ def _base_positions(model: Model) -> Dict[PointName, Tuple[float, float]]:
             continue
         positions[name] = _fallback_position(fallback_idx, total, scale)
         fallback_idx += 1
+        logger.debug(
+            "model-initial-guess: fallback %s -> (%.3f, %.3f) [idx=%d]",
+            name,
+            positions[name][0],
+            positions[name][1],
+            fallback_idx - 1,
+        )
 
     logger.info(
         "Constructed base initial positions for %d points using %d length hints",
@@ -2334,7 +2462,16 @@ def model_initial_guess(
             y += float(jitter[1])
         guess[2 * idx] = x
         guess[2 * idx + 1] = y
+        logger.debug(
+            "model-initial-guess: point=%s base=(%.3f, %.3f) jittered=(%.3f, %.3f)",
+            name,
+            positions.get(name, (0.0, 0.0))[0],
+            positions.get(name, (0.0, 0.0))[1],
+            x,
+            y,
+        )
 
+    logger.info("model-initial-guess: generated vector length=%d", guess.shape[0])
     return guess
 
 
