@@ -72,10 +72,11 @@ class SeedHints(TypedDict):
 class CadConstraint:
     """Record of a constraint emitted while building the CAD system."""
 
+    cad_id: int
     kind: str
     entities: Tuple[str, ...]
     value: Optional[float]
-    source: Stmt
+    source: Optional[Stmt]
     note: Optional[str] = None
 
 

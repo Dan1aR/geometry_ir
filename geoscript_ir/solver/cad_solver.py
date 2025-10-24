@@ -9,9 +9,37 @@ import numpy as np
 from python_solvespace import ResultFlag
 
 from .initial_guess import apply_initial_guess, initial_guess
-from .model import DerivationPlan, Model, PointName, Solution, SolveOptions
+from .model import CadConstraint, DerivationPlan, Model, PointName, Solution, SolveOptions
 
 logger = logging.getLogger(__name__)
+
+
+def _describe_constraint(constraint: CadConstraint) -> str:
+    parts = [constraint.kind]
+    if constraint.entities:
+        parts.append("entities=" + ",".join(constraint.entities))
+    if constraint.value is not None:
+        parts.append(f"value={constraint.value:.6g}")
+    if constraint.note:
+        parts.append(f"note={constraint.note}")
+    if constraint.source is not None:
+        span = getattr(constraint.source, "span", None)
+        span_text = None
+        if span is not None:
+            span_text = f"line {span.line} col {span.col}"
+        origin = getattr(constraint.source, "origin", None)
+        detail = ", ".join(
+            item
+            for item in [
+                f"origin={origin}" if origin else None,
+                span_text,
+                f"kind={constraint.source.kind}" if getattr(constraint.source, "kind", None) else None,
+            ]
+            if item
+        )
+        if detail:
+            parts.append(detail)
+    return " | ".join(parts)
 
 
 def _safe_solver_call(system, method: str):
@@ -54,6 +82,7 @@ def solve(
     attempts = max(1, int(options.reseed_attempts))
     warnings: list[str] = []
     best: Optional[Solution] = None
+    constraint_lookup = {constraint.cad_id: constraint for constraint in model.constraints}
 
     logger.info(
         "Starting CAD solve with attempts=%d random_seed=%s", attempts, options.random_seed
@@ -94,13 +123,23 @@ def solve(
 
         failures = model.system.failures()
         if failures:
-            warnings.append(
-                f"Attempt {attempt + 1} failed: " + ", ".join(str(item) for item in failures)
-            )
+            readable_failures = []
+            for failure_id in failures:
+                constraint = constraint_lookup.get(int(failure_id))
+                if constraint is None:
+                    readable = f"constraint_id={failure_id}"
+                else:
+                    readable = f"#{failure_id}: {_describe_constraint(constraint)}"
+                readable_failures.append(readable)
+                logger.info(
+                    "CAD failure detail %s", readable,
+                )
+            failure_text = "; ".join(readable_failures)
+            warnings.append(f"Attempt {attempt + 1} failed: {failure_text}")
             logger.info(
                 "CAD solve attempt %d reported failures: %s",
                 attempt + 1,
-                "; ".join(str(item) for item in failures),
+                failure_text,
             )
         else:
             warnings.append(f"Attempt {attempt + 1} failed: solver did not converge")

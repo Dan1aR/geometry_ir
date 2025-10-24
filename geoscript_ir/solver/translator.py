@@ -42,6 +42,7 @@ class _CadBuilder:
         self.gauges: List[str] = []
         self.metadata: Dict[str, Any] = {}
         self.unsupported: List[Stmt] = []
+        self._next_constraint_id = 0
 
     # ------------------------------------------------------------------
     # Basic entity helpers
@@ -64,6 +65,10 @@ class _CadBuilder:
             self.circles[center] = spec
         return spec
 
+    def _reserve_constraint_id(self) -> int:
+        self._next_constraint_id += 1
+        return self._next_constraint_id
+
     def _add_constraint(
         self,
         kind: str,
@@ -73,7 +78,9 @@ class _CadBuilder:
         stmt: Stmt,
         note: Optional[str] = None,
     ) -> None:
+        cad_id = self._reserve_constraint_id()
         constraint = CadConstraint(
+            cad_id=cad_id,
             kind=kind,
             entities=tuple(entities),
             value=value,
@@ -82,11 +89,30 @@ class _CadBuilder:
         )
         self.constraints.append(constraint)
         logger.info(
-            "Added constraint: kind=%s entities=%s value=%s note=%s",
+            "Added constraint #%d: kind=%s entities=%s value=%s note=%s",
+            constraint.cad_id,
             constraint.kind,
             ",".join(constraint.entities),
             "{:.6f}".format(constraint.value) if constraint.value is not None else None,
             constraint.note,
+        )
+
+    def _add_gauge_constraint(self, point: PointName, note: Optional[str] = None) -> None:
+        cad_id = self._reserve_constraint_id()
+        constraint = CadConstraint(
+            cad_id=cad_id,
+            kind="dragged",
+            entities=(point,),
+            value=None,
+            source=None,
+            note=note,
+        )
+        self.constraints.append(constraint)
+        logger.info(
+            "Added gauge constraint #%d: point=%s note=%s",
+            constraint.cad_id,
+            point,
+            note,
         )
 
     # ------------------------------------------------------------------
@@ -242,10 +268,12 @@ class _CadBuilder:
             return
         first = self.point_order[0]
         self.system.dragged(self.point_entity(first), self.workplane)
+        self._add_gauge_constraint(first, note="fixed origin")
         self.gauges.append(f"anchor={first}")
         if len(self.point_order) >= 2:
             second = self.point_order[1]
             self.system.dragged(self.point_entity(second), self.workplane)
+            self._add_gauge_constraint(second, note="fixed baseline")
             self.gauges.append(f"anchor={second}")
         if len(self.point_order) >= 3:
             third = self.point_order[2]
