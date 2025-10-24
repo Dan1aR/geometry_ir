@@ -82,8 +82,6 @@ def solve(
     attempts = max(1, int(options.reseed_attempts))
     warnings: list[str] = []
     best: Optional[Solution] = None
-    constraint_lookup = {constraint.cad_id: constraint for constraint in model.constraints}
-
     logger.info(
         "Starting CAD solve with attempts=%d random_seed=%s", attempts, options.random_seed
     )
@@ -91,6 +89,7 @@ def solve(
         logger.info("CAD solve attempt %d/%d", attempt + 1, attempts)
         guess = initial_guess(model, rng, attempt, plan=plan)
         apply_initial_guess(model, guess)
+        constraint_lookup = {constraint.cad_id: constraint for constraint in model.constraints}
         flag = model.system.solve()
         dof = _safe_solver_call(model.system, "dof")
         solver_warnings = _safe_solver_call(model.system, "warnings") or []

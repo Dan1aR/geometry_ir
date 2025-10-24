@@ -9,13 +9,7 @@ from python_solvespace import Entity, SolverSystem
 
 from ..ast import Program, Stmt
 from .model import CadConstraint, CircleSpec, Model, PointName
-from .utils import (
-    collect_point_order,
-    coerce_float,
-    edge_key,
-    initial_point_positions,
-    is_point_name,
-)
+from .utils import collect_point_order, coerce_float, edge_key, is_point_name
 
 
 logger = logging.getLogger(__name__)
@@ -40,6 +34,7 @@ class _CadBuilder:
         self.circles: Dict[str, CircleSpec] = {}
         self.constraints: List[CadConstraint] = []
         self.gauges: List[str] = []
+        self.gauge_points: List[Tuple[PointName, Optional[str]]] = []
         self.metadata: Dict[str, Any] = {}
         self.unsupported: List[Stmt] = []
         self._next_constraint_id = 0
@@ -97,24 +92,6 @@ class _CadBuilder:
             constraint.note,
         )
 
-    def _add_gauge_constraint(self, point: PointName, note: Optional[str] = None) -> None:
-        cad_id = self._reserve_constraint_id()
-        constraint = CadConstraint(
-            cad_id=cad_id,
-            kind="dragged",
-            entities=(point,),
-            value=None,
-            source=None,
-            note=note,
-        )
-        self.constraints.append(constraint)
-        logger.info(
-            "Added gauge constraint #%d: point=%s note=%s",
-            constraint.cad_id,
-            point,
-            note,
-        )
-
     # ------------------------------------------------------------------
     # Circle helpers
 
@@ -166,7 +143,7 @@ class _CadBuilder:
         logger.info(
             "Building CAD model: %d points, %d statements", len(self.point_order), len(self.program.stmts)
         )
-        self._apply_default_gauge()
+        self._plan_default_gauge()
         for stmt in self.program.stmts:
             self._dispatch(stmt)
 
@@ -189,6 +166,8 @@ class _CadBuilder:
             circles=self.circles,
             metadata=self.metadata,
             unsupported=self.unsupported,
+            gauge_points=list(self.gauge_points),
+            next_constraint_id=self._next_constraint_id,
         )
 
     # ------------------------------------------------------------------
@@ -263,17 +242,15 @@ class _CadBuilder:
     # ------------------------------------------------------------------
     # Gauge helpers
 
-    def _apply_default_gauge(self) -> None:
+    def _plan_default_gauge(self) -> None:
         if not self.point_order:
             return
         first = self.point_order[0]
-        self.system.dragged(self.point_entity(first), self.workplane)
-        self._add_gauge_constraint(first, note="fixed origin")
+        self.gauge_points.append((first, "fixed origin"))
         self.gauges.append(f"anchor={first}")
         if len(self.point_order) >= 2:
             second = self.point_order[1]
-            self.system.dragged(self.point_entity(second), self.workplane)
-            self._add_gauge_constraint(second, note="fixed baseline")
+            self.gauge_points.append((second, "fixed baseline"))
             self.gauges.append(f"anchor={second}")
         if len(self.point_order) >= 3:
             third = self.point_order[2]
@@ -756,15 +733,12 @@ def translate(program: Program) -> Model:
     system = SolverSystem()
     workplane = system.create_2d_base()
 
-    positions = initial_point_positions(point_order)
     points: Dict[PointName, Entity] = {}
     for name in point_order:
-        x, y = positions.get(name, (0.0, 0.0))
-        points[name] = system.add_point_2d(x, y, workplane)
+        points[name] = system.add_point_2d(0.0, 0.0, workplane)
 
     builder = _CadBuilder(program, system, workplane, point_order, points)
     model = builder.build()
-    model.initial_positions.update(positions)
     logger.info(
         "Translation completed: %d points, %d constraints, %d unsupported",
         len(model.point_order),

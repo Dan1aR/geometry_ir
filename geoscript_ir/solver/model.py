@@ -105,12 +105,15 @@ class Model:
     lines: Dict[Tuple[PointName, PointName], Entity]
     constraints: List[CadConstraint] = field(default_factory=list)
     gauges: List[str] = field(default_factory=list)
+    gauge_points: List[Tuple[PointName, Optional[str]]] = field(
+        default_factory=list
+    )
     circles: Dict[str, CircleSpec] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
     unsupported: List[Stmt] = field(default_factory=list)
     seed_hints: SeedHints = field(default_factory=lambda: {"by_point": {}, "global_hints": []})
-    initial_positions: Dict[PointName, Tuple[float, float]] = field(default_factory=dict)
     index: Dict[PointName, int] = field(init=False, default_factory=dict)
+    next_constraint_id: int = 0
 
     def __post_init__(self) -> None:  # pragma: no cover - straightforward mapping
         self.index = {name: idx for idx, name in enumerate(self.point_order)}
@@ -120,6 +123,12 @@ class Model:
             return self.points[name]
         except KeyError as exc:  # pragma: no cover - defensive guard
             raise KeyError(f"Unknown point '{name}' in CAD model") from exc
+
+    def reserve_constraint_id(self) -> int:
+        """Allocate the next CAD constraint identifier."""
+
+        self.next_constraint_id += 1
+        return self.next_constraint_id
 
 
 @dataclass

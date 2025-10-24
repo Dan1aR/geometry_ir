@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import math
 import numbers
 import re
 from typing import Callable, Dict, List, Mapping, Optional, Sequence, Set, Tuple
@@ -98,27 +97,6 @@ def coerce_float(value: object) -> Optional[float]:
         except ValueError:
             return None
     return None
-
-
-def initial_point_positions(point_order: Sequence[PointName]) -> Dict[PointName, Tuple[float, float]]:
-    positions: Dict[PointName, Tuple[float, float]] = {}
-    if not point_order:
-        return positions
-
-    if len(point_order) >= 1:
-        positions[point_order[0]] = (0.0, 0.0)
-    if len(point_order) >= 2:
-        positions[point_order[1]] = (1.0, 0.0)
-    if len(point_order) >= 3:
-        positions[point_order[2]] = (0.35, 0.85)
-
-    for idx, name in enumerate(point_order[3:], start=3):
-        angle = 2.0 * math.pi * (idx - 2) / max(4, len(point_order))
-        radius = 1.5 + 0.2 * (idx - 2)
-        positions[name] = (radius * math.cos(angle), radius * math.sin(angle))
-
-    logger.info("Generated default positions for %d points", len(point_order))
-    return positions
 
 
 def normalize_point_coords(
