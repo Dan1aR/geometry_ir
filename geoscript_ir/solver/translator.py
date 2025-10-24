@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from python_solvespace import Entity, SolverSystem
 
@@ -38,6 +38,7 @@ class _CadBuilder:
         self.metadata: Dict[str, Any] = {}
         self.unsupported: List[Stmt] = []
         self._next_constraint_id = 0
+        self._constraint_index: Dict[Tuple[str, Tuple[str, ...], Optional[float]], CadConstraint] = {}
 
     # ------------------------------------------------------------------
     # Basic entity helpers
@@ -64,7 +65,20 @@ class _CadBuilder:
         self._next_constraint_id += 1
         return self._next_constraint_id
 
-    def _add_constraint(
+    def _normalized_value(self, value: Optional[float]) -> Optional[float]:
+        if value is None:
+            return None
+        return round(float(value), 9)
+
+    def _constraint_key(
+        self,
+        kind: str,
+        entities: Sequence[str],
+        value: Optional[float],
+    ) -> Tuple[str, Tuple[str, ...], Optional[float]]:
+        return (kind, tuple(entities), self._normalized_value(value))
+
+    def _apply_constraint(
         self,
         kind: str,
         entities: Sequence[str],
@@ -72,7 +86,23 @@ class _CadBuilder:
         value: Optional[float],
         stmt: Stmt,
         note: Optional[str] = None,
+        apply: Optional[Callable[[], None]] = None,
     ) -> None:
+        key = self._constraint_key(kind, entities, value)
+        existing = self._constraint_index.get(key)
+        if existing is not None:
+            logger.info(
+                "Skipping duplicate constraint #%d: kind=%s entities=%s value=%s",
+                existing.cad_id,
+                existing.kind,
+                ",".join(existing.entities),
+                "{:.6f}".format(existing.value) if existing.value is not None else None,
+            )
+            return
+
+        if apply is not None:
+            apply()
+
         cad_id = self._reserve_constraint_id()
         constraint = CadConstraint(
             cad_id=cad_id,
@@ -83,6 +113,7 @@ class _CadBuilder:
             note=note,
         )
         self.constraints.append(constraint)
+        self._constraint_index[key] = constraint
         logger.info(
             "Added constraint #%d: kind=%s entities=%s value=%s note=%s",
             constraint.cad_id,
@@ -100,35 +131,37 @@ class _CadBuilder:
         spec.register_point(point)
 
         if spec.radius_value is not None:
-            self.system.distance(
-                self.point_entity(point),
-                self.point_entity(center),
-                spec.radius_value,
-                self.workplane,
-            )
-            self._add_constraint(
+            self._apply_constraint(
                 "point_on_circle",
                 (point, center),
                 value=spec.radius_value,
                 stmt=stmt,
+                apply=lambda: self.system.distance(
+                    self.point_entity(point),
+                    self.point_entity(center),
+                    spec.radius_value,
+                    self.workplane,
+                ),
             )
             return
 
         if spec.radius_point and spec.radius_point != point:
             ref_line = self.ensure_line(center, spec.radius_point)
             point_line = self.ensure_line(center, point)
-            self.system.length_diff(ref_line, point_line, 0.0, self.workplane)
-            self._add_constraint(
+            self._apply_constraint(
                 "point_on_circle",
                 (point, center, spec.radius_point),
                 value=0.0,
                 stmt=stmt,
+                apply=lambda: self.system.length_diff(
+                    ref_line, point_line, 0.0, self.workplane
+                ),
             )
             return
 
         # Use this point as the radius anchor if none is available yet.
         spec.radius_point = point
-        self._add_constraint(
+        self._apply_constraint(
             "circle_radius_anchor",
             (point, center),
             value=None,
@@ -280,13 +313,18 @@ class _CadBuilder:
                 if length is not None:
                     break
         if length is not None:
-            self.system.distance(
-                self.point_entity(a),
-                self.point_entity(b),
-                length,
-                self.workplane,
+            self._apply_constraint(
+                "segment_length",
+                (f"{a}-{b}",),
+                value=length,
+                stmt=stmt,
+                apply=lambda: self.system.distance(
+                    self.point_entity(a),
+                    self.point_entity(b),
+                    length,
+                    self.workplane,
+                ),
             )
-            self._add_constraint("segment_length", (f"{a}-{b}",), value=length, stmt=stmt)
 
     def _handle_ray(self, stmt: Stmt) -> None:
         edge = stmt.data.get("edge")
@@ -306,8 +344,15 @@ class _CadBuilder:
         if path_kind in {"line", "segment", "ray"} and isinstance(payload, (list, tuple)) and len(payload) == 2:
             a, b = str(payload[0]), str(payload[1])
             line = self.ensure_line(a, b)
-            self.system.coincident(self.point_entity(point_name), line, self.workplane)
-            self._add_constraint("point_on_line", (point_name, f"{a}-{b}"), value=None, stmt=stmt)
+            self._apply_constraint(
+                "point_on_line",
+                (point_name, f"{a}-{b}"),
+                value=None,
+                stmt=stmt,
+                apply=lambda: self.system.coincident(
+                    self.point_entity(point_name), line, self.workplane
+                ),
+            )
         elif path_kind == "circle" and is_point_name(payload):
             center = str(payload)
             self.add_point_on_circle(center, point_name, stmt)
@@ -318,12 +363,14 @@ class _CadBuilder:
                 bisector = self.ensure_line(vertex, point_name)
                 line1 = self.ensure_line(vertex, a)
                 line2 = self.ensure_line(vertex, c)
-                self.system.equal_angle(line1, bisector, bisector, line2, self.workplane)
-                self._add_constraint(
+                self._apply_constraint(
                     "point_on_angle_bisector",
                     (point_name, vertex, a, c),
                     value=None,
                     stmt=stmt,
+                    apply=lambda: self.system.equal_angle(
+                        line1, bisector, bisector, line2, self.workplane
+                    ),
                 )
         elif path_kind == "perpendicular" and isinstance(payload, dict):
             at = payload.get("at")
@@ -333,12 +380,14 @@ class _CadBuilder:
                 base_a, base_b = map(str, to)
                 line_ap = self.ensure_line(at_name, point_name)
                 base_line = self.ensure_line(base_a, base_b)
-                self.system.perpendicular(line_ap, base_line, self.workplane)
-                self._add_constraint(
+                self._apply_constraint(
                     "point_on_perpendicular",
                     (point_name, at_name, base_a, base_b),
                     value=None,
                     stmt=stmt,
+                    apply=lambda: self.system.perpendicular(
+                        line_ap, base_line, self.workplane
+                    ),
                 )
         else:
             self.unsupported.append(stmt)
@@ -385,12 +434,14 @@ class _CadBuilder:
         ref_line = self.ensure_line(*ref_edge)
         for edge in all_edges[1:]:
             line = self.ensure_line(*edge)
-            self.system.length_diff(ref_line, line, 0.0, self.workplane)
-            self._add_constraint(
+            self._apply_constraint(
                 "equal_segments",
                 (f"{ref_edge[0]}-{ref_edge[1]}", f"{edge[0]}-{edge[1]}"),
                 value=0.0,
                 stmt=stmt,
+                apply=lambda line=line: self.system.length_diff(
+                    ref_line, line, 0.0, self.workplane
+                ),
             )
 
     def _handle_circle_center_radius_through(self, stmt: Stmt) -> None:
@@ -424,12 +475,14 @@ class _CadBuilder:
         ref_line = self.ensure_line(*edge_list[0])
         for edge in edge_list[1:]:
             line = self.ensure_line(*edge)
-            self.system.parallel(ref_line, line, self.workplane)
-            self._add_constraint(
+            self._apply_constraint(
                 "parallel",
                 (f"{edge_list[0][0]}-{edge_list[0][1]}", f"{edge[0]}-{edge[1]}"),
                 value=None,
                 stmt=stmt,
+                apply=lambda line=line: self.system.parallel(
+                    ref_line, line, self.workplane
+                ),
             )
 
     def _handle_right_angle(self, stmt: Stmt) -> None:
@@ -439,8 +492,13 @@ class _CadBuilder:
         a, vertex, c = map(str, pts)
         line1 = self.ensure_line(vertex, a)
         line2 = self.ensure_line(vertex, c)
-        self.system.perpendicular(line1, line2, self.workplane)
-        self._add_constraint("right_angle", (a, vertex, c), value=None, stmt=stmt)
+        self._apply_constraint(
+            "right_angle",
+            (a, vertex, c),
+            value=None,
+            stmt=stmt,
+            apply=lambda: self.system.perpendicular(line1, line2, self.workplane),
+        )
 
     def _handle_angle(self, stmt: Stmt) -> None:
         pts = stmt.data.get("points")
@@ -455,8 +513,13 @@ class _CadBuilder:
         a, vertex, c = map(str, pts)
         line1 = self.ensure_line(vertex, a)
         line2 = self.ensure_line(vertex, c)
-        self.system.angle(line1, line2, value, self.workplane)
-        self._add_constraint("angle", (a, vertex, c), value=value, stmt=stmt)
+        self._apply_constraint(
+            "angle",
+            (a, vertex, c),
+            value=value,
+            stmt=stmt,
+            apply=lambda: self.system.angle(line1, line2, value, self.workplane),
+        )
 
     def _handle_equal_angles(self, stmt: Stmt) -> None:
         triples = []
@@ -471,12 +534,14 @@ class _CadBuilder:
         ref_lines = (self.ensure_line(ref[1], ref[0]), self.ensure_line(ref[1], ref[2]))
         for triple in triples[1:]:
             lines = (self.ensure_line(triple[1], triple[0]), self.ensure_line(triple[1], triple[2]))
-            self.system.equal_angle(ref_lines[0], ref_lines[1], lines[0], lines[1], self.workplane)
-            self._add_constraint(
+            self._apply_constraint(
                 "equal_angle",
                 (f"{ref[0]}-{ref[1]}-{ref[2]}", f"{triple[0]}-{triple[1]}-{triple[2]}"),
                 value=None,
                 stmt=stmt,
+                apply=lambda lines=lines: self.system.equal_angle(
+                    ref_lines[0], ref_lines[1], lines[0], lines[1], self.workplane
+                ),
             )
 
     def _handle_collinear(self, stmt: Stmt) -> None:
@@ -486,8 +551,15 @@ class _CadBuilder:
         base_a, base_b = map(str, pts[:2])
         line = self.ensure_line(base_a, base_b)
         for point in map(str, pts[2:]):
-            self.system.coincident(self.point_entity(point), line, self.workplane)
-            self._add_constraint("collinear", (base_a, base_b, point), value=None, stmt=stmt)
+            self._apply_constraint(
+                "collinear",
+                (base_a, base_b, point),
+                value=None,
+                stmt=stmt,
+                apply=lambda point=point: self.system.coincident(
+                    self.point_entity(point), line, self.workplane
+                ),
+            )
 
     def _handle_midpoint(self, stmt: Stmt) -> None:
         edge = stmt.data.get("edge")
@@ -501,11 +573,26 @@ class _CadBuilder:
         a, b = map(str, edge)
         m = str(mid)
         line = self.ensure_line(a, b)
-        self.system.coincident(self.point_entity(m), line, self.workplane)
+        self._apply_constraint(
+            "midpoint_on_line",
+            (m, f"{a}-{b}"),
+            value=None,
+            stmt=stmt,
+            apply=lambda: self.system.coincident(
+                self.point_entity(m), line, self.workplane
+            ),
+        )
         line_am = self.ensure_line(a, m)
         line_mb = self.ensure_line(m, b)
-        self.system.length_diff(line_am, line_mb, 0.0, self.workplane)
-        self._add_constraint("midpoint", (a, m, b), value=0.0, stmt=stmt)
+        self._apply_constraint(
+            "midpoint",
+            (a, m, b),
+            value=0.0,
+            stmt=stmt,
+            apply=lambda: self.system.length_diff(
+                line_am, line_mb, 0.0, self.workplane
+            ),
+        )
 
     def _handle_foot(self, stmt: Stmt) -> None:
         edge = stmt.data.get("edge")
@@ -522,10 +609,25 @@ class _CadBuilder:
         foot_name = str(foot)
         frm_name = str(frm)
         base_line = self.ensure_line(a, b)
-        self.system.coincident(self.point_entity(foot_name), base_line, self.workplane)
+        self._apply_constraint(
+            "foot_on_line",
+            (foot_name, f"{a}-{b}"),
+            value=None,
+            stmt=stmt,
+            apply=lambda: self.system.coincident(
+                self.point_entity(foot_name), base_line, self.workplane
+            ),
+        )
         drop_line = self.ensure_line(frm_name, foot_name)
-        self.system.perpendicular(drop_line, base_line, self.workplane)
-        self._add_constraint("foot", (frm_name, foot_name, a, b), value=None, stmt=stmt)
+        self._apply_constraint(
+            "foot",
+            (frm_name, foot_name, a, b),
+            value=None,
+            stmt=stmt,
+            apply=lambda: self.system.perpendicular(
+                drop_line, base_line, self.workplane
+            ),
+        )
 
     def _handle_median(self, stmt: Stmt) -> None:
         to_edge = stmt.data.get("to")
@@ -623,12 +725,14 @@ class _CadBuilder:
         base_a, base_b = map(str, to)
         base_line = self.ensure_line(base_a, base_b)
         through_line = self.ensure_line(through_name, base_a)
-        self.system.parallel(base_line, through_line, self.workplane)
-        self._add_constraint(
+        self._apply_constraint(
             "parallel",
             (through_name, f"{base_a}-{base_b}"),
             value=None,
             stmt=stmt,
+            apply=lambda: self.system.parallel(
+                base_line, through_line, self.workplane
+            ),
         )
 
     def _handle_perpendicular(self, stmt: Stmt) -> None:
@@ -640,12 +744,14 @@ class _CadBuilder:
         base_a, base_b = map(str, to)
         base_line = self.ensure_line(base_a, base_b)
         perp_line = self.ensure_line(at_name, base_a)
-        self.system.perpendicular(perp_line, base_line, self.workplane)
-        self._add_constraint(
+        self._apply_constraint(
             "perpendicular",
             (at_name, base_a, base_b),
             value=None,
             stmt=stmt,
+            apply=lambda: self.system.perpendicular(
+                perp_line, base_line, self.workplane
+            ),
         )
 
     def _handle_tangent(self, stmt: Stmt) -> None:
@@ -665,12 +771,14 @@ class _CadBuilder:
         line = self.ensure_line(a, b)
         self.add_point_on_circle(center_name, at_name, stmt)
         radius_line = self.ensure_line(center_name, at_name)
-        self.system.perpendicular(line, radius_line, self.workplane)
-        self._add_constraint(
+        self._apply_constraint(
             "tangent",
             (f"{a}-{b}", center_name, at_name),
             value=None,
             stmt=stmt,
+            apply=lambda: self.system.perpendicular(
+                line, radius_line, self.workplane
+            ),
         )
 
     def _handle_diameter(self, stmt: Stmt) -> None:
@@ -687,12 +795,14 @@ class _CadBuilder:
         self.add_point_on_circle(center_name, a, stmt)
         self.add_point_on_circle(center_name, b, stmt)
         line = self.ensure_line(a, b)
-        self.system.coincident(self.point_entity(center_name), line, self.workplane)
-        self._add_constraint(
+        self._apply_constraint(
             "diameter",
             (f"{a}-{b}", center_name),
             value=None,
             stmt=stmt,
+            apply=lambda: self.system.coincident(
+                self.point_entity(center_name), line, self.workplane
+            ),
         )
 
     def _handle_ratio(self, stmt: Stmt) -> None:
@@ -715,12 +825,14 @@ class _CadBuilder:
         ref_line = self.ensure_line(*edge1)
         other_line = self.ensure_line(*edge2)
         ratio = float(ratio_values[0]) / float(ratio_values[1])
-        self.system.ratio(ref_line, other_line, ratio, self.workplane)
-        self._add_constraint(
+        self._apply_constraint(
             "ratio",
             (f"{edge1[0]}-{edge1[1]}", f"{edge2[0]}-{edge2[1]}"),
             value=ratio,
             stmt=stmt,
+            apply=lambda: self.system.ratio(
+                ref_line, other_line, ratio, self.workplane
+            ),
         )
 
 
