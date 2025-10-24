@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 from collections import defaultdict, deque
@@ -20,6 +21,10 @@ logger = logging.getLogger(__name__)
 
 
 _TEXTUAL_DATA_KEYS = {"text", "title", "label", "caption", "description"}
+
+GOLDEN_ANGLE_DEGREES = 137.50776
+GOLDEN_ANGLE = math.radians(GOLDEN_ANGLE_DEGREES)
+HASH_JITTER_SCALE = 1e-3
 
 
 @dataclass
@@ -175,6 +180,112 @@ class InitialSeed:
     angle_epsilon: float = math.radians(8.0)
     angle_epsilon_degrees: float = 8.0
     offset_epsilon: float = 0.08
+
+def _distance(a: Tuple[float, float], b: Tuple[float, float]) -> float:
+    return math.hypot(a[0] - b[0], a[1] - b[1])
+
+
+def _vector(a: Tuple[float, float], b: Tuple[float, float]) -> Tuple[float, float]:
+    return b[0] - a[0], b[1] - a[1]
+
+
+def _normalize(vec: Tuple[float, float]) -> Tuple[float, float]:
+    length = math.hypot(vec[0], vec[1])
+    if length <= 1e-12:
+        return 1.0, 0.0
+    return vec[0] / length, vec[1] / length
+
+
+def _perpendicular(vec: Tuple[float, float]) -> Tuple[float, float]:
+    return -vec[1], vec[0]
+
+
+def _project_along(
+    point: Tuple[float, float], origin: Tuple[float, float], direction: Tuple[float, float]
+) -> float:
+    rel = point[0] - origin[0], point[1] - origin[1]
+    return rel[0] * direction[0] + rel[1] * direction[1]
+
+
+def _hash_jitter(name: str, scale: float) -> Tuple[float, float]:
+    digest = hashlib.sha256(name.encode('utf8')).digest()
+    ux = int.from_bytes(digest[:8], 'little') / 2**64
+    uy = int.from_bytes(digest[8:16], 'little') / 2**64
+    magnitude = HASH_JITTER_SCALE * max(scale, 1.0)
+    return (2.0 * ux - 1.0) * magnitude, (2.0 * uy - 1.0) * magnitude
+
+
+def _ensure_spacing(
+    candidate: Tuple[float, float],
+    existing: Iterable[Tuple[float, float]],
+    min_spacing: float,
+) -> Tuple[float, float]:
+    if min_spacing <= 0:
+        return candidate
+    x, y = candidate
+    if not any(_distance((x, y), other) < min_spacing for other in existing):
+        return x, y
+    radius = math.hypot(x, y)
+    angle = math.atan2(y, x)
+    if radius <= 1e-9:
+        radius = min_spacing
+    while True:
+        radius += min_spacing
+        nx = radius * math.cos(angle)
+        ny = radius * math.sin(angle)
+        if all(_distance((nx, ny), other) >= min_spacing for other in existing):
+            return nx, ny
+
+
+def _circumcenter(
+    a: Tuple[float, float],
+    b: Tuple[float, float],
+    c: Tuple[float, float],
+) -> Tuple[Optional[Tuple[float, float]], Optional[float]]:
+    d = 2 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]))
+    if abs(d) <= 1e-9:
+        return None, None
+    ux = (
+        (a[0] ** 2 + a[1] ** 2) * (b[1] - c[1])
+        + (b[0] ** 2 + b[1] ** 2) * (c[1] - a[1])
+        + (c[0] ** 2 + c[1] ** 2) * (a[1] - b[1])
+    ) / d
+    uy = (
+        (a[0] ** 2 + a[1] ** 2) * (c[0] - b[0])
+        + (b[0] ** 2 + b[1] ** 2) * (a[0] - c[0])
+        + (c[0] ** 2 + c[1] ** 2) * (b[0] - a[0])
+    ) / d
+    center = (ux, uy)
+    radius = _distance(center, a)
+    return center, radius
+
+
+def _line_intersection(
+    a1: Tuple[float, float],
+    a2: Tuple[float, float],
+    b1: Tuple[float, float],
+    b2: Tuple[float, float],
+) -> Optional[Tuple[float, float]]:
+    da = (a2[0] - a1[0], a2[1] - a1[1])
+    db = (b2[0] - b1[0], b2[1] - b1[1])
+    det = da[0] * db[1] - da[1] * db[0]
+    if abs(det) <= 1e-9:
+        return None
+    diff = (b1[0] - a1[0], b1[1] - a1[1])
+    t = (diff[0] * db[1] - diff[1] * db[0]) / det
+    return (a1[0] + t * da[0], a1[1] + t * da[1])
+
+
+def _rotate(vector: Tuple[float, float], angle: float) -> Tuple[float, float]:
+    cos_a = math.cos(angle)
+    sin_a = math.sin(angle)
+    return vector[0] * cos_a - vector[1] * sin_a, vector[0] * sin_a + vector[1] * cos_a
+
+
+def _stable_unit(*keys: str) -> float:
+    digest = hashlib.sha256('|'.join(keys).encode('utf8')).digest()
+    return int.from_bytes(digest[24:32], 'little') / 2**64
+
 
 
 
@@ -803,6 +914,83 @@ def _ordered_component_points(scene_graph: SceneGraph, component: str) -> List[s
     ordered.extend(remaining)
     return ordered
 
+def _component_point_positions(points: Dict[str, Tuple[float, float]], component: str, scene_graph: SceneGraph) -> List[Tuple[float, float]]:
+    return [pos for name, pos in points.items() if scene_graph.point_component.get(name) == component]
+
+
+def _seed_coarse_layout(
+    scene_graph: SceneGraph,
+    gauge_plan: GaugePlan,
+    scale: float,
+    min_spacing: float,
+) -> Dict[str, Tuple[float, float]]:
+    seeded: Dict[str, Tuple[float, float]] = {}
+    covered_components: Set[str] = set()
+
+    for anchor in gauge_plan.anchors:
+        component = anchor.component
+        members = scene_graph.components.get(component, set())
+        if not members:
+            continue
+        covered_components.add(component)
+        ordered = _ordered_component_points(scene_graph, component)
+        if not ordered:
+            continue
+        origin = anchor.origin or ordered[0]
+        baseline = anchor.baseline if anchor.baseline in members else None
+        if origin not in seeded:
+            seeded[origin] = (0.0, 0.0)
+        component_positions = _component_point_positions(seeded, component, scene_graph)
+        if origin not in component_positions:
+            component_positions.append(seeded[origin])
+        if baseline and baseline != origin:
+            seeded[baseline] = (scale, 0.0)
+            component_positions.append(seeded[baseline])
+        center_x = sum(pt[0] for pt in component_positions) / len(component_positions)
+        center_y = sum(pt[1] for pt in component_positions) / len(component_positions)
+        center = (center_x, center_y)
+        remainder = [name for name in ordered if name not in seeded]
+        for idx, name in enumerate(remainder):
+            jitter_x, jitter_y = _hash_jitter(name, scale)
+            radius = 0.6 * scale + 0.35 * scale * math.sqrt(idx + 1)
+            angle = GOLDEN_ANGLE * (idx + 1)
+            candidate = (
+                center[0] + radius * math.cos(angle) + jitter_x,
+                center[1] + radius * math.sin(angle) + jitter_y,
+            )
+            candidate = _ensure_spacing(candidate, component_positions, min_spacing)
+            seeded[name] = candidate
+            component_positions.append(candidate)
+
+    for component, members in scene_graph.components.items():
+        if component in covered_components:
+            continue
+        ordered = _ordered_component_points(scene_graph, component)
+        if not ordered:
+            continue
+        origin = ordered[0]
+        if origin not in seeded:
+            seeded[origin] = (0.0, 0.0)
+        component_positions = _component_point_positions(seeded, component, scene_graph)
+        if origin not in component_positions:
+            component_positions.append(seeded[origin])
+        for idx, name in enumerate(ordered[1:], start=1):
+            if name in seeded:
+                continue
+            jitter_x, jitter_y = _hash_jitter(name, scale)
+            radius = 0.6 * scale + 0.35 * scale * math.sqrt(idx)
+            angle = GOLDEN_ANGLE * idx
+            candidate = (
+                seeded[origin][0] + radius * math.cos(angle) + jitter_x,
+                seeded[origin][1] + radius * math.sin(angle) + jitter_y,
+            )
+            candidate = _ensure_spacing(candidate, component_positions, min_spacing)
+            seeded[name] = candidate
+            component_positions.append(candidate)
+
+    return seeded
+
+
 
 def _component_forbidden_edges(
     scene_graph: SceneGraph, component_members: Set[str]
@@ -898,6 +1086,670 @@ def _choose_gauge_plan(scene_graph: SceneGraph) -> GaugePlan:
 
     return plan
 
+def _gauge_lookup(plan: GaugePlan) -> Dict[str, GaugeAnchor]:
+    return {anchor.component: anchor for anchor in plan.anchors}
+
+
+def _protected_points(plan: GaugePlan) -> Set[str]:
+    protected: Set[str] = set()
+    for anchor in plan.anchors:
+        if anchor.origin:
+            protected.add(anchor.origin)
+        if anchor.baseline:
+            protected.add(anchor.baseline)
+    return protected
+
+
+def _apply_collinear_groups(scene_graph: SceneGraph, seed: InitialSeed) -> None:
+    if not scene_graph.groups.collinear:
+        return
+    lookup = _gauge_lookup(seed.gauge_plan)
+    for group in scene_graph.groups.collinear:
+        names = [name for name in group.points if name in seed.points]
+        if len(names) <= 1:
+            continue
+        component = scene_graph.point_component.get(names[0])
+        if component is None or any(scene_graph.point_component.get(name) != component for name in names):
+            continue
+        anchor = lookup.get(component)
+        origin_name = anchor.origin if anchor else None
+        baseline_name = anchor.baseline if anchor else None
+        base_origin = seed.points.get(origin_name) if origin_name in names else seed.points.get(names[0])
+        if base_origin is None:
+            continue
+        direction_vec = None
+        if (
+            anchor
+            and origin_name in names
+            and baseline_name in names
+            and baseline_name is not None
+        ):
+            direction_vec = _vector(seed.points[origin_name], seed.points[baseline_name])
+        if direction_vec is None:
+            for a, b in zip(names, names[1:]):
+                if a in seed.points and b in seed.points:
+                    vec = _vector(seed.points[a], seed.points[b])
+                    if math.hypot(*vec) > 1e-9:
+                        direction_vec = vec
+                        if origin_name in names:
+                            base_origin = seed.points[origin_name]
+                        else:
+                            base_origin = seed.points[a]
+                        break
+        if direction_vec is None:
+            direction_vec = (1.0, 0.0)
+        direction = _normalize(direction_vec)
+        offsets: Dict[str, float] = {}
+        reserved: List[float] = []
+        if origin_name in names and origin_name in seed.points:
+            offsets[origin_name] = _project_along(seed.points[origin_name], base_origin, direction)
+            reserved.append(offsets[origin_name])
+        if baseline_name and baseline_name in names and baseline_name in seed.points:
+            offsets[baseline_name] = _project_along(seed.points[baseline_name], base_origin, direction)
+            reserved.append(offsets[baseline_name])
+        step = max(seed.min_spacing, 1.2 * seed.scale / max(len(names) - 1, 1))
+        start = -0.5 * step * (len(names) - 1)
+        for idx, name in enumerate(names):
+            if name in offsets:
+                continue
+            candidate = start + idx * step
+            while any(abs(candidate - existing) < seed.min_spacing * 0.9 for existing in reserved):
+                candidate += seed.min_spacing
+            offsets[name] = candidate
+            reserved.append(candidate)
+        for name, offset in offsets.items():
+            seed.points[name] = (
+                base_origin[0] + direction[0] * offset,
+                base_origin[1] + direction[1] * offset,
+            )
+
+
+def _apply_concyclic_groups(scene_graph: SceneGraph, seed: InitialSeed) -> None:
+    if not scene_graph.groups.concyclic:
+        return
+    for group in scene_graph.groups.concyclic:
+        names = [name for name in group.points if name in seed.points]
+        if len(names) < 3:
+            continue
+        component = scene_graph.point_component.get(names[0])
+        if component is None or any(scene_graph.point_component.get(name) != component for name in names):
+            continue
+        center_name = None
+        center_pos = None
+        for carrier in scene_graph.carriers.circles.values():
+            circle_points = set(carrier.through)
+            if set(names).issubset(circle_points | {carrier.center}):
+                if carrier.center in seed.points:
+                    center_name = carrier.center
+                    center_pos = seed.points[carrier.center]
+                    break
+        radius = None
+        if center_pos is not None:
+            samples = [seed.points[name] for name in names if name != center_name]
+            if samples:
+                distances = [_distance(center_pos, sample) for sample in samples]
+                radius = median(distances)
+        else:
+            base_points = names[:3]
+            coords = [seed.points[name] for name in base_points]
+            center_pos, radius = _circumcenter(coords[0], coords[1], coords[2])
+            if center_pos is None or radius is None:
+                center_pos = coords[0]
+                radius = 0.7 * seed.scale
+        if center_pos is None:
+            continue
+        if radius is None or radius <= 0:
+            radius = 0.7 * seed.scale
+        radius = max(radius, 0.3 * seed.scale, seed.min_spacing)
+        first = next((name for name in names if name != center_name), None)
+        if first is None:
+            continue
+        base_angle = math.atan2(seed.points[first][1] - center_pos[1], seed.points[first][0] - center_pos[0])
+        total = len(names) - (1 if center_name in names else 0)
+        if total <= 0:
+            continue
+        step = (2.0 * math.pi) / total
+        idx = 0
+        for name in names:
+            if name == center_name:
+                continue
+            angle = base_angle + idx * step
+            seed.points[name] = (
+                center_pos[0] + radius * math.cos(angle),
+                center_pos[1] + radius * math.sin(angle),
+            )
+            idx += 1
+
+
+def _adjust_edge_length(
+    seed: InitialSeed,
+    edge: Tuple[str, str],
+    target_length: float,
+    protected: Set[str],
+) -> None:
+    a, b = edge
+    if a not in seed.points or b not in seed.points:
+        return
+    if target_length <= 0:
+        target_length = seed.min_spacing
+    pa = seed.points[a]
+    pb = seed.points[b]
+    direction = _normalize(_vector(pa, pb))
+    if a in protected and b in protected:
+        return
+    if a in protected:
+        seed.points[b] = (
+            pa[0] + direction[0] * target_length,
+            pa[1] + direction[1] * target_length,
+        )
+        return
+    if b in protected:
+        seed.points[a] = (
+            pb[0] - direction[0] * target_length,
+            pb[1] - direction[1] * target_length,
+        )
+        return
+    midpoint = ((pa[0] + pb[0]) / 2.0, (pa[1] + pb[1]) / 2.0)
+    half = 0.5 * target_length
+    seed.points[a] = (
+        midpoint[0] - direction[0] * half,
+        midpoint[1] - direction[1] * half,
+    )
+    seed.points[b] = (
+        midpoint[0] + direction[0] * half,
+        midpoint[1] + direction[1] * half,
+    )
+
+
+def _apply_length_relationships(scene_graph: SceneGraph, seed: InitialSeed) -> None:
+    protected = _protected_points(seed.gauge_plan)
+    if scene_graph.groups.equal_segments:
+        for group in scene_graph.groups.equal_segments:
+            edges = list(group.lhs) + list(group.rhs)
+            lengths = [
+                _distance(seed.points[a], seed.points[b])
+                for a, b in edges
+                if a in seed.points and b in seed.points
+            ]
+            if not lengths:
+                continue
+            target = sum(lengths) / len(lengths)
+            for edge in edges:
+                _adjust_edge_length(seed, edge, target, protected)
+    if scene_graph.groups.ratios:
+        for ratio in scene_graph.groups.ratios:
+            left = ratio.left
+            right = ratio.right
+            total = ratio.ratio[0] + ratio.ratio[1]
+            if total <= 0:
+                continue
+            left_length = (ratio.ratio[0] / total) * seed.scale
+            right_length = (ratio.ratio[1] / total) * seed.scale
+            _adjust_edge_length(seed, left, left_length, protected)
+            _adjust_edge_length(seed, right, right_length, protected)
+
+
+def _apply_parallel_perpendicular(scene_graph: SceneGraph, seed: InitialSeed) -> None:
+    protected = _protected_points(seed.gauge_plan)
+    for pair in scene_graph.groups.parallel_pairs:
+        a, b = pair.reference
+        c, d = pair.target
+        if not all(name in seed.points for name in (a, b, c, d)):
+            continue
+        direction = _normalize(_vector(seed.points[a], seed.points[b]))
+        length = max(_distance(seed.points[c], seed.points[d]), seed.min_spacing * 2.0)
+        midpoint = ((seed.points[c][0] + seed.points[d][0]) / 2.0, (seed.points[c][1] + seed.points[d][1]) / 2.0)
+        half = 0.5 * length
+        if c not in protected:
+            seed.points[c] = (
+                midpoint[0] - direction[0] * half,
+                midpoint[1] - direction[1] * half,
+            )
+        if d not in protected:
+            seed.points[d] = (
+                midpoint[0] + direction[0] * half,
+                midpoint[1] + direction[1] * half,
+            )
+    for pair in scene_graph.groups.perpendicular_pairs:
+        base_a, base_b = pair.base
+        tgt_a, tgt_b = pair.target
+        if not all(name in seed.points for name in (base_a, base_b, tgt_a, tgt_b)):
+            continue
+        base_dir = _normalize(_vector(seed.points[base_a], seed.points[base_b]))
+        perp_dir = _normalize(_perpendicular(base_dir))
+        length = max(_distance(seed.points[tgt_a], seed.points[tgt_b]), seed.min_spacing * 2.0)
+        vertex = pair.vertex
+        if vertex in {tgt_a, tgt_b} and vertex in seed.points:
+            other = tgt_b if vertex == tgt_a else tgt_a
+            if other in protected:
+                continue
+            origin = seed.points[vertex]
+            seed.points[other] = (
+                origin[0] + perp_dir[0] * length,
+                origin[1] + perp_dir[1] * length,
+            )
+        else:
+            midpoint = ((seed.points[tgt_a][0] + seed.points[tgt_b][0]) / 2.0, (seed.points[tgt_a][1] + seed.points[tgt_b][1]) / 2.0)
+            half = 0.5 * length
+            if tgt_a not in protected:
+                seed.points[tgt_a] = (
+                    midpoint[0] - perp_dir[0] * half,
+                    midpoint[1] - perp_dir[1] * half,
+                )
+            if tgt_b not in protected:
+                seed.points[tgt_b] = (
+                    midpoint[0] + perp_dir[0] * half,
+                    midpoint[1] + perp_dir[1] * half,
+                )
+
+
+def _project_to_line(
+    point: Tuple[float, float],
+    line_point: Tuple[float, float],
+    direction: Tuple[float, float],
+) -> Tuple[float, float]:
+    offset = _project_along(point, line_point, direction)
+    return (
+        line_point[0] + direction[0] * offset,
+        line_point[1] + direction[1] * offset,
+    )
+
+
+def _apply_midpoints_and_feet(scene_graph: SceneGraph, seed: InitialSeed) -> None:
+    for placement in scene_graph.placements.values():
+        point = placement.point
+        if point not in seed.points:
+            continue
+        if placement.kind == 'midpoint':
+            edge = placement.data.get('edge')
+            if isinstance(edge, (list, tuple)) and len(edge) == 2:
+                a, b = map(str, edge)
+                if a in seed.points and b in seed.points:
+                    pa = seed.points[a]
+                    pb = seed.points[b]
+                    seed.points[point] = ((pa[0] + pb[0]) / 2.0, (pa[1] + pb[1]) / 2.0)
+        elif placement.kind == 'foot':
+            edge = placement.data.get('edge')
+            frm = placement.data.get('from')
+            if isinstance(edge, (list, tuple)) and len(edge) == 2 and is_point_name(frm):
+                a, b = map(str, edge)
+                frm_name = str(frm)
+                if a in seed.points and b in seed.points and frm_name in seed.points:
+                    line_dir = _normalize(_vector(seed.points[a], seed.points[b]))
+                    seed.points[point] = _project_to_line(seed.points[frm_name], seed.points[a], line_dir)
+
+
+def _line_circle_intersections(
+    line_point: Tuple[float, float],
+    direction: Tuple[float, float],
+    center: Tuple[float, float],
+    radius: float,
+) -> List[Tuple[float, float]]:
+    if radius <= 0:
+        return []
+    direction = _normalize(direction)
+    fx = line_point[0] - center[0]
+    fy = line_point[1] - center[1]
+    b = 2.0 * (direction[0] * fx + direction[1] * fy)
+    c = fx * fx + fy * fy - radius * radius
+    discriminant = b * b - 4.0 * c
+    if discriminant < -1e-9:
+        return []
+    discriminant = max(0.0, discriminant)
+    sqrt_disc = math.sqrt(discriminant)
+    roots = [(-b - sqrt_disc) / 2.0, (-b + sqrt_disc) / 2.0]
+    points = [
+        (
+            line_point[0] + direction[0] * t,
+            line_point[1] + direction[1] * t,
+        )
+        for t in roots
+    ]
+    unique: List[Tuple[float, float]] = []
+    for pt in points:
+        if not any(_distance(pt, existing) < 1e-9 for existing in unique):
+            unique.append(pt)
+    return unique
+
+
+def _circle_circle_intersections(
+    c0: Tuple[float, float],
+    r0: float,
+    c1: Tuple[float, float],
+    r1: float,
+) -> List[Tuple[float, float]]:
+    if r0 <= 0 or r1 <= 0:
+        return []
+    d = _distance(c0, c1)
+    if d <= 1e-9:
+        return []
+    if d > r0 + r1 or d < abs(r0 - r1):
+        return []
+    a = (r0 * r0 - r1 * r1 + d * d) / (2.0 * d)
+    h_sq = r0 * r0 - a * a
+    if h_sq < 0:
+        h_sq = 0.0
+    h = math.sqrt(h_sq)
+    vx = (c1[0] - c0[0]) / d
+    vy = (c1[1] - c0[1]) / d
+    px = c0[0] + a * vx
+    py = c0[1] + a * vy
+    offset = (-vy * h, vx * h)
+    points = [
+        (px + offset[0], py + offset[1]),
+        (px - offset[0], py - offset[1]),
+    ]
+    unique: List[Tuple[float, float]] = []
+    for pt in points:
+        if not any(_distance(pt, existing) < 1e-9 for existing in unique):
+            unique.append(pt)
+    return unique
+
+
+def _path_to_carrier(
+    path: object,
+    seed: InitialSeed,
+    scene_graph: SceneGraph,
+    opts: Optional[Mapping[str, Any]] = None,
+) -> Optional[Tuple[str, Any]]:
+    if not isinstance(path, (list, tuple)) or len(path) != 2:
+        return None
+    kind, payload = path
+    kind = _normalize_kind(str(kind))
+    if kind in {"line", "segment", "ray"}:
+        if isinstance(payload, (list, tuple)) and len(payload) == 2:
+            a, b = map(str, payload)
+            if a in seed.points and b in seed.points:
+                return ("line", (seed.points[a], seed.points[b]))
+        return None
+    if kind == "circle" and is_point_name(payload):
+        center_name = str(payload)
+        if center_name not in seed.points:
+            return None
+        radius = scene_graph.fixed_radii.get(center_name)
+        if radius is None:
+            carrier = scene_graph.carriers.circles.get(center_name)
+            if carrier:
+                for through in carrier.through:
+                    if through in seed.points and through != center_name:
+                        radius = _distance(seed.points[center_name], seed.points[through])
+                        break
+        if radius is None:
+            radius = 0.7 * seed.scale
+        return ("circle", (seed.points[center_name], radius))
+    if kind == "angle_bisector":
+        payload_map = payload if isinstance(payload, Mapping) else {}
+        pts = payload_map.get("points")
+        if isinstance(pts, (list, tuple)) and len(pts) == 3:
+            a, vertex, c = map(str, pts)
+            if all(name in seed.points for name in (a, vertex, c)):
+                va = _normalize(_vector(seed.points[vertex], seed.points[a]))
+                vc = _normalize(_vector(seed.points[vertex], seed.points[c]))
+                external = False
+                if opts and opts.get("external"):
+                    external = True
+                if external:
+                    direction = _normalize((va[0] - vc[0], va[1] - vc[1]))
+                else:
+                    direction = _normalize((va[0] + vc[0], va[1] + vc[1]))
+                if math.hypot(*direction) <= 1e-9:
+                    direction = _perpendicular(va)
+                return ("line", (seed.points[vertex], (seed.points[vertex][0] + direction[0], seed.points[vertex][1] + direction[1])))
+    if kind == "perpendicular":
+        payload_map = payload if isinstance(payload, Mapping) else {}
+        to_edge = payload_map.get("to")
+        at = payload_map.get("at")
+        if isinstance(to_edge, (list, tuple)) and len(to_edge) == 2 and is_point_name(at):
+            a, b = map(str, to_edge)
+            at_name = str(at)
+            if a in seed.points and b in seed.points and at_name in seed.points:
+                base_dir = _normalize(_vector(seed.points[a], seed.points[b]))
+                perp = _perpendicular(base_dir)
+                return ("line", (seed.points[at_name], (seed.points[at_name][0] + perp[0], seed.points[at_name][1] + perp[1])))
+    if kind == "perp_bisector":
+        if isinstance(payload, (list, tuple)) and len(payload) == 2:
+            a, b = map(str, payload)
+            if a in seed.points and b in seed.points:
+                midpoint = ((seed.points[a][0] + seed.points[b][0]) / 2.0, (seed.points[a][1] + seed.points[b][1]) / 2.0)
+                base_dir = _normalize(_vector(seed.points[a], seed.points[b]))
+                perp = _perpendicular(base_dir)
+                return ("line", (midpoint, (midpoint[0] + perp[0], midpoint[1] + perp[1])))
+    if kind == "median":
+        payload_map = payload if isinstance(payload, Mapping) else {}
+        to_edge = payload_map.get("to")
+        frm = payload_map.get("frm")
+        if isinstance(to_edge, (list, tuple)) and len(to_edge) == 2 and is_point_name(frm):
+            a, b = map(str, to_edge)
+            frm_name = str(frm)
+            if a in seed.points and b in seed.points and frm_name in seed.points:
+                midpoint = ((seed.points[a][0] + seed.points[b][0]) / 2.0, (seed.points[a][1] + seed.points[b][1]) / 2.0)
+                return ("line", (seed.points[frm_name], midpoint))
+    return None
+
+
+def _intersect_geometries(
+    geom1: Tuple[str, Any],
+    geom2: Tuple[str, Any],
+) -> List[Tuple[float, float]]:
+    kind1, data1 = geom1
+    kind2, data2 = geom2
+    if kind1 == "line" and kind2 == "line":
+        p1, p2 = data1
+        q1, q2 = data2
+        point = _line_intersection(p1, p2, q1, q2)
+        return [point] if point is not None else []
+    if kind1 == "line" and kind2 == "circle":
+        p1, p2 = data1
+        center, radius = data2
+        direction = _vector(p1, p2)
+        return _line_circle_intersections(p1, direction, center, radius)
+    if kind1 == "circle" and kind2 == "line":
+        center, radius = data1
+        p1, p2 = data2
+        direction = _vector(p1, p2)
+        return _line_circle_intersections(p1, direction, center, radius)
+    if kind1 == "circle" and kind2 == "circle":
+        center1, radius1 = data1
+        center2, radius2 = data2
+        return _circle_circle_intersections(center1, radius1, center2, radius2)
+    return []
+
+
+def _select_branch(
+    point: str,
+    candidates: List[Tuple[float, float]],
+    scene_graph: SceneGraph,
+    seed: InitialSeed,
+) -> Optional[Tuple[float, float]]:
+    if not candidates:
+        return None
+    hint = scene_graph.branch_hints.get(point)
+    component = scene_graph.point_component.get(point)
+    anchor_pos: Optional[Tuple[float, float]] = None
+    if hint and hint.anchor and hint.anchor in seed.points:
+        anchor_pos = seed.points[hint.anchor]
+    if anchor_pos is None and component:
+        origin, _ = seed.gauge_plan.pair(component)
+        if origin and origin in seed.points:
+            anchor_pos = seed.points[origin]
+    if hint:
+        kind = hint.normalized_kind()
+        if kind in {"near", "far"} and anchor_pos is not None:
+            ordered = sorted((( _distance(pt, anchor_pos), idx, pt) for idx, pt in enumerate(candidates)))
+            if ordered:
+                return ordered[0][2] if kind == "near" else ordered[-1][2]
+        if kind in {"left", "right"} and hint.reference:
+            ref_a, ref_b = hint.reference
+            if ref_a in seed.points and ref_b in seed.points:
+                base = _vector(seed.points[ref_a], seed.points[ref_b])
+                chosen: Optional[Tuple[float, float]] = None
+                score: Optional[float] = None
+                for pt in candidates:
+                    vec = _vector(seed.points[ref_a], pt)
+                    cross = base[0] * vec[1] - base[1] * vec[0]
+                    if kind == "left" and cross > 0 and (score is None or cross > score):
+                        chosen = pt
+                        score = cross
+                    if kind == "right" and cross < 0 and (score is None or cross < score):
+                        chosen = pt
+                        score = cross
+                if chosen is not None:
+                    return chosen
+        if kind in {"cw", "ccw"}:
+            ref_point = None
+            if hint.reference:
+                ref_a, ref_b = hint.reference
+                if ref_b in seed.points:
+                    anchor_pos = seed.points[ref_b]
+                if ref_a in seed.points:
+                    ref_point = seed.points[ref_a]
+            if anchor_pos is not None:
+                if ref_point is None:
+                    ref_point = (anchor_pos[0] + 1.0, anchor_pos[1])
+                base_angle = math.atan2(ref_point[1] - anchor_pos[1], ref_point[0] - anchor_pos[0])
+                best: Optional[Tuple[float, float]] = None
+                best_delta: Optional[float] = None
+                for pt in candidates:
+                    angle = math.atan2(pt[1] - anchor_pos[1], pt[0] - anchor_pos[0])
+                    if kind == "cw":
+                        delta = (base_angle - angle) % (2.0 * math.pi)
+                    else:
+                        delta = (angle - base_angle) % (2.0 * math.pi)
+                    if delta <= 1e-9:
+                        continue
+                    if best is None or delta < best_delta:
+                        best = pt
+                        best_delta = delta
+                if best is not None:
+                    return best
+    current = seed.points.get(point)
+    if current is not None:
+        return min(candidates, key=lambda pt: _distance(pt, current))
+    if anchor_pos is not None:
+        return min(candidates, key=lambda pt: _distance(pt, anchor_pos))
+    return candidates[0]
+
+
+def _apply_point_on_paths(scene_graph: SceneGraph, seed: InitialSeed) -> None:
+    for placement in scene_graph.placements.values():
+        point = placement.point
+        if point not in seed.points or placement.kind != 'point_on':
+            continue
+        path = placement.data.get('path')
+        if not isinstance(path, (list, tuple)) or len(path) != 2:
+            continue
+        kind = _normalize_kind(str(path[0]))
+        payload = path[1]
+        if kind in {"segment", "line", "ray"}:
+            if isinstance(payload, (list, tuple)) and len(payload) == 2:
+                a, b = map(str, payload)
+                if a in seed.points and b in seed.points:
+                    pa = seed.points[a]
+                    pb = seed.points[b]
+                    direction = _vector(pa, pb)
+                    length = _distance(pa, pb)
+                    if length <= 1e-9:
+                        direction = (seed.scale, 0.0)
+                        length = seed.scale
+                    if kind == "segment":
+                        u = 0.2 + 0.6 * _stable_unit(point, a, b, 'segment')
+                        seed.points[point] = (
+                            pa[0] + direction[0] * u,
+                            pa[1] + direction[1] * u,
+                        )
+                    elif kind == "ray":
+                        u = 0.3 + 0.6 * _stable_unit(point, a, b, 'ray')
+                        span = max(length, seed.scale)
+                        seed.points[point] = (
+                            pa[0] + _normalize(direction)[0] * span * u,
+                            pa[1] + _normalize(direction)[1] * span * u,
+                        )
+                    else:
+                        u = 0.6
+                        span = max(length, seed.scale)
+                        norm_dir = _normalize(direction)
+                        seed.points[point] = (
+                            pa[0] + norm_dir[0] * span * u,
+                            pa[1] + norm_dir[1] * span * u,
+                        )
+        elif kind == "circle" and is_point_name(payload):
+            center = str(payload)
+            if center in seed.points:
+                radius = scene_graph.fixed_radii.get(center)
+                if radius is None:
+                    carrier = scene_graph.carriers.circles.get(center)
+                    if carrier:
+                        for through in carrier.through:
+                            if through in seed.points and through != point:
+                                radius = _distance(seed.points[center], seed.points[through])
+                                break
+                if radius is None:
+                    radius = 0.7 * seed.scale
+                angle = 2.0 * math.pi * _stable_unit(point, center, 'circle')
+                seed.points[point] = (
+                    seed.points[center][0] + radius * math.cos(angle),
+                    seed.points[center][1] + radius * math.sin(angle),
+                )
+        elif kind == "angle_bisector":
+            carrier = _path_to_carrier(path, seed, scene_graph, placement.data.get('opts'))
+            if carrier and carrier[0] == 'line':
+                origin, towards = carrier[1]
+                direction = _normalize(_vector(origin, towards))
+                span = max(seed.scale, seed.min_spacing * 8.0)
+                seed.points[point] = (
+                    origin[0] + direction[0] * span,
+                    origin[1] + direction[1] * span,
+                )
+        elif kind == "perpendicular":
+            carrier = _path_to_carrier(path, seed, scene_graph, placement.data.get('opts'))
+            if carrier and carrier[0] == 'line':
+                origin, towards = carrier[1]
+                direction = _normalize(_vector(origin, towards))
+                span = max(seed.scale, seed.min_spacing * 6.0)
+                seed.points[point] = (
+                    origin[0] + direction[0] * span,
+                    origin[1] + direction[1] * span,
+                )
+        elif kind == "perp_bisector":
+            carrier = _path_to_carrier(path, seed, scene_graph)
+            if carrier and carrier[0] == 'line':
+                origin, towards = carrier[1]
+                direction = _normalize(_vector(origin, towards))
+                span = max(seed.scale, seed.min_spacing * 6.0)
+                seed.points[point] = (
+                    origin[0] + direction[0] * span,
+                    origin[1] + direction[1] * span,
+                )
+        elif kind == "median":
+            carrier = _path_to_carrier(path, seed, scene_graph)
+            if carrier and carrier[0] == 'line':
+                origin, towards = carrier[1]
+                direction = _normalize(_vector(origin, towards))
+                span = max(seed.scale, seed.min_spacing * 6.0)
+                seed.points[point] = (
+                    origin[0] + direction[0] * span,
+                    origin[1] + direction[1] * span,
+                )
+
+
+def _apply_intersections(scene_graph: SceneGraph, seed: InitialSeed) -> None:
+    for placement in scene_graph.placements.values():
+        point = placement.point
+        if point not in seed.points or placement.kind != 'intersect':
+            continue
+        paths = placement.data.get('paths')
+        if not isinstance(paths, (list, tuple)) or len(paths) != 2:
+            continue
+        geom1 = _path_to_carrier(paths[0], seed, scene_graph, placement.data.get('opts'))
+        geom2 = _path_to_carrier(paths[1], seed, scene_graph, placement.data.get('opts'))
+        if not geom1 or not geom2:
+            continue
+        candidates = _intersect_geometries(geom1, geom2)
+        selected = _select_branch(point, candidates, scene_graph, seed)
+        if selected is not None:
+            seed.points[point] = selected
+
+
 
 def _compute_scale_constants(
     scene_graph: SceneGraph,
@@ -939,6 +1791,21 @@ def initial_guess(program: Program, desugared: Program, opts: Dict[str, Any]) ->
     seed.notes.append(
         f"scale={scale:.3f} delta={delta:.4f} eps_ang={epsilon_deg:.1f}deg eps_off={epsilon_off:.3f}"
     )
+    seed.points = _seed_coarse_layout(scene_graph, seed.gauge_plan, scale, delta)
+    seed.notes.append(
+        f"coarse-layout: seeded {len(seed.points)} points with golden-angle spiral"
+    )
+    _apply_collinear_groups(scene_graph, seed)
+    _apply_concyclic_groups(scene_graph, seed)
+    _apply_midpoints_and_feet(scene_graph, seed)
+    _apply_point_on_paths(scene_graph, seed)
+    _apply_parallel_perpendicular(scene_graph, seed)
+    _apply_length_relationships(scene_graph, seed)
+    _apply_intersections(scene_graph, seed)
+
+    for name in scene_graph.points:
+        seed.points.setdefault(name, (0.0, 0.0))
+
     for anchor in seed.gauge_plan.anchors:
         seed.notes.append(
             f"gauge[{anchor.component}]: origin={anchor.origin} baseline={anchor.baseline} reason={anchor.reason}"
