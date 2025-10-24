@@ -15,7 +15,7 @@ from geoscript_ir.solver import (
     SolveOptions,
     Solution,
     normalize_point_coords,
-    initial_guess,
+    legacy_initial_guess,
 )
 
 
@@ -680,9 +680,9 @@ def test_initial_guess_respects_gauge_and_jitter():
     )
 
     rng = np.random.default_rng(2024)
-    guess0 = initial_guess(model, rng, 0, plan=plan)
-    guess1 = initial_guess(model, rng, 1, plan=plan)
-    guess2 = initial_guess(model, rng, 2, plan=plan)
+    guess0 = legacy_initial_guess(model, rng, 0, plan=plan)
+    guess1 = legacy_initial_guess(model, rng, 1, plan=plan)
+    guess2 = legacy_initial_guess(model, rng, 2, plan=plan)
 
     a = _coords_from_guess(model, guess0, "A")
     b0 = _coords_from_guess(model, guess0, "B")
@@ -724,7 +724,7 @@ def test_initial_guess_on_path_intersection_line_circle():
     )
 
     rng = np.random.default_rng(7)
-    guess = initial_guess(model, rng, 0, plan=plan)
+    guess = legacy_initial_guess(model, rng, 0, plan=plan)
     a = _coords_from_guess(model, guess, "A")
     b = _coords_from_guess(model, guess, "B")
     o = _coords_from_guess(model, guess, "O")
@@ -754,7 +754,7 @@ def test_initial_guess_tangent_projection():
     )
 
     rng = np.random.default_rng(9)
-    guess = initial_guess(model, rng, 0, plan=plan)
+    guess = legacy_initial_guess(model, rng, 0, plan=plan)
     x = _coords_from_guess(model, guess, "X")
     y = _coords_from_guess(model, guess, "Y")
     o = _coords_from_guess(model, guess, "O")
@@ -781,7 +781,7 @@ def test_initial_guess_equal_length_nudge():
     )
 
     rng = np.random.default_rng(11)
-    guess = initial_guess(model, rng, 0, plan=plan)
+    guess = legacy_initial_guess(model, rng, 0, plan=plan)
     a = _coords_from_guess(model, guess, "A")
     b = _coords_from_guess(model, guess, "B")
     c = _coords_from_guess(model, guess, "C")
@@ -804,7 +804,7 @@ def test_initial_guess_ratio_hint():
     )
 
     rng = np.random.default_rng(13)
-    guess = initial_guess(model, rng, 0, plan=plan)
+    guess = legacy_initial_guess(model, rng, 0, plan=plan)
     a = _coords_from_guess(model, guess, "A")
     b = _coords_from_guess(model, guess, "B")
     c = _coords_from_guess(model, guess, "C")
@@ -827,7 +827,7 @@ def test_initial_guess_concyclic_hint():
     )
 
     rng = np.random.default_rng(17)
-    guess = initial_guess(model, rng, 0, plan=plan)
+    guess = legacy_initial_guess(model, rng, 0, plan=plan)
     coords = {name: _coords_from_guess(model, guess, name) for name in ("A", "B", "C", "D")}
     center, radius = _fit_circle_np(list(coords.values()))
     dists = [np.linalg.norm(coords[name] - center) for name in coords]
