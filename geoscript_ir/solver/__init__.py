@@ -6,7 +6,7 @@ import logging
 from typing import Optional, Sequence, Tuple
 
 from ..ast import Program
-from ..desugar import desugar
+from ..desugar import desugar, desugar_variants
 from .cad_solver import score_solution, solve as solve_cad
 from .config import get_residual_builder_config, set_residual_builder_config
 from .initial_guess import initial_guess
@@ -87,18 +87,35 @@ def solve_best_model(models: Sequence[Model], options: SolveOptions = SolveOptio
 def solve_with_desugar_variants(
     program: Program, options: SolveOptions = SolveOptions()
 ) -> VariantSolveResult:
-    desugared = desugar(program)
+    variants = desugar_variants(program)
+    if not variants:
+        logger.info("No desugar variants produced; falling back to single desugared program")
+        variants = [desugar(program)]
+
     logger.info(
-        "Solving with desugar variants for program: original stmts=%d, desugared stmts=%d",
+        "Solving with desugar variants for program: original stmts=%d, variant_count=%d",
         len(program.stmts),
-        len(desugared.stmts),
+        len(variants),
     )
-    model = translate(desugared)
-    solution = solve(model, options)
+
+    models = [translate(variant) for variant in variants]
+    best_index, best_solution = solve_best_model(models, options)
+    best_model = models[best_index]
+    best_program = variants[best_index]
+
     logger.info(
-        "Variant 0 solve finished success=%s max_residual=%s", solution.success, solution.max_residual
+        "Variant %d solve finished success=%s max_residual=%s",
+        best_index,
+        best_solution.success,
+        best_solution.max_residual,
     )
-    return VariantSolveResult(variant_index=0, program=desugared, model=model, solution=solution)
+
+    return VariantSolveResult(
+        variant_index=best_index,
+        program=best_program,
+        model=best_model,
+        solution=best_solution,
+    )
 
 
 __all__ = [
