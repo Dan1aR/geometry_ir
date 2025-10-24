@@ -6,6 +6,7 @@ import logging
 import math
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
+from statistics import median
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 import numpy as np
@@ -138,6 +139,8 @@ class SceneGraph:
     branch_hints: Dict[str, BranchHint]
     components: Dict[str, Set[str]]
     point_component: Dict[str, str]
+    trapezoid_bases: List[Tuple[str, str]]
+    polygon_edges: List[Tuple[str, str]]
 
 
 @dataclass
@@ -167,6 +170,11 @@ class InitialSeed:
     points: Dict[str, Tuple[float, float]] = field(default_factory=dict)
     gauge_plan: GaugePlan = field(default_factory=GaugePlan)
     notes: List[str] = field(default_factory=list)
+    scale: float = 1.0
+    min_spacing: float = 1e-2
+    angle_epsilon: float = math.radians(8.0)
+    angle_epsilon_degrees: float = 8.0
+    offset_epsilon: float = 0.08
 
 
 
@@ -193,6 +201,24 @@ def _parse_edge_like(value: object) -> Optional[Tuple[str, str]]:
         if parsed and all(is_point_name(part) for part in parsed):
             return str(parsed[0]), str(parsed[1])
     return None
+
+
+def _iter_edge_like(value: object) -> Iterable[Tuple[str, str]]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)) and not (
+        len(value) == 2 and is_point_name(value[0]) and is_point_name(value[1])
+    ):
+        edges: List[Tuple[str, str]] = []
+        for item in value:
+            parsed = _parse_edge_like(item)
+            if parsed is not None:
+                edges.append(tuple(map(str, parsed)))
+        return edges
+    parsed = _parse_edge_like(value)
+    if parsed is None:
+        return []
+    return [tuple(map(str, parsed))]
 
 
 def _extract_point_names(obj: object, out: Optional[Set[str]] = None) -> Set[str]:
@@ -235,6 +261,8 @@ class _SceneGraphBuilder:
         self.fixed_radii: Dict[str, float] = {}
         self.branch_hints: Dict[str, BranchHint] = {}
         self.adjacency: Dict[str, Set[str]] = defaultdict(set)
+        self.trapezoid_bases: List[Tuple[str, str]] = []
+        self.polygon_edges: List[Tuple[str, str]] = []
 
     # ------------------------------------------------------------------
     # Point registration helpers
@@ -416,6 +444,35 @@ class _SceneGraphBuilder:
             ids = stmt.data.get("ids", [])
             if isinstance(ids, (list, tuple)):
                 self._register_points(map(str, ids))
+            return
+
+        if kind in {
+            "triangle",
+            "quadrilateral",
+            "trapezoid",
+            "polygon",
+            "parallelogram",
+            "rectangle",
+            "square",
+            "rhombus",
+        }:
+            ids = stmt.data.get("ids")
+            if isinstance(ids, (list, tuple)) and len(ids) >= 2:
+                names = [str(name) for name in ids if is_point_name(name)]
+                if len(names) >= 2:
+                    self._register_points(names)
+                    self._connect_points(names)
+                    for idx, name in enumerate(names):
+                        nxt = names[(idx + 1) % len(names)]
+                        self._record_line((name, nxt), stmt)
+                        if (name, nxt) not in self.polygon_edges:
+                            self.polygon_edges.append((name, nxt))
+            if kind == "trapezoid":
+                bases = stmt.opts.get("bases")
+                for base in _iter_edge_like(bases):
+                    if base not in self.trapezoid_bases:
+                        self.trapezoid_bases.append(base)
+                        break
             return
 
         if kind in {"segment", "line"}:
@@ -715,6 +772,8 @@ class _SceneGraphBuilder:
             branch_hints=dict(self.branch_hints),
             components={key: set(value) for key, value in components.items()},
             point_component=dict(point_component),
+            trapezoid_bases=list(self.trapezoid_bases),
+            polygon_edges=list(self.polygon_edges),
         )
 
 
@@ -733,14 +792,157 @@ def build_scene_graph(desugared: Program) -> SceneGraph:
     return scene_graph
 
 
+def _ordered_component_points(scene_graph: SceneGraph, component: str) -> List[str]:
+    members = scene_graph.components.get(component, set())
+    if not members:
+        return []
+    ordered = [name for name in scene_graph.point_order if name in members]
+    if len(ordered) == len(members):
+        return ordered
+    remaining = sorted(members - set(ordered))
+    ordered.extend(remaining)
+    return ordered
+
+
+def _component_forbidden_edges(
+    scene_graph: SceneGraph, component_members: Set[str]
+) -> Set[Tuple[str, str]]:
+    forbidden: Set[Tuple[str, str]] = set()
+    for edge, value in scene_graph.absolute_lengths.items():
+        if not math.isfinite(value):
+            continue
+        a, b = edge
+        if a in component_members and b in component_members:
+            forbidden.add(edge)
+    return forbidden
+
+
+def _is_safe_pair(
+    pair: Tuple[str, str],
+    component_members: Set[str],
+    forbidden_edges: Set[Tuple[str, str]],
+) -> bool:
+    a, b = pair
+    if a == b:
+        return False
+    if a not in component_members or b not in component_members:
+        return False
+    return edge_key(a, b) not in forbidden_edges
+
+
+def _lexicographic_safe_pair(
+    ordered_points: Sequence[str], forbidden_edges: Set[Tuple[str, str]]
+) -> Optional[Tuple[str, str]]:
+    for idx, a in enumerate(ordered_points):
+        for b in ordered_points[idx + 1 :]:
+            if edge_key(a, b) in forbidden_edges:
+                continue
+            return a, b
+    return None
+
+
+def _choose_gauge_plan(scene_graph: SceneGraph) -> GaugePlan:
+    plan = GaugePlan()
+    plan.forbidden_edges.update(scene_graph.absolute_lengths.keys())
+
+    for component in sorted(scene_graph.components):
+        members = scene_graph.components[component]
+        ordered = _ordered_component_points(scene_graph, component)
+        if not ordered:
+            continue
+
+        component_forbidden = _component_forbidden_edges(scene_graph, members)
+
+        chosen_pair: Optional[Tuple[str, str]] = None
+        reason: Optional[str] = None
+
+        for base in scene_graph.trapezoid_bases:
+            if _is_safe_pair(base, members, component_forbidden):
+                chosen_pair = base
+                reason = "trapezoid-base"
+                break
+
+        if chosen_pair is None:
+            for edge in scene_graph.polygon_edges:
+                if _is_safe_pair(edge, members, component_forbidden):
+                    chosen_pair = edge
+                    reason = "polygon-edge"
+                    break
+
+        if chosen_pair is None:
+            chosen_pair = _lexicographic_safe_pair(ordered, component_forbidden)
+            if chosen_pair is not None:
+                reason = "lexicographic"
+
+        origin: Optional[str]
+        baseline: Optional[str]
+
+        if chosen_pair is not None:
+            origin, baseline = chosen_pair
+        else:
+            origin = ordered[0]
+            baseline = None
+            if len(ordered) == 1:
+                reason = "single-point-component"
+            else:
+                reason = reason or "fixed-length-fallback"
+
+        anchor = GaugeAnchor(
+            component=component,
+            origin=origin,
+            baseline=baseline,
+            reason=reason,
+            forbidden_edges=set(component_forbidden),
+        )
+        plan.anchors.append(anchor)
+
+    return plan
+
+
+def _compute_scale_constants(
+    scene_graph: SceneGraph,
+) -> Tuple[float, float, float, float, float]:
+    lengths = [
+        abs(float(value))
+        for value in scene_graph.absolute_lengths.values()
+        if math.isfinite(value)
+    ]
+    if lengths:
+        scale = float(median(lengths))
+        scale = max(0.5, min(5.0, scale))
+    else:
+        scale = 1.0
+    delta = 1e-2 * scale
+    epsilon_ang = math.radians(8.0)
+    epsilon_deg = 8.0
+    epsilon_off = 0.08 * scale
+    return scale, delta, epsilon_ang, epsilon_deg, epsilon_off
+
+
 def initial_guess(program: Program, desugared: Program, opts: Dict[str, Any]) -> InitialSeed:
     """Entry point for the upcoming similarity-gauge aware initial seed."""
 
     scene_graph = build_scene_graph(desugared)
     seed = InitialSeed()
+    seed.gauge_plan = _choose_gauge_plan(scene_graph)
+    scale, delta, epsilon_ang, epsilon_deg, epsilon_off = _compute_scale_constants(
+        scene_graph
+    )
+    seed.scale = scale
+    seed.min_spacing = delta
+    seed.angle_epsilon = epsilon_ang
+    seed.angle_epsilon_degrees = epsilon_deg
+    seed.offset_epsilon = epsilon_off
     seed.notes.append(
         f"scene-graph: {len(scene_graph.points)} points across {len(scene_graph.components)} components"
     )
+    seed.notes.append(
+        f"scale={scale:.3f} delta={delta:.4f} eps_ang={epsilon_deg:.1f}deg eps_off={epsilon_off:.3f}"
+    )
+    for anchor in seed.gauge_plan.anchors:
+        seed.notes.append(
+            f"gauge[{anchor.component}]: origin={anchor.origin} baseline={anchor.baseline} reason={anchor.reason}"
+        )
     return seed
 
 
