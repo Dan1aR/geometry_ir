@@ -990,7 +990,7 @@ def _seed_coarse_layout(
         baseline = anchor.baseline if anchor.baseline in members else None
         if origin not in seeded:
             seeded[origin] = (0.0, 0.0)
-            logger.debug(
+            logger.info(
                 "coarse-layout: component=%s point=%s -> (%.3f, %.3f) [origin]",
                 component,
                 origin,
@@ -1003,7 +1003,7 @@ def _seed_coarse_layout(
         if baseline and baseline != origin:
             seeded[baseline] = (scale, 0.0)
             component_positions.append(seeded[baseline])
-            logger.debug(
+            logger.info(
                 "coarse-layout: component=%s point=%s -> (%.3f, %.3f) [baseline]",
                 component,
                 baseline,
@@ -1032,7 +1032,7 @@ def _seed_coarse_layout(
             candidate = _ensure_spacing(candidate, component_positions, min_spacing)
             seeded[name] = candidate
             component_positions.append(candidate)
-            logger.debug(
+            logger.info(
                 "coarse-layout: component=%s point=%s -> (%.3f, %.3f) [spiral idx=%d]",
                 component,
                 name,
@@ -1050,7 +1050,7 @@ def _seed_coarse_layout(
         origin = ordered[0]
         if origin not in seeded:
             seeded[origin] = (0.0, 0.0)
-            logger.debug(
+            logger.info(
                 "coarse-layout: component=%s point=%s -> (%.3f, %.3f) [origin-fallback]",
                 component,
                 origin,
@@ -1079,7 +1079,7 @@ def _seed_coarse_layout(
             candidate = _ensure_spacing(candidate, component_positions, min_spacing)
             seeded[name] = candidate
             component_positions.append(candidate)
-            logger.debug(
+            logger.info(
                 "coarse-layout: component=%s point=%s -> (%.3f, %.3f) [spiral idx=%d fallback]",
                 component,
                 name,
@@ -2146,11 +2146,11 @@ def initial_guess(program: Program, desugared: Program, opts: Dict[str, Any]) ->
         )
     seed.notes.append("degeneracy-guards applied")
     for note in seed.notes:
-        logger.debug("initial-guess-note: %s", note)
+        logger.info("initial-guess-note: %s", note)
     for name in scene_graph.point_order:
         position = seed.points.get(name, (0.0, 0.0))
         component = scene_graph.point_component.get(name)
-        logger.debug(
+        logger.info(
             "initial-guess-point: %s component=%s -> (%.4f, %.4f)",
             name,
             component,
@@ -2172,7 +2172,7 @@ def apply_drag_policy(
 
     lookup = getattr(sys, "_initial_guess_point_lookup", None)
     if lookup is None:
-        logger.debug(
+        logger.info(
             "apply_drag_policy skipped: solver system does not expose point lookup"
         )
         return
@@ -2196,13 +2196,9 @@ def apply_drag_policy(
                 continue
             entity = lookup.get(name)
             if entity is None:
-                logger.debug("drag policy missing entity for point '%s'", name)
+                logger.info("drag policy missing entity for point '%s'", name)
                 continue
-            try:
-                sys.dragged(entity, wp)
-            except Exception:  # pragma: no cover - defensive
-                logger.exception("Failed to mark point '%s' as dragged", name)
-                continue
+            sys.dragged(entity, wp)
             dragged.add(name)
             applied.append(name)
         if applied:
@@ -2367,7 +2363,7 @@ def _base_positions(model: Model) -> Dict[PointName, Tuple[float, float]]:
         if length_hint is not None:
             baseline_length = float(length_hint)
         positions[baseline] = (baseline_length, 0.0)
-        logger.debug(
+        logger.info(
             "model-initial-guess: baseline %s -> (%.3f, %.3f) [length=%.3f]",
             baseline,
             baseline_length,
@@ -2402,7 +2398,7 @@ def _base_positions(model: Model) -> Dict[PointName, Tuple[float, float]]:
             scale,
         )
         positions[third] = (x, y)
-        logger.debug(
+        logger.info(
             "model-initial-guess: third %s -> (%.3f, %.3f) [anchor=%s baseline_hint=%s]",
             third,
             x,
@@ -2418,7 +2414,7 @@ def _base_positions(model: Model) -> Dict[PointName, Tuple[float, float]]:
             continue
         positions[name] = _fallback_position(fallback_idx, total, scale)
         fallback_idx += 1
-        logger.debug(
+        logger.info(
             "model-initial-guess: fallback %s -> (%.3f, %.3f) [idx=%d]",
             name,
             positions[name][0],
@@ -2462,7 +2458,7 @@ def model_initial_guess(
             y += float(jitter[1])
         guess[2 * idx] = x
         guess[2 * idx + 1] = y
-        logger.debug(
+        logger.info(
             "model-initial-guess: point=%s base=(%.3f, %.3f) jittered=(%.3f, %.3f)",
             name,
             positions.get(name, (0.0, 0.0))[0],
