@@ -73,8 +73,20 @@ class _CadBuilder:
         stmt: Stmt,
         note: Optional[str] = None,
     ) -> None:
-        self.constraints.append(
-            CadConstraint(kind=kind, entities=tuple(entities), value=value, source=stmt, note=note)
+        constraint = CadConstraint(
+            kind=kind,
+            entities=tuple(entities),
+            value=value,
+            source=stmt,
+            note=note,
+        )
+        self.constraints.append(constraint)
+        logger.info(
+            "Added constraint: kind=%s entities=%s value=%s note=%s",
+            constraint.kind,
+            ",".join(constraint.entities),
+            "{:.6f}".format(constraint.value) if constraint.value is not None else None,
+            constraint.note,
         )
 
     # ------------------------------------------------------------------
@@ -670,8 +682,7 @@ class _CadBuilder:
         self.add_point_on_circle(center_name, a, stmt)
         self.add_point_on_circle(center_name, b, stmt)
         line = self.ensure_line(a, b)
-        radius_line = self.ensure_line(center_name, a)
-        self.system.perpendicular(line, radius_line, self.workplane)
+        self.system.coincident(self.point_entity(center_name), line, self.workplane)
         self._add_constraint(
             "diameter",
             (f"{a}-{b}", center_name),
