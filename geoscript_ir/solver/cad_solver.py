@@ -14,6 +14,19 @@ from .model import DerivationPlan, Model, PointName, Solution, SolveOptions
 logger = logging.getLogger(__name__)
 
 
+def _safe_solver_call(system, method: str):
+    """Invoke ``system.method`` if available, swallowing runtime errors."""
+
+    attr = getattr(system, method, None)
+    if not callable(attr):
+        return None
+    try:
+        return attr()
+    except Exception:  # pragma: no cover - defensive logging aid
+        logger.exception("Error calling python-solvespace method '%s'", method)
+        return None
+
+
 def _read_coordinates(model: Model) -> Dict[PointName, Tuple[float, float]]:
     coords: Dict[PointName, Tuple[float, float]] = {}
     for name in model.point_order:
@@ -50,6 +63,22 @@ def solve(
         guess = initial_guess(model, rng, attempt, plan=plan)
         apply_initial_guess(model, guess)
         flag = model.system.solve()
+        dof = _safe_solver_call(model.system, "dof")
+        solver_warnings = _safe_solver_call(model.system, "warnings") or []
+        solver_warnings = [str(item) for item in solver_warnings]
+
+        logger.info(
+            "CAD solve attempt %d result flag=%s%s",
+            attempt + 1,
+            flag,
+            f" dof={dof}" if dof is not None else "",
+        )
+        if solver_warnings:
+            logger.info(
+                "CAD solve attempt %d warnings: %s",
+                attempt + 1,
+                "; ".join(solver_warnings),
+            )
         coords = _read_coordinates(model)
         success = flag == ResultFlag.OKAY
 
@@ -60,7 +89,7 @@ def solve(
                 success=True,
                 max_residual=0.0,
                 residual_breakdown=[],
-                warnings=list(warnings),
+                warnings=list(warnings) + solver_warnings,
             )
 
         failures = model.system.failures()
@@ -76,6 +105,8 @@ def solve(
         else:
             warnings.append(f"Attempt {attempt + 1} failed: solver did not converge")
             logger.info("CAD solve attempt %d did not converge", attempt + 1)
+
+        warnings.extend(solver_warnings)
 
         candidate = Solution(
             point_coords=coords,
