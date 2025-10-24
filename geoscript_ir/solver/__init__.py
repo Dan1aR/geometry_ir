@@ -9,7 +9,7 @@ from ..ast import Program
 from ..desugar import desugar, desugar_variants
 from .cad_solver import score_solution, solve as solve_cad
 from .config import get_residual_builder_config, set_residual_builder_config
-from .initial_guess import initial_guess, legacy_initial_guess
+from .initial_guess import initial_guess
 from .model import (
     CadConstraint,
     CircleSpec,
@@ -136,7 +136,6 @@ __all__ = [
     "compile_with_plan",
     "get_residual_builder_config",
     "initial_guess",
-    "legacy_initial_guess",
     "normalize_point_coords",
     "plan_derive",
     "score_solution",

@@ -931,14 +931,14 @@ def _base_positions(model: Model) -> Dict[PointName, Tuple[float, float]]:
     return positions
 
 
-def legacy_initial_guess(
+def model_initial_guess(
     model: Model,
     rng: np.random.Generator,
     attempt: int,
     *,
     plan: Optional[DerivationPlan] = None,
 ) -> np.ndarray:
-    """Produce a simple initial guess for the CAD solver."""
+    """Produce the current CAD initial guess (temporary scaffolding)."""
 
     positions = _base_positions(model)
     guess = np.zeros(2 * len(model.point_order), dtype=float)

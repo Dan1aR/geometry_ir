@@ -8,7 +8,7 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 from python_solvespace import ResultFlag
 
-from .initial_guess import apply_initial_guess, legacy_initial_guess
+from .initial_guess import apply_initial_guess, model_initial_guess
 from .model import CadConstraint, DerivationPlan, Model, PointName, Solution, SolveOptions
 
 logger = logging.getLogger(__name__)
@@ -87,7 +87,7 @@ def solve(
     )
     for attempt in range(attempts):
         logger.info("CAD solve attempt %d/%d", attempt + 1, attempts)
-        guess = legacy_initial_guess(model, rng, attempt, plan=plan)
+        guess = model_initial_guess(model, rng, attempt, plan=plan)
         apply_initial_guess(model, guess)
         constraint_lookup = {constraint.cad_id: constraint for constraint in model.constraints}
         flag = model.system.solve()
