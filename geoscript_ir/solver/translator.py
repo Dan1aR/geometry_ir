@@ -20,7 +20,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from python_solvespace import Entity, SolverSystem
 
 from ..ast import Program, Stmt
-from .model import CadConstraint, CircleSpec, Model, PointName
+from .model import CadConstraint, CircleSpec, Model, PointName, SeedHint, SeedHints
 from .utils import collect_point_order, coerce_float, edge_key, is_point_name
 
 logger = logging.getLogger(__name__)
@@ -49,6 +49,10 @@ class _CadBuilder:
         self.gauge_points: List[Tuple[PointName, Optional[str]]] = []
         self.metadata: Dict[str, Any] = {}
         self.unsupported: List[Stmt] = []
+        self.seed_hints: SeedHints = {"by_point": {}, "global_hints": []}
+        self._gauge_origin: Optional[PointName] = None
+        self._gauge_baseline: Optional[PointName] = None
+        self._gauge_length: Optional[float] = None
 
         # Local (human-friendly) ids for reporting; the lib's failure ids are separate.
         self._next_constraint_id = 0
@@ -243,6 +247,7 @@ class _CadBuilder:
             metadata=self.metadata,
             unsupported=self.unsupported,
             gauge_points=list(self.gauge_points),
+            seed_hints=self.seed_hints,
             next_constraint_id=self._next_constraint_id,
         )
 
@@ -316,30 +321,121 @@ class _CadBuilder:
     # ------------------------------------------------------------------
     # Gauge helpers
 
+    def _register_length_seed(
+        self, a: PointName, b: PointName, length: float
+    ) -> None:
+        hint: SeedHint = {
+            "kind": "length",
+            "point": None,
+            "payload": {"edge": (a, b), "value": float(length)},
+        }
+        self.seed_hints.setdefault("global_hints", []).append(hint)
+
+    def _extract_numeric_length(
+        self, stmt: Stmt
+    ) -> Optional[Tuple[PointName, PointName, float]]:
+        kind = stmt.kind
+        if kind not in {"segment", "line"}:
+            return None
+        edge = stmt.data.get("edge")
+        if not isinstance(edge, (list, tuple)) or len(edge) != 2:
+            return None
+        a, b = str(edge[0]), str(edge[1])
+        for key in ("length", "distance", "value"):
+            if key in stmt.opts:
+                length = coerce_float(stmt.opts.get(key))
+                if length is not None:
+                    return a, b, float(length)
+        return None
+
+    def _segment_length_between(
+        self, a: PointName, b: PointName
+    ) -> Optional[float]:
+        target = edge_key(a, b)
+        for stmt in self.program.stmts:
+            info = self._extract_numeric_length(stmt)
+            if info is None:
+                continue
+            sa, sb, value = info
+            if edge_key(sa, sb) == target:
+                return value
+        return None
+
+    def _first_numeric_length_segment(
+        self,
+    ) -> Optional[Tuple[PointName, PointName, float]]:
+        for stmt in self.program.stmts:
+            info = self._extract_numeric_length(stmt)
+            if info is not None:
+                return info
+        return None
+
+    def _pick_orientation_point(
+        self, origin: PointName, baseline: Optional[PointName]
+    ) -> Optional[PointName]:
+        if baseline is None:
+            return None
+        for name in self.point_order:
+            if name not in {origin, baseline}:
+                return name
+        return None
+
     def _plan_default_gauge(self) -> None:
-        """Plan a simple similarity gauge: first point as origin; second as baseline anchor."""
+        """Plan a simple similarity gauge, preferring segments with numeric length."""
         if not self.point_order:
             return
-        first = self.point_order[0]
-        self.gauge_points.append((first, "fixed origin"))
-        self.gauges.append(f"anchor={first}")
+
+        origin = self.point_order[0]
+        baseline: Optional[PointName] = None
         if len(self.point_order) >= 2:
-            second = self.point_order[1]
-            self.gauge_points.append((second, "fixed baseline"))
-            self.gauges.append(f"anchor={second}")
-        if len(self.point_order) >= 3:
-            third = self.point_order[2]
-            self.gauges.append(f"orientation={first}-{second}-{third}")
+            baseline = self.point_order[1]
+
+        length_hint: Optional[float] = None
+        if origin and baseline:
+            length_hint = self._segment_length_between(origin, baseline)
+        if length_hint is None:
+            candidate = self._first_numeric_length_segment()
+            if candidate is not None:
+                origin, baseline, length_hint = candidate
+
+        self._gauge_origin = origin
+        self._gauge_baseline = baseline
+        self._gauge_length = length_hint
+
+        self.gauge_points.append((origin, "fixed origin"))
+        self.gauges.append(f"anchor={origin}")
+
+        if baseline and baseline != origin:
+            self.gauge_points.append((baseline, "fixed baseline"))
+            self.gauges.append(f"anchor={baseline}")
+
+        third = self._pick_orientation_point(origin, baseline)
+        if third is not None:
+            self.gauges.append(f"orientation={origin}-{baseline}-{third}")
+
+        if length_hint is not None and baseline and baseline != origin:
+            self._register_length_seed(origin, baseline, length_hint)
+
+        self.metadata["default_gauge"] = {
+            "origin": origin,
+            "baseline": baseline,
+            "length": length_hint,
+            "third": third,
+        }
 
     def _apply_default_gauge_constraints(self) -> None:
-        """Actually apply the minimal gauge: drag first two named points."""
-        if not self.point_order:
+        """Actually apply the minimal gauge: drag the planned anchor points."""
+        if self._gauge_origin is None:
             return
-        first = self.point_order[0]
-        self.system.dragged(self.point_entity(first), self.workplane)
-        if len(self.point_order) >= 2:
-            second = self.point_order[1]
-            self.system.dragged(self.point_entity(second), self.workplane)
+
+        self.system.dragged(self.point_entity(self._gauge_origin), self.workplane)
+        if (
+            self._gauge_baseline is not None
+            and self._gauge_baseline != self._gauge_origin
+        ):
+            self.system.dragged(
+                self.point_entity(self._gauge_baseline), self.workplane
+            )
 
     # ------------------------------------------------------------------
     # Individual statement handlers
