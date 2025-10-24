@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from python_solvespace import Entity, SolverSystem
@@ -16,6 +17,8 @@ from .utils import (
     is_point_name,
 )
 
+
+logger = logging.getLogger(__name__)
 
 class _CadBuilder:
     """Internal helper that materializes a python-solvespace system."""
@@ -122,9 +125,19 @@ class _CadBuilder:
     # Build entry point
 
     def build(self) -> Model:
+        logger.info(
+            "Building CAD model: %d points, %d statements", len(self.point_order), len(self.program.stmts)
+        )
         self._apply_default_gauge()
         for stmt in self.program.stmts:
             self._dispatch(stmt)
+
+        logger.info(
+            "Finished CAD model build: %d constraints, %d gauges, %d unsupported",
+            len(self.constraints),
+            len(self.gauges),
+            len(self.unsupported),
+        )
 
         return Model(
             program=self.program,
@@ -202,6 +215,7 @@ class _CadBuilder:
             self._handle_ratio(stmt)
         else:
             self.unsupported.append(stmt)
+            logger.info("Encountered unsupported statement kind=%s", kind)
 
     # ------------------------------------------------------------------
     # Gauge helpers
@@ -669,6 +683,7 @@ class _CadBuilder:
 def translate(program: Program) -> Model:
     """Translate a validated GeometryIR program into a numeric model."""
 
+    logger.info("Translating program with %d statements", len(program.stmts))
     point_order = collect_point_order(program)
 
     system = SolverSystem()
@@ -683,4 +698,10 @@ def translate(program: Program) -> Model:
     builder = _CadBuilder(program, system, workplane, point_order, points)
     model = builder.build()
     model.initial_positions.update(positions)
+    logger.info(
+        "Translation completed: %d points, %d constraints, %d unsupported",
+        len(model.point_order),
+        len(model.constraints),
+        len(model.unsupported),
+    )
     return model

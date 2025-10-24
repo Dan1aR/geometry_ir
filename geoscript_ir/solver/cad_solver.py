@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Dict, Optional, Tuple
 
 import numpy as np
@@ -9,6 +10,8 @@ from python_solvespace import ResultFlag
 
 from .initial_guess import apply_initial_guess, initial_guess
 from .model import DerivationPlan, Model, PointName, Solution, SolveOptions
+
+logger = logging.getLogger(__name__)
 
 
 def _read_coordinates(model: Model) -> Dict[PointName, Tuple[float, float]]:
@@ -39,7 +42,11 @@ def solve(
     warnings: list[str] = []
     best: Optional[Solution] = None
 
+    logger.info(
+        "Starting CAD solve with attempts=%d random_seed=%s", attempts, options.random_seed
+    )
     for attempt in range(attempts):
+        logger.info("CAD solve attempt %d/%d", attempt + 1, attempts)
         guess = initial_guess(model, rng, attempt, plan=plan)
         apply_initial_guess(model, guess)
         flag = model.system.solve()
@@ -47,6 +54,7 @@ def solve(
         success = flag == ResultFlag.OKAY
 
         if success:
+            logger.info("CAD solve attempt %d succeeded", attempt + 1)
             return Solution(
                 point_coords=coords,
                 success=True,
@@ -60,8 +68,14 @@ def solve(
             warnings.append(
                 f"Attempt {attempt + 1} failed: " + ", ".join(str(item) for item in failures)
             )
+            logger.info(
+                "CAD solve attempt %d reported failures: %s",
+                attempt + 1,
+                "; ".join(str(item) for item in failures),
+            )
         else:
             warnings.append(f"Attempt {attempt + 1} failed: solver did not converge")
+            logger.info("CAD solve attempt %d did not converge", attempt + 1)
 
         candidate = Solution(
             point_coords=coords,
@@ -71,8 +85,10 @@ def solve(
             warnings=list(warnings),
         )
         if best is None or score_solution(candidate) < score_solution(best):
+            logger.info("Updating best failure candidate on attempt %d", attempt + 1)
             best = candidate
 
+    logger.info("CAD solve finished without convergence; returning best failure candidate")
     return best if best is not None else Solution(
         point_coords=_read_coordinates(model),
         success=False,

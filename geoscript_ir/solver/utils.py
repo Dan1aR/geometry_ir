@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import numbers
 import re
@@ -9,6 +10,8 @@ from typing import Callable, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from ..ast import Program
 from .model import PointName
+
+logger = logging.getLogger(__name__)
 
 _POINT_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _TEXTUAL_DATA_KEYS: Set[str] = {"text", "title", "label", "caption", "description"}
@@ -66,6 +69,7 @@ def collect_point_order(program: Program) -> List[PointName]:
         _gather_point_names(stmt.data, register)
         _gather_point_names(stmt.opts, register)
 
+    logger.info("Collected point order with %d points", len(order))
     return order
 
 
@@ -113,6 +117,7 @@ def initial_point_positions(point_order: Sequence[PointName]) -> Dict[PointName,
         radius = 1.5 + 0.2 * (idx - 2)
         positions[name] = (radius * math.cos(angle), radius * math.sin(angle))
 
+    logger.info("Generated default positions for %d points", len(point_order))
     return positions
 
 
@@ -138,4 +143,7 @@ def normalize_point_coords(
         ny = 0.0 if span_y == 0 else (y - min_y) / span_y
         normalized[name] = (nx * scale, ny * scale)
 
+    logger.info(
+        "Normalized coordinates for %d points with scale=%s", len(coords), scale
+    )
     return normalized
