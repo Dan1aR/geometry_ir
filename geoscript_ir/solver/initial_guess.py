@@ -25,6 +25,7 @@ _TEXTUAL_DATA_KEYS = {"text", "title", "label", "caption", "description"}
 GOLDEN_ANGLE_DEGREES = 137.50776
 GOLDEN_ANGLE = math.radians(GOLDEN_ANGLE_DEGREES)
 HASH_JITTER_SCALE = 1e-3
+SUPPLEMENTARY_EPSILON = 1e-6
 
 
 @dataclass
@@ -198,6 +199,55 @@ def _normalize(vec: Tuple[float, float]) -> Tuple[float, float]:
 
 def _perpendicular(vec: Tuple[float, float]) -> Tuple[float, float]:
     return -vec[1], vec[0]
+
+
+def _angle_between(
+    a: Tuple[float, float], b: Tuple[float, float]
+) -> float:
+    """Return the smaller unsigned angle between vectors ``a`` and ``b``."""
+
+    norm_a = math.hypot(a[0], a[1])
+    norm_b = math.hypot(b[0], b[1])
+    if norm_a <= 1e-12 or norm_b <= 1e-12:
+        return 0.0
+    dot = (a[0] * b[0] + a[1] * b[1]) / (norm_a * norm_b)
+    dot = max(-1.0, min(1.0, dot))
+    return math.acos(dot)
+
+
+def _mirror_across_line(
+    point: Tuple[float, float],
+    origin: Tuple[float, float],
+    direction: Tuple[float, float],
+) -> Tuple[float, float]:
+    """Mirror ``point`` across the infinite line defined by ``origin`` and ``direction``."""
+
+    direction = _normalize(direction)
+    rel_x = point[0] - origin[0]
+    rel_y = point[1] - origin[1]
+    parallel = rel_x * direction[0] + rel_y * direction[1]
+    proj_x = origin[0] + direction[0] * parallel
+    proj_y = origin[1] + direction[1] * parallel
+    mirror_x = proj_x - (point[0] - proj_x)
+    mirror_y = proj_y - (point[1] - proj_y)
+    return mirror_x, mirror_y
+
+
+def _signed_area2(
+    a: Tuple[float, float], b: Tuple[float, float], c: Tuple[float, float]
+) -> float:
+    """Return twice the signed area of triangle ``(a, b, c)``."""
+
+    return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+
+def _other_point(edge: Tuple[str, str], vertex: str) -> Optional[str]:
+    a, b = edge
+    if vertex == a:
+        return b
+    if vertex == b:
+        return a
+    return None
 
 
 def _project_along(
@@ -1575,26 +1625,31 @@ def _select_branch(
     if hint:
         kind = hint.normalized_kind()
         if kind in {"near", "far"} and anchor_pos is not None:
-            ordered = sorted((( _distance(pt, anchor_pos), idx, pt) for idx, pt in enumerate(candidates)))
+            ordered = sorted(
+                ( _distance(pt, anchor_pos), idx, pt)
+                for idx, pt in enumerate(candidates)
+            )
             if ordered:
                 return ordered[0][2] if kind == "near" else ordered[-1][2]
         if kind in {"left", "right"} and hint.reference:
             ref_a, ref_b = hint.reference
             if ref_a in seed.points and ref_b in seed.points:
                 base = _vector(seed.points[ref_a], seed.points[ref_b])
-                chosen: Optional[Tuple[float, float]] = None
-                score: Optional[float] = None
-                for pt in candidates:
-                    vec = _vector(seed.points[ref_a], pt)
-                    cross = base[0] * vec[1] - base[1] * vec[0]
-                    if kind == "left" and cross > 0 and (score is None or cross > score):
-                        chosen = pt
-                        score = cross
-                    if kind == "right" and cross < 0 and (score is None or cross < score):
-                        chosen = pt
-                        score = cross
-                if chosen is not None:
-                    return chosen
+                base_len = math.hypot(base[0], base[1])
+                if base_len > 1e-9:
+                    chosen: Optional[Tuple[float, float]] = None
+                    score: Optional[float] = None
+                    for pt in candidates:
+                        vec = _vector(seed.points[ref_a], pt)
+                        cross = base[0] * vec[1] - base[1] * vec[0]
+                        if kind == "left" and cross > 0 and (score is None or cross > score):
+                            chosen = pt
+                            score = cross
+                        if kind == "right" and cross < 0 and (score is None or cross < score):
+                            chosen = pt
+                            score = cross
+                    if chosen is not None:
+                        return chosen
         if kind in {"cw", "ccw"}:
             ref_point = None
             if hint.reference:
@@ -1750,6 +1805,220 @@ def _apply_intersections(scene_graph: SceneGraph, seed: InitialSeed) -> None:
             seed.points[point] = selected
 
 
+def _resolve_supplementary_angles(scene_graph: SceneGraph, seed: InitialSeed) -> None:
+    """Mirror ambiguous numeric angles to avoid the supplementary lobe."""
+
+    for datum in scene_graph.groups.angles:
+        if datum.kind not in {"numeric", "right"}:
+            continue
+        if datum.value is None:
+            continue
+        a, b, c = datum.points
+        if not (a in seed.points and b in seed.points and c in seed.points):
+            continue
+        target = math.radians(float(datum.value))
+        if not (SUPPLEMENTARY_EPSILON < target < math.pi - SUPPLEMENTARY_EPSILON):
+            continue
+        ba = _vector(seed.points[b], seed.points[a])
+        bc = _vector(seed.points[b], seed.points[c])
+        current = _angle_between(ba, bc)
+        if abs(current - target) <= abs(current - (math.pi - target)):
+            continue
+        seed.points[c] = _mirror_across_line(seed.points[c], seed.points[b], ba)
+
+
+def _enforce_component_spacing(scene_graph: SceneGraph, seed: InitialSeed) -> None:
+    if seed.min_spacing <= 0:
+        return
+    for component in scene_graph.components:
+        ordered = _ordered_component_points(scene_graph, component)
+        placed: List[Tuple[float, float]] = []
+        for name in ordered:
+            pos = seed.points.get(name)
+            if pos is None:
+                continue
+            adjusted = _ensure_spacing(pos, placed, seed.min_spacing)
+            if adjusted != pos:
+                seed.points[name] = adjusted
+            placed.append(seed.points[name])
+
+
+def _collect_degeneracy_edges(scene_graph: SceneGraph) -> Set[Tuple[str, str]]:
+    edges: Set[Tuple[str, str]] = set()
+    edges.update(scene_graph.absolute_lengths.keys())
+    for carrier in scene_graph.carriers.lines.values():
+        if len(carrier.points) == 2:
+            edges.add(edge_key(*carrier.points))
+    for group in scene_graph.groups.equal_segments:
+        edges.update(group.lhs)
+        edges.update(group.rhs)
+    for ratio in scene_graph.groups.ratios:
+        edges.add(ratio.left)
+        edges.add(ratio.right)
+    for pair in scene_graph.groups.parallel_pairs:
+        edges.add(pair.reference)
+        edges.add(pair.target)
+    for pair in scene_graph.groups.perpendicular_pairs:
+        edges.add(pair.base)
+        edges.add(pair.target)
+    for placement in scene_graph.placements.values():
+        data = placement.data
+        edge = data.get("edge")
+        for parsed in _iter_edge_like(edge):
+            edges.add(edge_key(*parsed))
+        if placement.kind == "point_on":
+            path = data.get("path")
+            if isinstance(path, (list, tuple)) and len(path) == 2:
+                kind = _normalize_kind(str(path[0]))
+                payload = path[1]
+                if isinstance(payload, (list, tuple)) and len(payload) == 2:
+                    a, b = map(str, payload)
+                    if kind in {"segment", "line", "ray"} and is_point_name(a) and is_point_name(b):
+                        edges.add(edge_key(a, b))
+    for a, b in scene_graph.polygon_edges:
+        if is_point_name(a) and is_point_name(b):
+            edges.add(edge_key(str(a), str(b)))
+    for a, b in scene_graph.trapezoid_bases:
+        if is_point_name(a) and is_point_name(b):
+            edges.add(edge_key(str(a), str(b)))
+    return edges
+
+
+def _adjust_edge_apart(
+    seed: InitialSeed,
+    edge: Tuple[str, str],
+    threshold: float,
+    protected: Set[str],
+) -> None:
+    a, b = edge
+    if a not in seed.points or b not in seed.points:
+        return
+    pa = seed.points[a]
+    pb = seed.points[b]
+    length = _distance(pa, pb)
+    if length >= threshold:
+        return
+    direction = _vector(pa, pb)
+    if math.hypot(direction[0], direction[1]) <= 1e-9:
+        jitter_x, jitter_y = _hash_jitter(a + b, max(seed.scale, 1.0))
+        direction = (jitter_x or 1.0, jitter_y)
+    unit = _normalize(direction)
+    if a in protected and b in protected:
+        return
+    if a in protected:
+        seed.points[b] = (
+            pa[0] + unit[0] * threshold,
+            pa[1] + unit[1] * threshold,
+        )
+        return
+    if b in protected:
+        seed.points[a] = (
+            pb[0] - unit[0] * threshold,
+            pb[1] - unit[1] * threshold,
+        )
+        return
+    midpoint = ((pa[0] + pb[0]) / 2.0, (pa[1] + pb[1]) / 2.0)
+    half = 0.5 * max(threshold, seed.min_spacing)
+    seed.points[a] = (
+        midpoint[0] - unit[0] * half,
+        midpoint[1] - unit[1] * half,
+    )
+    seed.points[b] = (
+        midpoint[0] + unit[0] * half,
+        midpoint[1] + unit[1] * half,
+    )
+
+
+def _guard_non_collinearity(scene_graph: SceneGraph, seed: InitialSeed) -> None:
+    protected = _protected_points(seed.gauge_plan)
+    nudge = 0.03 * max(seed.scale, 1.0)
+    threshold = 5.0 * seed.min_spacing * max(seed.scale, seed.min_spacing)
+    for group in scene_graph.groups.concyclic:
+        names = [name for name in group.points if name in seed.points]
+        if len(names) < 3:
+            continue
+        a, b, c = names[:3]
+        area = abs(_signed_area2(seed.points[a], seed.points[b], seed.points[c]))
+        if area >= threshold:
+            continue
+        target = b if b not in protected else (c if c not in protected else a)
+        if target in seed.points:
+            seed.points[target] = (
+                seed.points[target][0],
+                seed.points[target][1] + nudge,
+            )
+    for pair in scene_graph.groups.perpendicular_pairs:
+        vertex = pair.vertex
+        if vertex is None or vertex not in seed.points:
+            continue
+        base_other = _other_point(pair.base, vertex)
+        target_other = _other_point(pair.target, vertex)
+        if not (base_other and target_other):
+            continue
+        if base_other not in seed.points or target_other not in seed.points:
+            continue
+        area = abs(
+            _signed_area2(
+                seed.points[base_other],
+                seed.points[vertex],
+                seed.points[target_other],
+            )
+        )
+        if area >= threshold:
+            continue
+        target = vertex if vertex not in protected else target_other
+        if target in seed.points:
+            seed.points[target] = (
+                seed.points[target][0],
+                seed.points[target][1] + nudge,
+            )
+
+
+def _guard_perpendicular_angles(scene_graph: SceneGraph, seed: InitialSeed) -> None:
+    protected = _protected_points(seed.gauge_plan)
+    for pair in scene_graph.groups.perpendicular_pairs:
+        vertex = pair.vertex
+        if vertex is None or vertex not in seed.points:
+            continue
+        base_other = _other_point(pair.base, vertex)
+        target_other = _other_point(pair.target, vertex)
+        if not (base_other and target_other):
+            continue
+        if base_other not in seed.points or target_other not in seed.points:
+            continue
+        ba = _vector(seed.points[vertex], seed.points[base_other])
+        bc = _vector(seed.points[vertex], seed.points[target_other])
+        if _angle_between(ba, bc) >= seed.angle_epsilon:
+            continue
+        perp = _normalize(_perpendicular(ba))
+        span = max(
+            _distance(seed.points[vertex], seed.points[target_other]),
+            seed.min_spacing * 2.0,
+            0.5 * max(seed.scale, seed.min_spacing),
+        )
+        if target_other not in protected:
+            seed.points[target_other] = (
+                seed.points[vertex][0] + perp[0] * span,
+                seed.points[vertex][1] + perp[1] * span,
+            )
+        elif base_other not in protected:
+            seed.points[base_other] = (
+                seed.points[vertex][0] - perp[0] * span,
+                seed.points[vertex][1] - perp[1] * span,
+            )
+
+
+def _apply_degeneracy_guards(scene_graph: SceneGraph, seed: InitialSeed) -> None:
+    _enforce_component_spacing(scene_graph, seed)
+    protected = _protected_points(seed.gauge_plan)
+    edges = _collect_degeneracy_edges(scene_graph)
+    threshold = max(0.2 * max(seed.scale, 1.0), seed.min_spacing * 2.0)
+    for edge in edges:
+        _adjust_edge_apart(seed, edge, threshold, protected)
+    _guard_non_collinearity(scene_graph, seed)
+    _guard_perpendicular_angles(scene_graph, seed)
+    _enforce_component_spacing(scene_graph, seed)
+
 
 def _compute_scale_constants(
     scene_graph: SceneGraph,
@@ -1802,6 +2071,8 @@ def initial_guess(program: Program, desugared: Program, opts: Dict[str, Any]) ->
     _apply_parallel_perpendicular(scene_graph, seed)
     _apply_length_relationships(scene_graph, seed)
     _apply_intersections(scene_graph, seed)
+    _resolve_supplementary_angles(scene_graph, seed)
+    _apply_degeneracy_guards(scene_graph, seed)
 
     for name in scene_graph.points:
         seed.points.setdefault(name, (0.0, 0.0))
@@ -1810,17 +2081,52 @@ def initial_guess(program: Program, desugared: Program, opts: Dict[str, Any]) ->
         seed.notes.append(
             f"gauge[{anchor.component}]: origin={anchor.origin} baseline={anchor.baseline} reason={anchor.reason}"
         )
+    seed.notes.append("degeneracy-guards applied")
     return seed
 
 
 def apply_drag_policy(
     sys: SolverSystem, wp: Any, seed: InitialSeed, scene_graph: SceneGraph
 ) -> None:
-    """Placeholder drag policy hook (implemented in later steps)."""
+    """Mark the planned gauge anchors as dragged on the CAD system."""
 
-    logger.debug(
-        "apply_drag_policy invoked with %d gauge anchors", len(seed.gauge_plan.anchors)
-    )
+    lookup = getattr(sys, "_initial_guess_point_lookup", None)
+    if lookup is None:
+        logger.debug(
+            "apply_drag_policy skipped: solver system does not expose point lookup"
+        )
+        return
+
+    dragged: Set[str] = set()
+    for anchor in seed.gauge_plan.anchors:
+        planned: List[str] = []
+        if anchor.origin:
+            planned.append(anchor.origin)
+        baseline = anchor.baseline
+        if baseline and baseline != anchor.origin:
+            planned.append(baseline)
+        if not planned:
+            continue
+        applied: List[str] = []
+        for name in planned:
+            if name in dragged:
+                applied.append(name)
+                continue
+            entity = lookup.get(name)
+            if entity is None:
+                logger.debug("drag policy missing entity for point '%s'", name)
+                continue
+            try:
+                sys.dragged(entity, wp)
+            except Exception:  # pragma: no cover - defensive
+                logger.exception("Failed to mark point '%s' as dragged", name)
+                continue
+            dragged.add(name)
+            applied.append(name)
+        if applied:
+            seed.notes.append(
+                f"drag[{anchor.component}] -> {', '.join(applied)}"
+            )
 
 
 def _collect_length_hints(model: Model) -> Dict[Tuple[str, str], float]:
