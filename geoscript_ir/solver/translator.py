@@ -187,7 +187,7 @@ class _CadBuilder:
             self._handle_angle(stmt)
         elif kind == "right-angle":
             self._handle_right_angle(stmt)
-        elif kind == "equal-segments":
+        elif kind in {"equal-segments", "equal_segments"}:
             self._handle_equal_segments(stmt)
         elif kind == "parallel-edges":
             self._handle_parallel_edges(stmt)
@@ -199,6 +199,8 @@ class _CadBuilder:
             self._handle_concyclic(stmt)
         elif kind == "circle":
             self._handle_circle(stmt)
+        elif kind == "circle_center_radius_through":
+            self._handle_circle_center_radius_through(stmt)
         elif kind == "circumcircle":
             self._handle_circumcircle(stmt)
         elif kind == "incircle":
@@ -213,6 +215,9 @@ class _CadBuilder:
             self._handle_diameter(stmt)
         elif kind == "ratio":
             self._handle_ratio(stmt)
+        elif kind == "target_length":
+            # Target lengths are post-solution diagnostics and do not add CAD constraints.
+            return
         else:
             self.unsupported.append(stmt)
             logger.info("Encountered unsupported statement kind=%s", kind)
@@ -370,6 +375,29 @@ class _CadBuilder:
                 value=0.0,
                 stmt=stmt,
             )
+
+    def _handle_circle_center_radius_through(self, stmt: Stmt) -> None:
+        center = stmt.data.get("center")
+        through = stmt.data.get("through")
+        if not (is_point_name(center) and is_point_name(through)):
+            return
+
+        center_name = str(center)
+        through_name = str(through)
+        spec = self.ensure_circle(center_name)
+
+        radius_value: Optional[float] = None
+        for key in ("radius", "value", "distance"):
+            if key in stmt.opts:
+                radius_value = coerce_float(stmt.opts.get(key))
+                if radius_value is not None:
+                    break
+        if radius_value is not None:
+            spec.radius_value = radius_value
+
+        # Ensure the radius edge exists so equality constraints can reference it.
+        self.ensure_line(center_name, through_name)
+        self.add_point_on_circle(center_name, through_name, stmt)
 
     def _handle_parallel_edges(self, stmt: Stmt) -> None:
         edges = stmt.data.get("edges") or []
