@@ -40,6 +40,32 @@ def _collect_length_hints(model: Model) -> Dict[Tuple[str, str], float]:
     for spec in model.circles.values():
         if spec.radius_value is not None and spec.radius_point is not None:
             hints[edge_key(spec.center, spec.radius_point)] = float(spec.radius_value)
+    seed_hints = getattr(model, "seed_hints", None)
+    if isinstance(seed_hints, dict):
+        for hint in seed_hints.get("global_hints", []):
+            if hint.get("kind") != "length":
+                continue
+            payload = hint.get("payload", {})
+            edge = payload.get("edge")
+            value = payload.get("value")
+            if (
+                isinstance(edge, (list, tuple))
+                and len(edge) == 2
+                and isinstance(value, (int, float))
+            ):
+                a, b = map(str, edge)
+                hints[edge_key(a, b)] = float(value)
+        for point, entries in seed_hints.get("by_point", {}).items():
+            if not isinstance(entries, (list, tuple)):
+                continue
+            for hint in entries:
+                if hint.get("kind") != "length":
+                    continue
+                payload = hint.get("payload", {})
+                other = payload.get("other")
+                value = payload.get("value")
+                if isinstance(other, str) and isinstance(value, (int, float)):
+                    hints[edge_key(str(point), other)] = float(value)
     return hints
 
 
@@ -48,6 +74,40 @@ def _typical_length(hints: Dict[Tuple[str, str], float]) -> float:
         return 1.0
     values = list(hints.values())
     return sum(values) / len(values)
+
+
+def _default_gauge_points(
+    model: Model,
+) -> Tuple[Optional[PointName], Optional[PointName], Optional[float]]:
+    origin: Optional[PointName] = None
+    baseline: Optional[PointName] = None
+    length_hint: Optional[float] = None
+
+    gauge_meta = model.metadata.get("default_gauge") if isinstance(model.metadata, dict) else None
+    if isinstance(gauge_meta, dict):
+        origin = gauge_meta.get("origin")
+        baseline = gauge_meta.get("baseline")
+        length_value = gauge_meta.get("length")
+        if isinstance(length_value, (int, float)):
+            length_hint = float(length_value)
+
+    if origin is None and model.gauge_points:
+        origin = model.gauge_points[0][0]
+    if baseline is None and model.gauge_points:
+        for point, _ in model.gauge_points[1:]:
+            if point != origin:
+                baseline = point
+                break
+
+    if origin is None and model.point_order:
+        origin = model.point_order[0]
+    if baseline is None and model.point_order:
+        for name in model.point_order:
+            if name != origin:
+                baseline = name
+                break
+
+    return origin, baseline, length_hint
 
 
 def _position_third_point(
@@ -82,31 +142,55 @@ def _base_positions(model: Model) -> Dict[PointName, Tuple[float, float]]:
 
     hints = _collect_length_hints(model)
     scale = _typical_length(hints)
-    anchor = order[0]
-    positions[anchor] = (0.0, 0.0)
+    origin, baseline, gauge_length = _default_gauge_points(model)
+    if origin is None:
+        origin = order[0]
+    positions[origin] = (0.0, 0.0)
 
     baseline_length = scale
-    if len(order) >= 2:
-        baseline = order[1]
-        baseline_length = hints.get(edge_key(anchor, baseline), scale)
+    if baseline and baseline != origin:
+        length_hint = hints.get(edge_key(origin, baseline))
+        if length_hint is None and gauge_length is not None:
+            length_hint = gauge_length
+        if length_hint is not None:
+            baseline_length = float(length_hint)
         positions[baseline] = (baseline_length, 0.0)
+    else:
+        baseline = None
 
-    if len(order) >= 3:
-        third = order[2]
-        anchor_length = hints.get(edge_key(anchor, third))
+    third: Optional[PointName] = None
+    gauge_meta = model.metadata.get("default_gauge") if isinstance(model.metadata, dict) else None
+    if isinstance(gauge_meta, dict):
+        candidate = gauge_meta.get("third")
+        if isinstance(candidate, str):
+            third = candidate
+    if third is None:
+        for name in order:
+            if name not in positions:
+                third = name
+                break
+
+    if third is not None and third not in positions:
+        anchor_length = hints.get(edge_key(origin, third)) if origin else None
         baseline_length_hint = None
-        if len(order) >= 2:
-            baseline_length_hint = hints.get(edge_key(order[1], third))
+        if baseline:
+            baseline_length_hint = hints.get(edge_key(baseline, third))
+        baseline_span = baseline_length if baseline else scale
         x, y = _position_third_point(
             anchor_length,
             baseline_length_hint,
-            baseline_length,
+            baseline_span,
             scale,
         )
         positions[third] = (x, y)
 
-    for idx, name in enumerate(order[3:], start=3):
-        positions[name] = _fallback_position(idx, len(order), scale)
+    total = len(order)
+    fallback_idx = 3
+    for name in order:
+        if name in positions:
+            continue
+        positions[name] = _fallback_position(fallback_idx, total, scale)
+        fallback_idx += 1
 
     logger.info(
         "Constructed base initial positions for %d points using %d length hints",
@@ -152,15 +236,71 @@ def _ensure_gauge_constraints(model: Model) -> None:
     if getattr(model, "_gauge_applied", False):
         return
 
-    gauge_specs = model.gauge_points
-    if not gauge_specs:
-        gauge_specs = []
-        if model.point_order:
-            gauge_specs.append((model.point_order[0], "fixed origin"))
-        if len(model.point_order) >= 2:
-            gauge_specs.append((model.point_order[1], "fixed baseline"))
+    origin, baseline, gauge_length = _default_gauge_points(model)
+    hints = _collect_length_hints(model)
+    notes = {point: note for point, note in model.gauge_points if note}
 
-    for point, note in gauge_specs:
+    def _note(point: PointName, fallback: str) -> str:
+        return notes.get(point, fallback)
+
+    def _drag_point(
+        point: PointName,
+        target: Tuple[float, float],
+        *,
+        note: str,
+        value: Optional[float] = None,
+    ) -> None:
+        entity = model.point_entity(point)
+        model.system.set_params(entity.params, [target[0], target[1]])
+        model.system.dragged(entity, model.workplane)
+        cad_id = model.reserve_constraint_id()
+        constraint = CadConstraint(
+            cad_id=cad_id,
+            kind="dragged",
+            entities=(point,),
+            value=value,
+            source=None,
+            note=note,
+        )
+        model.constraints.append(constraint)
+        logger.info(
+            "Registered gauge constraint #%d for point=%s note=%s value=%s",
+            cad_id,
+            point,
+            note,
+            "{:.6f}".format(value) if value is not None else None,
+        )
+
+    handled: set[PointName] = set()
+
+    if origin is not None:
+        _drag_point(origin, (0.0, 0.0), note=_note(origin, "fixed origin"))
+        handled.add(origin)
+
+    if baseline and baseline not in handled:
+        length_value: Optional[float] = None
+        if origin is not None:
+            length_value = hints.get(edge_key(origin, baseline))
+        if length_value is None and gauge_length is not None:
+            length_value = gauge_length
+
+        if length_value is not None:
+            target_x = float(abs(length_value))
+            baseline_note = f"{_note(baseline, 'fixed baseline')} (length={length_value:g})"
+            _drag_point(
+                baseline,
+                (target_x, 0.0),
+                note=baseline_note,
+                value=float(length_value),
+            )
+        else:
+            baseline_note = f"{_note(baseline, 'fixed baseline')} (unit length)"
+            _drag_point(baseline, (1.0, 0.0), note=baseline_note)
+        handled.add(baseline)
+
+    for point, note in model.gauge_points:
+        if point in handled:
+            continue
         entity = model.point_entity(point)
         model.system.dragged(entity, model.workplane)
         cad_id = model.reserve_constraint_id()
