@@ -2165,6 +2165,9 @@ def initial_guess(program: Program, desugared: Program, opts: Dict[str, Any]) ->
     return seed
 
 
+MAX_DRAGGED_POINTS = 2
+
+
 def apply_drag_policy(
     sys: SolverSystem, wp: Any, seed: InitialSeed, scene_graph: SceneGraph
 ) -> None:
@@ -2179,6 +2182,7 @@ def apply_drag_policy(
 
     dragged: Set[str] = set()
     planned_all: Set[str] = set()
+    limit_reached = False
     for anchor in seed.gauge_plan.anchors:
         planned: List[str] = []
         if anchor.origin:
@@ -2193,6 +2197,9 @@ def apply_drag_policy(
             planned_all.add(name)
             if name in dragged:
                 applied.append(name)
+                continue
+            if len(dragged) >= MAX_DRAGGED_POINTS:
+                limit_reached = True
                 continue
             entity = lookup.get(name)
             if entity is None:
@@ -2217,6 +2224,10 @@ def apply_drag_policy(
                 ", ".join(planned),
             )
     missing = sorted(planned_all - dragged)
+    if limit_reached:
+        logger.info(
+            "drag-policy: maximum drag limit (%d) reached", MAX_DRAGGED_POINTS
+        )
     if missing:
         logger.info("drag-policy: skipped points=%s", ", ".join(missing))
     else:
